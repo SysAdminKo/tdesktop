@@ -1,0 +1,5 @@
+# SHA-256 hashes of access tokens (hex, 64 chars).
+# Generate: printf 'my-token' | sha256sum | awk '{print $1}'
+#
+# Example (token is "change-me"):
+# sha256:8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92

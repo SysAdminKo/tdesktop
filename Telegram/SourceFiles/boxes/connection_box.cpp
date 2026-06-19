@@ -44,6 +44,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/menu/menu_add_action_callback.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
 #include "ui/widgets/popup_menu.h"
+#include "ui/wrap/padding_wrap.h"
 #include "ui/wrap/slide_wrap.h"
 #include "ui/wrap/table_layout.h"
 #include "ui/wrap/vertical_layout.h"
@@ -66,8 +67,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace {
 
 constexpr auto kSaveSettingsDelayedTimeout = crl::time(1000);
+constexpr auto kDefaultWssMuxTunnels = 6;
+constexpr auto kMinWssMuxTunnels = 1;
+constexpr auto kMaxWssMuxTunnels = 9;
 
 using ProxyData = MTP::ProxyData;
+
+[[nodiscard]] int ClampWssMuxTunnels(int value) {
+	if (value <= 0) {
+		return kDefaultWssMuxTunnels;
+	}
+	return std::clamp(value, kMinWssMuxTunnels, kMaxWssMuxTunnels);
+}
 
 [[nodiscard]] int ClosestProxyRotationTimeoutSection(int value) {
 	auto result = 0;
@@ -100,7 +111,8 @@ using ProxyData = MTP::ProxyData;
 [[nodiscard]] bool ProxyDataIsShareable(const ProxyData &proxy) {
 	using Type = ProxyData::Type;
 	return (proxy.type == Type::Socks5)
-		|| (proxy.type == Type::Mtproto);
+		|| (proxy.type == Type::Mtproto)
+		|| (proxy.type == Type::WebSocket);
 }
 
 [[nodiscard]] QString ProxyDataToQueryPath(const ProxyData &proxy) {
@@ -109,6 +121,7 @@ using ProxyData = MTP::ProxyData;
 		switch (proxy.type) {
 		case Type::Socks5: return u"socks"_q;
 		case Type::Mtproto: return u"proxy"_q;
+		case Type::WebSocket: return u"wss"_q;
 		case Type::None:
 		case Type::Http: return QString();
 		}
@@ -123,6 +136,12 @@ using ProxyData = MTP::ProxyData;
 			? "&user=" + qthelp::url_encode(proxy.user) : "")
 		+ ((proxy.type == Type::Socks5 && !proxy.password.isEmpty())
 			? "&pass=" + qthelp::url_encode(proxy.password) : "")
+		+ ((proxy.type == Type::WebSocket && !proxy.path.isEmpty())
+			? "&path=" + qthelp::url_encode(proxy.path) : "")
+		+ ((proxy.type == Type::WebSocket)
+			? "&tunnels=" + QString::number(ClampWssMuxTunnels(proxy.wssMuxTunnels)) : "")
+		+ ((proxy.type == Type::WebSocket && !proxy.password.isEmpty())
+			? "&token=" + qthelp::url_encode(proxy.password) : "")
 		+ ((proxy.type == Type::Mtproto && !proxy.password.isEmpty())
 			? "&secret=" + proxy.password : "");
 }
@@ -321,6 +340,10 @@ void ShareProxy(
 		proxy.password = fields.value(u"pass"_q);
 	} else if (type == ProxyData::Type::Mtproto) {
 		proxy.password = fields.value(u"secret"_q);
+	} else if (type == ProxyData::Type::WebSocket) {
+		proxy.password = fields.value(u"token"_q);
+		proxy.wssMuxTunnels = ClampWssMuxTunnels(fields.value(u"tunnels"_q).toInt());
+		proxy.path = u"/ws/mux"_q;
 	}
 	return proxy;
 };
@@ -329,8 +352,10 @@ void ShareProxy(
 	const auto protocol = u"tg://"_q;
 	const auto proxyString = u"proxy"_q;
 	const auto socksString = u"socks"_q;
+	const auto wssString = u"wss"_q;
 	if (!local.startsWith(protocol + proxyString, Qt::CaseInsensitive)
-		&& !local.startsWith(protocol + socksString, Qt::CaseInsensitive)) {
+		&& !local.startsWith(protocol + socksString, Qt::CaseInsensitive)
+		&& !local.startsWith(protocol + wssString, Qt::CaseInsensitive)) {
 		return ProxyData();
 	}
 	const auto command = base::StringViewMid(local, protocol.size(), 8192);
@@ -339,7 +364,8 @@ void ShareProxy(
 	for (const auto &[expression, _] : Core::LocalUrlHandlers()) {
 		const auto midExpression = base::StringViewMid(expression, 1);
 		const auto isSocks = midExpression.startsWith(socksString);
-		if (!midExpression.startsWith(proxyString) && !isSocks) {
+		const auto isWss = midExpression.startsWith(wssString);
+		if (!midExpression.startsWith(proxyString) && !isSocks && !isWss) {
 			continue;
 		}
 		const auto match = regex_match(expression, command, options);
@@ -348,6 +374,8 @@ void ShareProxy(
 		}
 		const auto type = isSocks
 			? ProxyData::Type::Socks5
+			: isWss
+			? ProxyData::Type::WebSocket
 			: ProxyData::Type::Mtproto;
 		auto fields = url_parse_params(
 			match->captured(1),
@@ -379,6 +407,7 @@ void AddProxyFromClipboard(
 		std::shared_ptr<Ui::Show> show) {
 	const auto proxyString = u"proxy"_q;
 	const auto socksString = u"socks"_q;
+	const auto wssString = u"wss"_q;
 	const auto protocol = u"tg://"_q;
 
 	const auto maybeUrls = ExtractLinkCandidates(
@@ -396,7 +425,8 @@ void AddProxyFromClipboard(
 	const auto proceedUrl = [=](const QString &local) {
 		const auto isProxyLink
 			= local.startsWith(protocol + proxyString, Qt::CaseInsensitive)
-			|| local.startsWith(protocol + socksString, Qt::CaseInsensitive);
+			|| local.startsWith(protocol + socksString, Qt::CaseInsensitive)
+			|| local.startsWith(protocol + wssString, Qt::CaseInsensitive);
 		if (!isProxyLink) {
 			return Result::Failed;
 		}
@@ -665,6 +695,9 @@ private:
 	void setupTypes();
 	void setupSocketAddress(const ProxyData &data);
 	void setupCredentials(const ProxyData &data);
+	void setupWebSocketAuth(const ProxyData &data);
+	void setupWebSocketPath(const ProxyData &data);
+	void setupWebSocketMuxTunnels(const ProxyData &data);
 	void setupMtprotoCredentials(const ProxyData &data);
 
 	void addLabel(
@@ -687,6 +720,12 @@ private:
 	QPointer<Base64UrlInput> _secret;
 
 	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _credentials;
+	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _wsAuth;
+	QPointer<Ui::PasswordInput> _wssToken;
+	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _wsPath;
+	QPointer<Ui::InputField> _path;
+	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _wsMuxTunnels;
+	QPointer<Ui::NumberInput> _tunnels;
 	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _mtprotoCredentials;
 
 };
@@ -1129,6 +1168,7 @@ void ProxiesBox::setupContent() {
 			ProxyData::Settings::Enabled,
 			tr::lng_proxy_use_custom(tr::now)),
 		st::proxyUsePadding);
+
 	_proxyForCalls = inner->add(
 		object_ptr<Ui::SlideWrap<Ui::Checkbox>>(
 			inner,
@@ -1211,6 +1251,7 @@ void ProxiesBox::setupContent() {
 		refreshProxyForCalls();
 		refreshProxyRotation();
 	});
+
 	_tryIPv6->checkedChanges(
 	) | rpl::on_next([=](bool checked) {
 		_controller->setTryIPv6(checked);
@@ -1449,9 +1490,13 @@ void ProxyBox::prepare() {
 			&& !_port->getLastText().trimmed().isEmpty()) {
 			if (_type->current() == Type::Mtproto) {
 				_secret->setFocus();
+			} else if (_type->current() == Type::WebSocket) {
+				_path->setFocus();
 			} else {
 				_user->setFocus();
 			}
+		} else if (_path->hasFocus()) {
+			_user->setFocus();
 		} else if (_user->hasFocus()) {
 			_password->setFocus();
 		} else {
@@ -1460,6 +1505,8 @@ void ProxyBox::prepare() {
 	};
 	connect(_host.data(), &Ui::MaskedInputField::submitted, submit);
 	connect(_port.data(), &Ui::MaskedInputField::submitted, submit);
+	_path->submits(
+	) | rpl::on_next(submit, _path->lifetime());
 	_user->submits(
 	) | rpl::on_next(submit, _user->lifetime());
 	connect(_password.data(), &Ui::MaskedInputField::submitted, submit);
@@ -1476,7 +1523,9 @@ void ProxyBox::refreshButtons() {
 
 	const auto type = _type->current();
 	if (_allowShare
-		&& (type == Type::Socks5 || type == Type::Mtproto)) {
+		&& (type == Type::Socks5
+			|| type == Type::Mtproto
+			|| type == Type::WebSocket)) {
 		addLeftButton(tr::lng_proxy_share(), [=] { share(); });
 	}
 }
@@ -1499,12 +1548,17 @@ ProxyData ProxyBox::collectData() {
 	result.type = _type->current();
 	result.host = _host->getLastText().trimmed();
 	result.port = _port->getLastText().trimmed().toInt();
-	result.user = (result.type == Type::Mtproto)
-		? QString()
-		: _user->getLastText();
-	result.password = (result.type == Type::Mtproto)
-		? _secret->getLastText()
-		: _password->getLastText();
+	if (result.type == Type::WebSocket) {
+		result.password = _wssToken->getLastText();
+		result.wssMuxTunnels = ClampWssMuxTunnels(
+			_tunnels->getLastText().trimmed().toInt());
+		result.path = u"/ws/mux"_q;
+	} else if (result.type == Type::Mtproto) {
+		result.password = _secret->getLastText();
+	} else {
+		result.user = _user->getLastText();
+		result.password = _password->getLastText();
+	}
 	if (result.host.isEmpty()) {
 		_host->showError();
 	} else if (!result.port) {
@@ -1527,6 +1581,7 @@ void ProxyBox::setupTypes() {
 		{ Type::Mtproto, u"MTPROTO"_q },
 		{ Type::Socks5, u"SOCKS5"_q },
 		{ Type::Http, u"HTTP"_q },
+		{ Type::WebSocket, tr::lng_proxy_type_websocket(tr::now) },
 	};
 	for (const auto &[type, label] : types) {
 		_content->add(
@@ -1609,6 +1664,71 @@ void ProxyBox::setupCredentials(const ProxyData &data) {
 	credentials->add(std::move(passwordWrap), st::proxyEditInputPadding);
 }
 
+void ProxyBox::setupWebSocketAuth(const ProxyData &data) {
+	_wsAuth = _content->add(
+		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+			_content,
+			object_ptr<Ui::VerticalLayout>(_content)));
+	const auto authWrap = _wsAuth->entity();
+	addLabel(authWrap, tr::lng_proxy_wss_token_label(tr::now));
+	auto tokenFieldWrap = object_ptr<Ui::RpWidget>(authWrap);
+	_wssToken = Ui::CreateChild<Ui::PasswordInput>(
+		tokenFieldWrap.data(),
+		st::connectionPasswordInputField,
+		tr::lng_proxy_wss_token_ph(),
+		data.password);
+	_wssToken->move(0, 0);
+	_wssToken->heightValue(
+	) | rpl::on_next([=, wrap = tokenFieldWrap.data()](int height) {
+		wrap->resize(wrap->width(), height);
+	}, _wssToken->lifetime());
+	tokenFieldWrap->widthValue(
+	) | rpl::on_next([=](int width) {
+		_wssToken->resize(width, _wssToken->height());
+	}, _wssToken->lifetime());
+	authWrap->add(std::move(tokenFieldWrap), st::proxyEditInputPadding);
+}
+
+void ProxyBox::setupWebSocketPath(const ProxyData &data) {
+	_wsPath = _content->add(
+		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+			_content,
+			object_ptr<Ui::VerticalLayout>(_content)));
+	const auto pathWrap = _wsPath->entity();
+	addLabel(pathWrap, tr::lng_proxy_path_label(tr::now));
+	_path = pathWrap->add(
+		object_ptr<Ui::InputField>(
+			pathWrap,
+			st::connectionUserInputField,
+			tr::lng_proxy_path_ph(),
+			u"/ws/mux"_q),
+		st::proxyEditInputPadding);
+}
+
+void ProxyBox::setupWebSocketMuxTunnels(const ProxyData &data) {
+	_wsMuxTunnels = _content->add(
+		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+			_content,
+			object_ptr<Ui::VerticalLayout>(_content)));
+	const auto tunnelsWrap = _wsMuxTunnels->entity();
+	addLabel(tunnelsWrap, tr::lng_proxy_wss_tunnels_label(tr::now));
+	const auto tunnelsField = tunnelsWrap->add(
+		object_ptr<Ui::FixedHeightWidget>(
+			tunnelsWrap,
+			st::connectionUserInputField.heightMin),
+		st::proxyEditInputPadding);
+	_tunnels = Ui::CreateChild<Ui::NumberInput>(
+		tunnelsField,
+		st::connectionUserInputField,
+		tr::lng_proxy_wss_tunnels_ph(),
+		QString::number(ClampWssMuxTunnels(data.wssMuxTunnels)),
+		kMaxWssMuxTunnels);
+	tunnelsField->widthValue(
+	) | rpl::on_next([=](int width) {
+		_tunnels->resize(width, _tunnels->height());
+	}, _tunnels->lifetime());
+}
+
 void ProxyBox::setupMtprotoCredentials(const ProxyData &data) {
 	_mtprotoCredentials = _content->add(
 		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
@@ -1646,14 +1766,22 @@ void ProxyBox::setupControls(const ProxyData &data) {
 
 	setupTypes();
 	setupSocketAddress(data);
+	setupWebSocketPath(data);
+	setupWebSocketMuxTunnels(data);
+	setupWebSocketAuth(data);
 	setupCredentials(data);
 	setupMtprotoCredentials(data);
 
 	const auto handleType = [=](Type type) {
-		const auto credentialsShown
-			= (type == Type::Http || type == Type::Socks5);
+		const auto credentialsShown = (type == Type::Http)
+			|| (type == Type::Socks5);
+		const auto wsAuthShown = (type == Type::WebSocket);
 		const auto mtprotoShown = (type == Type::Mtproto);
+		const auto pathShown = (type == Type::WebSocket);
 		_credentials->toggle(credentialsShown, anim::type::instant);
+		_wsAuth->toggle(wsAuthShown, anim::type::instant);
+		_wsPath->toggle(pathShown, anim::type::instant);
+		_wsMuxTunnels->toggle(pathShown, anim::type::instant);
 		_mtprotoCredentials->toggle(mtprotoShown, anim::type::instant);
 		_aboutSponsored->toggle(mtprotoShown, anim::type::instant);
 		const auto credentialsPolicy = credentialsShown
@@ -1661,6 +1789,9 @@ void ProxyBox::setupControls(const ProxyData &data) {
 			: Qt::NoFocus;
 		_user->rawTextEdit()->setFocusPolicy(credentialsPolicy);
 		_password->setFocusPolicy(credentialsPolicy);
+		_wssToken->setFocusPolicy(wsAuthShown ? Qt::StrongFocus : Qt::NoFocus);
+		_path->setFocusPolicy(pathShown ? Qt::StrongFocus : Qt::NoFocus);
+		_tunnels->setFocusPolicy(pathShown ? Qt::StrongFocus : Qt::NoFocus);
 		_secret->setFocusPolicy(
 			mtprotoShown ? Qt::StrongFocus : Qt::NoFocus);
 	};
@@ -1839,6 +1970,10 @@ void ProxiesBoxController::ShowApplyConfirmation(
 		if (type == Type::Socks5) {
 			add(proxy.user, tr::lng_proxy_box_username());
 			add(proxy.password, tr::lng_proxy_box_password());
+		} else if (type == Type::WebSocket) {
+			add(proxy.path, tr::lng_proxy_path_label());
+			add(QString::number(proxy.wssMuxTunnels), tr::lng_proxy_wss_tunnels_label());
+			add(proxy.password, tr::lng_proxy_wss_token_label());
 		} else if (type == Type::Mtproto) {
 			add(proxy.password, tr::lng_proxy_box_secret());
 		}
@@ -2354,6 +2489,7 @@ void ProxiesBoxController::updateView(const Item &item) {
 		case Type::Http: return u"HTTP"_q;
 		case Type::Socks5: return u"SOCKS5"_q;
 		case Type::Mtproto: return u"MTPROTO"_q;
+		case Type::WebSocket: return u"WSS"_q;
 		}
 		Unexpected("Proxy type in ProxiesBoxController::updateView.");
 	}();

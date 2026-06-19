@@ -9,6 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/details/mtproto_tcp_socket.h"
 #include "mtproto/details/mtproto_tls_socket.h"
+#include "mtproto/details/mtproto_websocket_socket.h"
+#include "mtproto/mtproto_proxy_data.h"
 
 namespace MTP::details {
 
@@ -16,8 +18,14 @@ std::unique_ptr<AbstractSocket> AbstractSocket::Create(
 		not_null<QThread*> thread,
 		const bytes::vector &secret,
 		const QNetworkProxy &proxy,
-		bool protocolForFiles) {
-	if (secret.size() >= 21 && secret[0] == bytes::type(0xEE)) {
+		bool protocolForFiles,
+		const ProxyData &proxyData) {
+	if (proxyData.type == ProxyData::Type::WebSocket) {
+		return std::make_unique<WebSocketSocket>(
+			thread,
+			proxyData,
+			protocolForFiles);
+	} else if (secret.size() >= 21 && secret[0] == bytes::type(0xEE)) {
 		return std::make_unique<TlsSocket>(
 			thread,
 			secret,

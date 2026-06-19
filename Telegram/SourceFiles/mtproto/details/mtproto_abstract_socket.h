@@ -10,6 +10,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/bytes.h"
 #include "base/basic_types.h"
 
+namespace MTP {
+struct ProxyData;
+}
+
 namespace MTP::details {
 
 class AbstractSocket : protected QObject {
@@ -18,7 +22,8 @@ public:
 		not_null<QThread*> thread,
 		const bytes::vector &secret,
 		const QNetworkProxy &proxy,
-		bool protocolForFiles);
+		bool protocolForFiles,
+		const ProxyData &proxyData);
 
 	void setDebugId(const QString &id) {
 		_debugId = id;

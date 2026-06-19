@@ -62,6 +62,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "media/view/media_view_open_common.h"
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/mtproto_config.h"
+#include "mtproto/mtproto_wss_mux_hub.h"
+#include "mtproto/mtproto_wss_endpoint_persist.h"
 #include "media/audio/media_audio_track.h"
 #include "media/player/media_player_instance.h"
 #include "media/player/media_player_float.h"
@@ -177,6 +179,10 @@ Application::Application()
 , _autoLockTimer([=] { checkAutoLock(); }) {
 	Ui::Integration::Set(&_private->uiIntegration);
 	_private->proxyRotation = std::make_unique<ProxyRotationManager>();
+
+	MTP::WssMuxHub::SetAuthRejectedHandler([] {
+		Core::App().wssProxyAuthRejectedError();
+	});
 
 	_platformIntegration->init();
 
@@ -495,6 +501,7 @@ void Application::startSettingsAndBackground() {
 	checkSystemDarkMode();
 	Ui::SetScreenReaderModeDisabled(
 		settings().readPref<bool>(kScreenReaderModeDisabledKey));
+	MTP::RegisterWssEndpointCachePersistence();
 }
 
 void Application::checkSystemDarkMode() {
@@ -869,6 +876,17 @@ void Application::badMtprotoConfigurationError() {
 			disableCallback,
 			_badProxyDisableBox->lifetime());
 	}
+}
+
+void Application::wssProxyAuthRejectedError() {
+	const auto &proxy = settings().proxy();
+	if (!proxy.isEnabled()
+		|| proxy.selected().type != MTP::ProxyData::Type::WebSocket
+		|| _wssProxyAuthRejectedBox) {
+		return;
+	}
+	_wssProxyAuthRejectedBox = Ui::show(Ui::MakeInformBox(
+		tr::lng_proxy_wss_token_rejected(tr::now)));
 }
 
 void Application::startLocalStorage() {

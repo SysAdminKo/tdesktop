@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/version.h"
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
+#include "core/version.h"
 #include "storage/localstorage.h"
 #include "ui/painter.h"
 #include "ui/ui_utility.h"

@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/openssl_help.h"
 #include "base/random.h"
 #include "base/qthelp_url.h"
+#include "mtproto/mtproto_wss_mux_hub.h"
 
 namespace MTP {
 namespace details {
@@ -521,16 +522,33 @@ void TcpConnection::connectToServer(
 		_address = _proxy.host;
 		_port = _proxy.port;
 		_protocol = Protocol::Create(secret);
+	} else if (_proxy.type == ProxyData::Type::WebSocket) {
+		_address = address;
+		_port = port;
+		_protocol = Protocol::Create(protocolSecret);
 	} else {
 		_address = address;
 		_port = port;
 		_protocol = Protocol::Create(secret);
 	}
-	_socket = AbstractSocket::Create(
-		thread(),
-		secret,
-		ToNetworkProxy(_proxy),
-		protocolForFiles);
+	_socket = (_proxy.type == ProxyData::Type::WebSocket)
+		? [&] {
+			WssMuxHub::Instance().Configure(
+				_proxy,
+				_proxy.wssMuxTunnels);
+			WssMuxHub::Instance().EnsureStarted();
+			return WssMuxHub::Instance().AcquireStream(
+				thread(),
+				address,
+				port,
+				protocolForFiles);
+		}()
+		: AbstractSocket::Create(
+			thread(),
+			secret,
+			ToNetworkProxy(_proxy),
+			protocolForFiles,
+			_proxy);
 	_protocolDcId = protocolDcId;
 
 	const auto postfix = _socket->debugPostfix();
@@ -538,7 +556,9 @@ void TcpConnection::connectToServer(
 		.arg(_debugId.toInt())
 		.arg(
 			ProtocolDcDebugId(_protocolDcId),
-			(_proxy.type == ProxyData::Type::Mtproto) ? "mtproxy " : "",
+			(_proxy.type == ProxyData::Type::Mtproto) ? "mtproxy "
+			: (_proxy.type == ProxyData::Type::WebSocket) ? "wssmux "
+			: "",
 			_address)
 		.arg(_port)
 		.arg(postfix.isEmpty() ? _protocol->debugPostfix() : postfix);

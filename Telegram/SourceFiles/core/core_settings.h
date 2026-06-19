@@ -1031,6 +1031,10 @@ public:
 	}
 	void clearPref(std::string_view key);
 
+	void writePrefBytes(std::string_view key, const QByteArray &value);
+	[[nodiscard]] std::optional<QByteArray> readPrefBytes(
+		std::string_view key) const;
+
 	template <typename Type, typename Other = Type>
 	[[nodiscard]] Type readPref(
 			std::string_view key,
@@ -1052,7 +1056,7 @@ private:
 
 	void writePrefGeneric(std::string_view key, const QByteArray &value);
 	[[nodiscard]] std::optional<QByteArray> readPrefGeneric(
-		std::string_view key);
+		std::string_view key) const;
 
 	static constexpr auto kDefaultThirdColumnWidth = 0;
 	static constexpr auto kDefaultDialogsWidthRatio = 5. / 14;

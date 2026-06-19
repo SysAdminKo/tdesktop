@@ -56,6 +56,11 @@ private:
 	struct TestConnection {
 		ConnectionPointer data;
 		int priority = 0;
+		QString endpointIp;
+		int endpointPort = 0;
+		bytes::vector endpointSecret;
+		DcOptions::Variants::Protocol protocol
+			= DcOptions::Variants::Tcp;
 	};
 	struct SentContainer {
 		crl::time sent = 0;
@@ -144,6 +149,12 @@ private:
 		const QString &ip,
 		int port,
 		const bytes::vector &protocolSecret);
+	void storeWssEndpoint(const TestConnection &test);
+	void invalidateWssEndpointOnFailure(
+		const QString &ip,
+		int port,
+		const bytes::vector &secret,
+		DcOptions::Variants::Protocol protocol);
 
 	// if badTime received - search for ids in sessionData->haveSent and sessionData->wereAcked and sync time/salt, return true if found
 	bool requestsFixTimeSalt(const QVector<MTPlong> &ids, const OuterInfo &info);
@@ -204,6 +215,8 @@ private:
 	base::Timer _waitForConnectedTimer;
 	base::Timer _waitForReceivedTimer;
 	base::Timer _waitForBetterTimer;
+	base::Timer _wssDeferTimer;
+	crl::time _wssDeferStartedAt = 0;
 	crl::time _waitForReceived = 0;
 	crl::time _waitForConnected = 0;
 	crl::time _firstSentAt = -1;

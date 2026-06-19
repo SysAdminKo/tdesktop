@@ -80,6 +80,7 @@ private:
 	bool _checkIpWarningShown = false;
 	int _proxyRotationTimeout = kDefaultProxyRotationTimeout;
 	MTP::ProxyData::Settings _settings = MTP::ProxyData::Settings::System;
+
 	MTP::ProxyData _selected;
 	std::vector<MTP::ProxyData> _list;
 	std::vector<int> _proxyRotationPreferredIndices;

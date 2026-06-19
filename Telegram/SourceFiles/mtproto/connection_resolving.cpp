@@ -26,6 +26,10 @@ ResolvingConnection::ResolvingConnection(
 , _instance(instance)
 , _timeoutTimer([=] { handleError(kErrorCodeOther); }) {
 	setChild(std::move(child));
+	if (proxy.type == ProxyData::Type::WebSocket
+		&& _proxy.resolvedIPs.size() > 1) {
+		_proxy.resolvedIPs.resize(1);
+	}
 	if (proxy.resolvedExpireAt < crl::now()) {
 		const auto host = proxy.host;
 		connect(
@@ -112,6 +116,10 @@ void ResolvingConnection::domainResolved(
 			emitError(kErrorCodeOther);
 		}
 	}
+	if (_proxy.type == ProxyData::Type::WebSocket
+		&& _proxy.resolvedIPs.size() > 1) {
+		_proxy.resolvedIPs.resize(1);
+	}
 	if (_ipIndex < 0) {
 		refreshChild();
 	}
@@ -121,6 +129,8 @@ bool ResolvingConnection::refreshChild() {
 	if (!_child) {
 		return true;
 	} else if (++_ipIndex >= _proxy.resolvedIPs.size()) {
+		return false;
+	} else if (_proxy.type == ProxyData::Type::WebSocket && _ipIndex > 0) {
 		return false;
 	}
 	setChild(_child->clone(ToDirectIpProxy(_proxy, _ipIndex)));

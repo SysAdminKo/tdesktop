@@ -154,6 +154,12 @@ ProxyData::Status ProxyData::status() const {
 		return Status::Invalid;
 	} else if (type == Type::Mtproto) {
 		return MtprotoPasswordStatus(password);
+	} else if (type == Type::WebSocket) {
+		if (path != u"/ws/mux"_q) {
+			return Status::Invalid;
+		} else if (wssMuxTunnels < 1 || wssMuxTunnels > 9) {
+			return Status::Invalid;
+		}
 	}
 	return Status::Valid;
 }
@@ -166,7 +172,9 @@ bool ProxyData::tryCustomResolve() const {
 	static const auto RegExp = QRegularExpression(
 		QStringLiteral("^\\d+\\.\\d+\\.\\d+\\.\\d+$")
 	);
-	return (type == Type::Socks5 || type == Type::Mtproto)
+	return (type == Type::Socks5
+		|| type == Type::Mtproto
+		|| type == Type::WebSocket)
 		&& !qthelp::is_ipv6(host)
 		&& !RegExp.match(host).hasMatch();
 }
@@ -193,8 +201,11 @@ bool ProxyData::operator==(const ProxyData &other) const {
 	return (type == other.type)
 		&& (host == other.host)
 		&& (port == other.port)
-		&& (user == other.user)
-		&& (password == other.password);
+		&& ((type == Type::WebSocket) || (user == other.user))
+		&& (password == other.password)
+		&& (path == other.path)
+		&& (sniHost == other.sniHost)
+		&& (wssMuxTunnels == other.wssMuxTunnels);
 }
 
 bool ProxyData::operator!=(const ProxyData &other) const {
@@ -220,19 +231,19 @@ ProxyData ToDirectIpProxy(const ProxyData &proxy, int ipIndex) {
 		|| ipIndex >= proxy.resolvedIPs.size()) {
 		return proxy;
 	}
-	return {
-		proxy.type,
-		proxy.resolvedIPs[ipIndex],
-		proxy.port,
-		proxy.user,
-		proxy.password
-	};
+	auto result = proxy;
+	if (result.sniHost.isEmpty()) {
+		result.sniHost = result.host;
+	}
+	result.host = proxy.resolvedIPs[ipIndex];
+	return result;
 }
 
 QNetworkProxy ToNetworkProxy(const ProxyData &proxy) {
 	if (proxy.type == ProxyData::Type::None) {
 		return QNetworkProxy::DefaultProxy;
-	} else if (proxy.type == ProxyData::Type::Mtproto) {
+	} else if (proxy.type == ProxyData::Type::Mtproto
+		|| proxy.type == ProxyData::Type::WebSocket) {
 		return QNetworkProxy::NoProxy;
 	}
 	return QNetworkProxy(

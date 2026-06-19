@@ -51,7 +51,7 @@ constexpr auto kDragAreaEvents = {
 			return local.startsWith(prefix, Qt::CaseInsensitive)
 				&& (local.size() > prefix.size());
 		};
-		return (proxy(u"tg://proxy?"_q) || proxy(u"tg://socks?"_q))
+		return (proxy(u"tg://proxy?"_q) || proxy(u"tg://socks?"_q) || proxy(u"tg://wss?"_q))
 			? local
 			: QString();
 	};

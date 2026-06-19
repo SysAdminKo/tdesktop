@@ -1285,6 +1285,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_proxy_edit_share_list_button" = "Share Proxy List";
 "lng_proxy_edit_share_list_toast" = "Proxy List copied to clipboard.";
 "lng_proxy_address_label" = "Socket address";
+"lng_proxy_type_websocket" = "WSS";
+"lng_proxy_path_label" = "Path";
+"lng_proxy_path_ph" = "/ws/mux";
+"lng_proxy_wss_tunnels_label" = "Mux tunnels";
+"lng_proxy_wss_tunnels_ph" = "1–9, default 6";
+"lng_proxy_wss_token_label" = "Access token";
+"lng_proxy_wss_token_ph" = "Optional";
+"lng_proxy_wss_token_rejected" = "The proxy rejected your access token. Check the token in proxy settings and try again.";
 "lng_proxy_credentials_optional" = "Credentials (optional)";
 "lng_proxy_credentials" = "Credentials";
 "lng_proxy_description" = "Your saved proxy list will be here.";

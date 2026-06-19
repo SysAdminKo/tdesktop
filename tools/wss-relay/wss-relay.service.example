@@ -1,0 +1,26 @@
+[Unit]
+Description=WSS mux relay for Telegram Desktop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nobody
+Group=nobody
+ExecStart=/usr/local/bin/wss-relay \
+	-listen 127.0.0.1:8283 \
+	-mux-path /ws/mux \
+	-max-streams 256 \
+	-max-tunnels-per-ip 12 \
+	-telegram-only=true
+	# -auth-file /etc/wss-relay/tokens
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/tmp
+
+[Install]
+WantedBy=multi-user.target

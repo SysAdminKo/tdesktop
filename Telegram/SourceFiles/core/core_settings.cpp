@@ -1207,6 +1207,17 @@ void Settings::clearPref(std::string_view key) {
 	_saveDelayed.fire({});
 }
 
+void Settings::writePrefBytes(
+		std::string_view key,
+		const QByteArray &value) {
+	writePrefGeneric(key, value);
+}
+
+std::optional<QByteArray> Settings::readPrefBytes(
+		std::string_view key) const {
+	return readPrefGeneric(key);
+}
+
 void Settings::writePrefGeneric(
 		std::string_view key,
 		const QByteArray &value) {
@@ -1222,7 +1233,8 @@ void Settings::writePrefGeneric(
 	_saveDelayed.fire({});
 }
 
-std::optional<QByteArray> Settings::readPrefGeneric(std::string_view key) {
+std::optional<QByteArray> Settings::readPrefGeneric(
+		std::string_view key) const {
 	const auto i = _prefs.find(QByteArray(key.data(), key.size()));
 	return (i != end(_prefs)) ? i->second : std::optional<QByteArray>();
 }

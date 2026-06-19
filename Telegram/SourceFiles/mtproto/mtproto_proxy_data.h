@@ -22,6 +22,7 @@ struct ProxyData {
 		Socks5,
 		Http,
 		Mtproto,
+		WebSocket,
 	};
 	enum class Status {
 		Valid,
@@ -34,6 +35,13 @@ struct ProxyData {
 	QString host;
 	uint32 port = 0;
 	QString user, password;
+	QString path;
+	QString sniHost;
+	int wssMuxTunnels = 6;
+
+	[[nodiscard]] bool wssMuxEnabled() const {
+		return type == Type::WebSocket;
+	}
 
 	std::vector<QString> resolvedIPs;
 	crl::time resolvedExpireAt = 0;
@@ -50,7 +58,6 @@ struct ProxyData {
 	[[nodiscard]] static bool ValidMtprotoPassword(const QString &password);
 	[[nodiscard]] static Status MtprotoPasswordStatus(
 		const QString &password);
-
 };
 
 [[nodiscard]] ProxyData ToDirectIpProxy(

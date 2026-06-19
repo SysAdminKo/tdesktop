@@ -14,6 +14,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_config.h"
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/config_loader.h"
+#include "mtproto/mtproto_wss_connect_gate.h"
+#include "mtproto/mtproto_wss_mux_hub.h"
 #include "mtproto/sender.h"
 #include "storage/localstorage.h"
 #include "calls/calls_instance.h"
@@ -435,6 +437,12 @@ void Instance::Private::applyDomainIps(
 	auto selected = _proxySettings.selected();
 	if (applyToProxy(selected) && _proxySettings.isEnabled()) {
 		_proxySettings.setSelected(selected);
+		if (selected.type == ProxyData::Type::WebSocket
+			&& selected.resolvedIPs.size() > 1) {
+			WssMuxHub::Instance().ApplyResolvedIps(
+				host,
+				selected.resolvedIPs);
+		}
 		for (const auto &[shiftedDcId, session] : _sessions) {
 			session->refreshOptions();
 		}
@@ -1831,6 +1839,9 @@ void Instance::Private::prepareToDestroy() {
 		session->kill();
 	}
 	_mainSession = nullptr;
+
+	WssMuxHub::Instance().Shutdown();
+	WssConnectGate::Clear();
 
 	auto threads = std::vector<std::unique_ptr<QThread>>();
 	threads.push_back(base::take(_mainSessionThread));

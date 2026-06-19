@@ -16,7 +16,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/session.h"
 #include "mtproto/mtproto_response.h"
 #include "mtproto/mtproto_dc_options.h"
-#include "mtproto/connection_abstract.h"
+#include "mtproto/mtproto_wss_endpoint_cache.h"
+#include "mtproto/mtproto_wss_connect_gate.h"
+#include "mtproto/facade.h"
 #include "base/random.h"
 #include "base/qthelp_url.h"
 #include "base/openssl_help.h"
@@ -146,6 +148,27 @@ base::options::toggle OptionPreferIPv6({
 	.description = "Prefer IPv6 if it is available. Require \"Try connecting through IPv6\" to be enabled",
 });
 
+constexpr auto kWssDeferMainConnectInterval = crl::time(100);
+constexpr auto kWssDeferMaxWait = crl::time(15000);
+
+[[nodiscard]] bool ShouldDeferWssUntilMainConnected(
+		not_null<Instance*> instance,
+		ShiftedDcId shiftedDcId,
+		const ProxyData &proxy) {
+	if (proxy.type != ProxyData::Type::WebSocket) {
+		return false;
+	}
+	const auto isPrimary = (BareDcId(shiftedDcId) == instance->mainDcId())
+		&& (GetDcIdShift(shiftedDcId) == 0);
+	if (isPrimary) {
+		return false;
+	}
+	if (instance->dcOptions().dcType(shiftedDcId) == DcType::MediaCluster) {
+		return false;
+	}
+	return instance->dcstate(0) != ConnectedState;
+}
+
 } // namespace
 
 const char kOptionPreferIPv6[] = "prefer-ipv6";
@@ -166,6 +189,7 @@ SessionPrivate::SessionPrivate(
 , _waitForConnectedTimer(thread, [=] { waitConnectedFailed(); })
 , _waitForReceivedTimer(thread, [=] { waitReceivedFailed(); })
 , _waitForBetterTimer(thread, [=] { waitBetterFailed(); })
+, _wssDeferTimer(thread, [=] { connectToServer(); })
 , _waitForReceived(kMinReceiveTimeout)
 , _waitForConnected(kMinConnectedTimeout)
 , _pingSender(thread, [=] { sendPingByTimer(); })
@@ -207,7 +231,11 @@ void SessionPrivate::appendTestConnection(
 			thread(),
 			protocolSecret,
 			_options->proxy),
-		priority
+		priority,
+		ip,
+		port,
+		protocolSecret,
+		protocol,
 	});
 	const auto weak = _testConnections.back().data.get();
 	connect(weak, &AbstractConnection::error, [=](int errorCode) {
@@ -1022,6 +1050,22 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 
 	_options = std::make_unique<SessionOptions>(_sessionData->options());
 
+	if (ShouldDeferWssUntilMainConnected(
+			_instance,
+			_shiftedDcId,
+			_options->proxy)) {
+		const auto now = crl::now();
+		if (!_wssDeferStartedAt) {
+			_wssDeferStartedAt = now;
+		}
+		if (now - _wssDeferStartedAt < kWssDeferMaxWait) {
+			_wssDeferTimer.callOnce(kWssDeferMainConnectInterval);
+			return;
+		}
+	}
+	_wssDeferStartedAt = 0;
+	_wssDeferTimer.cancel();
+
 	const auto bareDc = BareDcId(_shiftedDcId);
 
 	_currentDcType = tryAcquireKeyCreation();
@@ -1045,6 +1089,38 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 		const auto useIPv6 = special ? false : _options->useIPv6;
 		const auto useTcp = special ? true : _options->useTcp;
 		const auto useHttp = special ? false : _options->useHttp;
+		const auto limitWebSocketTests = (_options->proxy.type
+			== ProxyData::Type::WebSocket);
+		const auto webSocketTestLimit = 1;
+		const auto cachedEndpoint = limitWebSocketTests
+			? WssEndpointCache::lookup(
+				_shiftedDcId,
+				_currentDcType,
+				_options->proxy)
+			: std::nullopt;
+		auto webSocketTestsAdded = 0;
+		const auto matchesCached = [&](
+				const QString &ip,
+				int port,
+				const bytes::vector &secret,
+				DcOptions::Variants::Protocol protocol) {
+			if (!cachedEndpoint) {
+				return false;
+			}
+			return (ip == cachedEndpoint->ip)
+				&& (port == cachedEndpoint->port)
+				&& (protocol == cachedEndpoint->protocol)
+				&& (secret == cachedEndpoint->secret);
+		};
+		if (cachedEndpoint) {
+			appendTestConnection(
+				cachedEndpoint->protocol,
+				cachedEndpoint->ip,
+				cachedEndpoint->port,
+				cachedEndpoint->secret);
+			++webSocketTestsAdded;
+		}
+		const auto skipVariantsLoop = limitWebSocketTests && cachedEndpoint;
 		const auto skipAddress = !useIPv4
 			? Variants::IPv4
 			: !useIPv6
@@ -1055,6 +1131,7 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 			: !useHttp
 			? Variants::Http
 			: Variants::ProtocolCount;
+		if (!skipVariantsLoop) {
 		for (auto address = 0; address != Variants::AddressTypeCount; ++address) {
 			if (address == skipAddress) {
 				continue;
@@ -1062,15 +1139,43 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 			for (auto protocol = 0; protocol != Variants::ProtocolCount; ++protocol) {
 				if (protocol == skipProtocol) {
 					continue;
+				} else if (limitWebSocketTests
+					&& protocol != Variants::Tcp) {
+					continue;
 				}
 				for (const auto &endpoint : variants.data[address][protocol]) {
+					if (limitWebSocketTests) {
+						if (webSocketTestsAdded >= webSocketTestLimit) {
+							break;
+						}
+					}
+					const auto ip = QString::fromStdString(endpoint.ip);
+					if (matchesCached(
+							ip,
+							endpoint.port,
+							endpoint.secret,
+							static_cast<Variants::Protocol>(protocol))) {
+						continue;
+					}
+					if (limitWebSocketTests) {
+						++webSocketTestsAdded;
+					}
 					appendTestConnection(
 						static_cast<Variants::Protocol>(protocol),
-						QString::fromStdString(endpoint.ip),
+						ip,
 						endpoint.port,
 						endpoint.secret);
 				}
+				if (limitWebSocketTests
+					&& webSocketTestsAdded >= webSocketTestLimit) {
+					break;
+				}
 			}
+			if (limitWebSocketTests
+				&& webSocketTestsAdded >= webSocketTestLimit) {
+				break;
+			}
+		}
 		}
 	}
 	if (_testConnections.empty()) {
@@ -2330,7 +2435,9 @@ void SessionPrivate::onConnected(
 	const auto j = ranges::find_if(
 		_testConnections,
 		[&](const TestConnection &test) { return test.priority > my; });
-	if (j != end(_testConnections)) {
+	const auto waitForBetter = (j != end(_testConnections))
+		&& (_options->proxy.type != ProxyData::Type::WebSocket);
+	if (waitForBetter) {
 		DEBUG_LOG(("MTP Info: connection %1 succeed, waiting for %2.").arg(
 			i->data->tag(),
 			j->data->tag()));
@@ -2338,6 +2445,7 @@ void SessionPrivate::onConnected(
 	} else {
 		DEBUG_LOG(("MTP Info: connection through IPv4 succeed."));
 		_waitForBetterTimer.cancel();
+		storeWssEndpoint(*i);
 		_connection = std::move(i->data);
 		_testConnections.clear();
 		checkAuthKey();
@@ -2346,9 +2454,26 @@ void SessionPrivate::onConnected(
 
 void SessionPrivate::onDisconnected(
 		not_null<AbstractConnection*> connection) {
+	const auto i = ranges::find(
+		_testConnections,
+		connection.get(),
+		[](const TestConnection &test) { return test.data.get(); });
+	const auto failedIp = (i != end(_testConnections)) ? i->endpointIp : QString();
+	const auto failedPort = (i != end(_testConnections)) ? i->endpointPort : 0;
+	const auto failedSecret = (i != end(_testConnections))
+		? i->endpointSecret
+		: bytes::vector();
+	const auto failedProtocol = (i != end(_testConnections))
+		? i->protocol
+		: DcOptions::Variants::Tcp;
 	removeTestConnection(connection);
 
 	if (_testConnections.empty()) {
+		invalidateWssEndpointOnFailure(
+			failedIp,
+			failedPort,
+			failedSecret,
+			failedProtocol);
 		destroyAllConnections();
 		restart();
 	} else {
@@ -2374,10 +2499,52 @@ void SessionPrivate::confirmBestConnection() {
 	DEBUG_LOG(("MTP Info: can't connect through better, using %1."
 		).arg(i->data->tag()));
 
+	storeWssEndpoint(*i);
 	_connection = std::move(i->data);
 	_testConnections.clear();
 
 	checkAuthKey();
+}
+
+void SessionPrivate::invalidateWssEndpointOnFailure(
+		const QString &ip,
+		int port,
+		const bytes::vector &secret,
+		DcOptions::Variants::Protocol protocol) {
+	if (_options->proxy.type != ProxyData::Type::WebSocket) {
+		return;
+	}
+	const auto cached = WssEndpointCache::lookup(
+		_shiftedDcId,
+		_currentDcType,
+		_options->proxy);
+	if (!cached
+		|| ip != cached->ip
+		|| port != cached->port
+		|| protocol != cached->protocol
+		|| secret != cached->secret) {
+		return;
+	}
+	WssEndpointCache::clear(
+		_shiftedDcId,
+		_currentDcType,
+		_options->proxy);
+}
+
+void SessionPrivate::storeWssEndpoint(const TestConnection &test) {
+	if (_options->proxy.type != ProxyData::Type::WebSocket) {
+		return;
+	} else if (test.endpointIp.isEmpty() || !test.endpointPort) {
+		return;
+	}
+	WssEndpointCache::store(
+		_shiftedDcId,
+		_currentDcType,
+		_options->proxy,
+		test.endpointIp,
+		test.endpointPort,
+		test.endpointSecret,
+		test.protocol);
 }
 
 void SessionPrivate::removeTestConnection(

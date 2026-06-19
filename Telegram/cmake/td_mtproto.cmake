@@ -35,6 +35,10 @@ PRIVATE
     mtproto/details/mtproto_tcp_socket.h
     mtproto/details/mtproto_tls_socket.cpp
     mtproto/details/mtproto_tls_socket.h
+    mtproto/details/mtproto_websocket_framing.cpp
+    mtproto/details/mtproto_websocket_framing.h
+    mtproto/details/mtproto_websocket_socket.cpp
+    mtproto/details/mtproto_websocket_socket.h
     mtproto/mtproto_auth_key.cpp
     mtproto/mtproto_auth_key.h
     mtproto/mtproto_concurrent_sender.cpp
@@ -48,6 +52,18 @@ PRIVATE
     mtproto/mtproto_pch.h
     mtproto/mtproto_proxy_data.cpp
     mtproto/mtproto_proxy_data.h
+    mtproto/mtproto_wss_connect_gate.cpp
+    mtproto/mtproto_wss_connect_gate.h
+    mtproto/mtproto_wss_mux_hub.cpp
+    mtproto/mtproto_wss_mux_hub.h
+    mtproto/mtproto_wss_mux_stream_socket.cpp
+    mtproto/mtproto_wss_mux_stream_socket.h
+    mtproto/mtproto_wss_mux_tunnel.cpp
+    mtproto/mtproto_wss_mux_tunnel.h
+    mtproto/details/mtproto_wss_mux_framing.cpp
+    mtproto/details/mtproto_wss_mux_framing.h
+    mtproto/mtproto_wss_endpoint_cache.cpp
+    mtproto/mtproto_wss_endpoint_cache.h
     mtproto/mtproto_response.cpp
     mtproto/mtproto_response.h
 )

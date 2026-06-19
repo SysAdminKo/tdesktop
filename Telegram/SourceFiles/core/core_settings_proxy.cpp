@@ -52,9 +52,26 @@ namespace {
 		case 1: return MTP::ProxyData::Type::Socks5;
 		case 2: return MTP::ProxyData::Type::Http;
 		case 3: return MTP::ProxyData::Type::Mtproto;
+		case 4: return MTP::ProxyData::Type::WebSocket;
 		}
 		Unexpected("Bad type in DeserializeProxyData");
 	}();
+	if (proxy.type == MTP::ProxyData::Type::WebSocket) {
+		if (!stream.atEnd()) {
+			stream >> proxy.path;
+		}
+		if (!stream.atEnd()) {
+			stream >> proxy.sniHost;
+		}
+		if (!stream.atEnd()) {
+			stream >> proxy.wssMuxTunnels;
+		}
+		if (proxy.wssMuxTunnels <= 0) {
+			proxy.wssMuxTunnels = 6;
+		}
+		proxy.path = u"/ws/mux"_q;
+		proxy.user = QString();
+	}
 	return proxy;
 }
 
@@ -74,6 +91,7 @@ namespace {
 			case MTP::ProxyData::Type::Socks5: return 1;
 			case MTP::ProxyData::Type::Http: return 2;
 			case MTP::ProxyData::Type::Mtproto: return 3;
+			case MTP::ProxyData::Type::WebSocket: return 4;
 			}
 			Unexpected("Bad type in SerializeProxyData");
 		}();
@@ -84,8 +102,13 @@ namespace {
 			<< qint32(proxyType)
 			<< proxy.host
 			<< qint32(proxy.port)
-			<< proxy.user
+			<< (proxy.type == MTP::ProxyData::Type::WebSocket
+				? QString()
+				: proxy.user)
 			<< proxy.password;
+		if (proxy.type == MTP::ProxyData::Type::WebSocket) {
+			stream << proxy.path << proxy.sniHost << qint32(proxy.wssMuxTunnels);
+		}
 	}
 	return result;
 }
@@ -226,7 +249,6 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
 	_selected = DeserializeProxyData(selectedProxy);
 	_list = std::move(list);
 	setProxyRotationPreferredIndices(std::move(preferredIndices));
-
 	return true;
 }
 

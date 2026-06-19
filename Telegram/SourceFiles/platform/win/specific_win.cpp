@@ -23,6 +23,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwindow.h"
 #include "mainwidget.h"
 #include "history/history_location_manager.h"
+#include "core/version.h"
 #include "storage/localstorage.h"
 #include "core/application.h"
 #include "window/window_controller.h"
