@@ -26,6 +26,23 @@ func TestRelayStatsSnapshot(t *testing.T) {
 	}
 }
 
+func TestRelayStatsClosedGraceful(t *testing.T) {
+	stats := newRelayStats()
+	stats.muxStreamOpened("203.0.113.1", "149.154.167.91:443")
+	stats.muxStreamClosed("203.0.113.1", "149.154.167.91:443")
+	stats.muxStreamOpened("203.0.113.1", "149.154.167.91:443")
+	stats.incMuxStreamIdle()
+	stats.muxStreamClosed("203.0.113.1", "149.154.167.91:443")
+
+	snapshot := stats.snapshot()
+	if snapshot.MuxStreamsClosed != 2 || snapshot.MuxStreamIdle != 1 {
+		t.Fatalf("unexpected closed=%d idle=%d", snapshot.MuxStreamsClosed, snapshot.MuxStreamIdle)
+	}
+	if snapshot.MuxStreamsClosedGraceful != 1 {
+		t.Fatalf("unexpected graceful=%d", snapshot.MuxStreamsClosedGraceful)
+	}
+}
+
 func TestStatsPathEnabled(t *testing.T) {
 	if !statsPathEnabled("/stats") {
 		t.Fatal("expected /stats to be enabled")

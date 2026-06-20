@@ -29,12 +29,24 @@ MuxStreamSocket::~MuxStreamSocket() {
 	_openTimer.stop();
 	const auto streamId = _streamId;
 	_streamId = 0;
-	if (streamId) {
-		_hub->UnregisterStream(streamId);
-		if (_state == State::Connected || _state == State::Opening) {
-			_hub->RequestClose(streamId);
-		}
+	if (!streamId) {
+		return;
 	}
+	closeServerStream(streamId);
+	_hub->UnregisterStream(streamId);
+}
+
+void MuxStreamSocket::closeServerStream() {
+	closeServerStream(_streamId);
+}
+
+void MuxStreamSocket::closeServerStream(uint32 streamId) {
+	if (!streamId || (!_openSent && !_openOnServer)) {
+		return;
+	}
+	_hub->RequestClose(streamId);
+	_openSent = false;
+	_openOnServer = false;
 }
 
 void MuxStreamSocket::setStreamId(uint32 streamId) {
@@ -55,6 +67,8 @@ void MuxStreamSocket::connectToHost(const QString &address, int port) {
 	_host = address;
 	_port = port;
 	_state = State::Opening;
+	_openSent = true;
+	_openOnServer = false;
 	_readBuffer.clear();
 	_readOffset = 0;
 	_openTimer.start(kOpenTimeout);
@@ -67,10 +81,12 @@ void MuxStreamSocket::handleOpenOk() {
 	}
 	_openTimer.stop();
 	_state = State::Connected;
+	_openOnServer = true;
 	_connected.fire({});
 }
 
 void MuxStreamSocket::handleOpenFail() {
+	_openOnServer = false;
 	failOpen();
 }
 
@@ -105,6 +121,8 @@ void MuxStreamSocket::handleRemoteClose() {
 	if (!_streamId || _state == State::NotConnected || _state == State::Error) {
 		return;
 	}
+	_openOnServer = false;
+	_openSent = false;
 	_state = State::NotConnected;
 	_disconnected.fire({});
 }
@@ -113,6 +131,7 @@ void MuxStreamSocket::handleTunnelDown() {
 	if (!_streamId || _state == State::NotConnected || _state == State::Error) {
 		return;
 	}
+	closeServerStream();
 	_state = State::NotConnected;
 	_disconnected.fire({});
 }
@@ -121,16 +140,14 @@ void MuxStreamSocket::failOpen() {
 	if (_state != State::Opening) {
 		return;
 	}
+	closeServerStream();
 	_openTimer.stop();
 	_state = State::Error;
 	_error.fire({});
 }
 
 void MuxStreamSocket::sendClose() {
-	if (!_streamId) {
-		return;
-	}
-	_hub->RequestClose(_streamId);
+	closeServerStream();
 }
 
 bool MuxStreamSocket::isGoodStartNonce(bytes::const_span nonce) {

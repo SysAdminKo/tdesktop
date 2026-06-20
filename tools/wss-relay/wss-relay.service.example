@@ -12,6 +12,9 @@ ExecStart=/usr/local/bin/wss-relay \
 	-mux-path /ws/mux \
 	-max-streams 256 \
 	-max-tunnels-per-ip 12 \
+	-stream-idle-timeout 10m \
+	-ws-ping-interval 30s \
+	-ws-read-timeout 90s \
 	-telegram-only=true
 	# -auth-file /etc/wss-relay/tokens
 Restart=on-failure

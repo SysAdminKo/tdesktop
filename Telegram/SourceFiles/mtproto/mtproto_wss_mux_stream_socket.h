@@ -48,10 +48,14 @@ private:
 
 	void failOpen();
 	void sendClose();
+	void closeServerStream();
+	void closeServerStream(uint32 streamId);
 
 	const not_null<WssMuxHub*> _hub;
 	uint32 _streamId = 0;
 	State _state = State::NotConnected;
+	bool _openSent = false;
+	bool _openOnServer = false;
 	QString _host;
 	int _port = 0;
 	bytes::vector _readBuffer;

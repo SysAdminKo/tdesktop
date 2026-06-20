@@ -27,6 +27,7 @@ type relayStats struct {
 	tunnelLimitRejected atomic.Int64
 	muxOpenBad          atomic.Int64
 	muxOpenLimit        atomic.Int64
+	muxStreamIdle       atomic.Int64
 }
 
 type clientStats struct {
@@ -57,6 +58,7 @@ type statsSnapshot struct {
 	MuxTunnelsTotal  int64              `json:"mux_tunnels_total"`
 	MuxStreamsOpened int64              `json:"mux_streams_opened"`
 	MuxStreamsClosed int64              `json:"mux_streams_closed"`
+	MuxStreamsClosedGraceful int64      `json:"mux_streams_closed_graceful"`
 	BytesToUpstream     int64              `json:"bytes_to_upstream"`
 	BytesFromUpstream   int64              `json:"bytes_from_upstream"`
 	UpstreamDialErrors  int64              `json:"upstream_dial_errors"`
@@ -64,6 +66,7 @@ type statsSnapshot struct {
 	TunnelLimitRejected int64              `json:"tunnel_limit_rejected"`
 	MuxOpenBad          int64              `json:"mux_open_bad"`
 	MuxOpenLimit        int64              `json:"mux_open_limit"`
+	MuxStreamIdle       int64              `json:"mux_stream_idle_expired"`
 	Clients             []clientSnapshot   `json:"clients"`
 	Upstreams           []upstreamSnapshot `json:"upstreams"`
 }
@@ -192,6 +195,10 @@ func (s *relayStats) incMuxOpenLimit() {
 	s.muxOpenLimit.Add(1)
 }
 
+func (s *relayStats) incMuxStreamIdle() {
+	s.muxStreamIdle.Add(1)
+}
+
 func (s *relayStats) snapshot() statsSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -211,8 +218,14 @@ func (s *relayStats) snapshot() statsSnapshot {
 		TunnelLimitRejected: s.tunnelLimitRejected.Load(),
 		MuxOpenBad:          s.muxOpenBad.Load(),
 		MuxOpenLimit:        s.muxOpenLimit.Load(),
+		MuxStreamIdle:       s.muxStreamIdle.Load(),
 		Clients:             make([]clientSnapshot, 0, len(s.clients)),
 		Upstreams:           make([]upstreamSnapshot, 0, len(s.upstreams)),
+	}
+	closed := result.MuxStreamsClosed
+	idle := result.MuxStreamIdle
+	if closed >= idle {
+		result.MuxStreamsClosedGraceful = closed - idle
 	}
 	for ip, client := range s.clients {
 		result.Clients = append(result.Clients, clientSnapshot{

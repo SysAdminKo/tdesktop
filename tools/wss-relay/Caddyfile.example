@@ -1,14 +1,15 @@
 wss.willdomarket.com {
 
-    reverse_proxy /ws/mux 127.0.0.1:8283 {
-
-        header_up Connection {>Connection}
-
-        header_up Upgrade {>Upgrade}
+    reverse_proxy /ws/mux* 127.0.0.1:8283 {
 
         header_up X-Real-IP {remote_host}
 
         header_up X-Forwarded-For {remote_host}
+
+        transport http {
+            read_timeout 2m
+            write_timeout 2m
+        }
 
     }
 

@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -31,20 +33,40 @@ const (
 )
 
 type muxStream struct {
-	id     uint32
-	tcp    net.Conn
-	done   chan struct{}
-	target string
+	id           uint32
+	tcp          net.Conn
+	done         chan struct{}
+	target       string
+	lastActivity atomic.Int64
+}
+
+type muxConfig struct {
+	maxStreams        int
+	streamIdleTimeout time.Duration
+	wsPingInterval    time.Duration
+	wsReadTimeout     time.Duration
 }
 
 type muxSession struct {
-	conn       *websocket.Conn
-	streams    map[uint32]*muxStream
-	writeMu    sync.Mutex
-	maxStreams int
-	clientIP   string
-	closed     bool
-	mu         sync.Mutex
+	conn              *websocket.Conn
+	streams           map[uint32]*muxStream
+	writeMu           sync.Mutex
+	config            muxConfig
+	clientIP          string
+	closed            bool
+	mu                sync.Mutex
+}
+
+func (st *muxStream) touchActivity() {
+	st.lastActivity.Store(time.Now().UnixNano())
+}
+
+func (st *muxStream) idleSince(idleTimeout time.Duration) bool {
+	if idleTimeout <= 0 {
+		return false
+	}
+	last := time.Unix(0, st.lastActivity.Load())
+	return time.Since(last) >= idleTimeout
 }
 
 var muxWSUpgrader = websocket.Upgrader{
@@ -118,7 +140,11 @@ func (s *muxSession) removeStream(id uint32) {
 		return
 	}
 	target := stream.target
-	close(stream.done)
+	select {
+	case <-stream.done:
+	default:
+		close(stream.done)
+	}
 	_ = stream.tcp.Close()
 	relayStatistics.muxStreamClosed(s.clientIP, target)
 }
@@ -148,7 +174,7 @@ func (s *muxSession) handleOpen(streamID uint32, payload []byte) {
 		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailBad})
 		return
 	}
-	if len(s.streams) >= s.maxStreams {
+	if len(s.streams) >= s.config.maxStreams {
 		s.mu.Unlock()
 		relayStatistics.incMuxOpenLimit()
 		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailLimit})
@@ -174,6 +200,7 @@ func (s *muxSession) handleOpen(streamID uint32, payload []byte) {
 		done:   make(chan struct{}),
 		target: target,
 	}
+	stream.touchActivity()
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -206,12 +233,80 @@ func (s *muxSession) pumpUpstream(stream *muxStream) {
 			_ = s.writeFrame(muxTypeClose, stream.id, nil)
 			return
 		}
+		stream.touchActivity()
 		if err := s.writeFrame(muxTypeData, stream.id, buffer[:n]); err != nil {
 			s.removeStream(stream.id)
 			return
 		}
 		relayStatistics.addBytesFromUpstream(s.clientIP, n)
 	}
+}
+
+func (s *muxSession) expireIdleStream(id uint32) {
+	log.Printf("mux stream idle timeout id=%d client=%s", id, s.clientIP)
+	relayStatistics.incMuxStreamIdle()
+	_ = s.writeFrame(muxTypeClose, id, nil)
+	s.removeStream(id)
+}
+
+func (s *muxSession) runIdleSweeper(stop <-chan struct{}) {
+	idle := s.config.streamIdleTimeout
+	if idle <= 0 {
+		return
+	}
+	tick := idle / 4
+	if tick < time.Second {
+		tick = time.Second
+	}
+	ticker := time.NewTicker(tick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			s.sweepIdleStreams(idle)
+		}
+	}
+}
+
+func (s *muxSession) sweepIdleStreams(idleTimeout time.Duration) {
+	var stale []uint32
+	s.mu.Lock()
+	for id, stream := range s.streams {
+		if stream.idleSince(idleTimeout) {
+			stale = append(stale, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, id := range stale {
+		s.expireIdleStream(id)
+	}
+}
+
+func (s *muxSession) runWSPing(interval time.Duration, stop <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			s.writeMu.Lock()
+			err := s.conn.WriteMessage(websocket.PingMessage, nil)
+			s.writeMu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (s *muxSession) refreshWSReadDeadline() {
+	if s.config.wsReadTimeout <= 0 {
+		return
+	}
+	_ = s.conn.SetReadDeadline(time.Now().Add(s.config.wsReadTimeout))
 }
 
 func (s *muxSession) handleData(streamID uint32, payload []byte) {
@@ -222,6 +317,7 @@ func (s *muxSession) handleData(streamID uint32, payload []byte) {
 		_ = s.writeFrame(muxTypeClose, streamID, []byte{1})
 		return
 	}
+	stream.touchActivity()
 	if _, err := stream.tcp.Write(payload); err != nil {
 		s.removeStream(streamID)
 		return
@@ -235,7 +331,33 @@ func (s *muxSession) handleClose(streamID uint32) {
 }
 
 func (s *muxSession) readLoop() {
-	defer s.closeAll()
+	pingStop := make(chan struct{})
+	defer close(pingStop)
+	if s.config.wsReadTimeout > 0 {
+		s.refreshWSReadDeadline()
+		s.conn.SetPongHandler(func(string) error {
+			return s.conn.SetReadDeadline(time.Now().Add(s.config.wsReadTimeout))
+		})
+	}
+	if s.config.wsPingInterval > 0 {
+		go s.runWSPing(s.config.wsPingInterval, pingStop)
+	}
+	if s.config.streamIdleTimeout > 0 {
+		go s.runIdleSweeper(pingStop)
+	}
+	defer func() {
+		s.mu.Lock()
+		active := len(s.streams)
+		s.mu.Unlock()
+		if active > 0 {
+			log.Printf(
+				"mux tunnel ending with %d active streams client=%s",
+				active,
+				s.clientIP,
+			)
+		}
+		s.closeAll()
+	}()
 	defer s.conn.Close()
 	for {
 		messageType, data, err := s.conn.ReadMessage()
@@ -243,8 +365,14 @@ func (s *muxSession) readLoop() {
 			log.Printf("mux tunnel end: %v", err)
 			return
 		}
+		s.refreshWSReadDeadline()
 		if messageType == websocket.PingMessage {
-			_ = s.conn.WriteMessage(websocket.PongMessage, data)
+			s.writeMu.Lock()
+			err := s.conn.WriteMessage(websocket.PongMessage, data)
+			s.writeMu.Unlock()
+			if err != nil {
+				return
+			}
 			continue
 		}
 		if messageType == websocket.CloseMessage {
@@ -277,7 +405,7 @@ func (s *muxSession) readLoop() {
 func handleMux(
 	w http.ResponseWriter,
 	r *http.Request,
-	maxStreams int,
+	config muxConfig,
 	limiter *muxTunnelLimiter,
 	auth *tokenAuth,
 ) {
@@ -313,10 +441,10 @@ func handleMux(
 	}
 	log.Printf("mux tunnel from %s client=%s auth=%s", r.RemoteAddr, clientIP, authLabel)
 	session := &muxSession{
-		conn:       conn,
-		streams:    make(map[uint32]*muxStream),
-		maxStreams: maxStreams,
-		clientIP:   clientIP,
+		conn:     conn,
+		streams:  make(map[uint32]*muxStream),
+		config:   config,
+		clientIP: clientIP,
 	}
 	session.readLoop()
 }

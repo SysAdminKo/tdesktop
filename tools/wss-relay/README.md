@@ -43,7 +43,12 @@ Relay flags:
 
 - `-max-tunnels-per-ip` — max concurrent mux WebSocket tunnels (`/ws/mux`) per client IP. Default `12` (about `tunnels × 2` for reconnect overlap). `0` disables the limit.
 - `-max-streams` — max MTProto streams inside one mux tunnel. Default `256`.
+- `-stream-idle-timeout` — close mux streams with no traffic for this long. Default `10m`. `0` disables.
+- `-ws-ping-interval` — WebSocket ping interval per tunnel. Default `30s`. `0` disables.
+- `-ws-read-timeout` — WebSocket read deadline, extended on traffic or pong. Default `90s`. `0` disables.
 - `-telegram-only` — allow upstream TCP only to Telegram DC subnets from [cidr.txt](https://core.telegram.org/resources/cidr.txt). Default `true`. Set `false` only for local testing.
+
+On the edge proxy, keep `read_timeout` / `write_timeout` near `2m` (see `Caddyfile.example`) so dead client connections do not keep relay tunnels open for hours.
 
 Upstream targets are checked before dial (including DNS for hostnames) and again on the connected peer address.
 

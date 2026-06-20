@@ -9,6 +9,7 @@
 #include "crl/crl.h"
 
 #include <QtCore/QEventLoop>
+#include <QtCore/QMetaObject>
 #include <QtCore/QMutex>
 #include <QtCore/QMutexLocker>
 #include <QtCore/QPointer>
@@ -128,6 +129,9 @@ struct WssMuxHub::Private : public QObject {
 	bool ipUpdateScheduled = false;
 
 	void resetTunnels() {
+		for (auto i = 0; i != int(tunnels.size()); ++i) {
+			failStreamsOnTunnel(i);
+		}
 		for (auto &tunnel : tunnels) {
 			if (tunnel) {
 				tunnel->prepareForDestroy();
@@ -152,6 +156,9 @@ struct WssMuxHub::Private : public QObject {
 		InvokeQueued(this, [=] {
 			if (!weak) {
 				return;
+			}
+			for (auto i = 0; i != int(weak->tunnels.size()); ++i) {
+				weak->failStreamsOnTunnel(i);
 			}
 			for (auto &tunnel : weak->tunnels) {
 				if (tunnel) {
@@ -333,6 +340,30 @@ struct WssMuxHub::Private : public QObject {
 		tunnels[index]->connectTunnel();
 	}
 
+	void requestCloseStream(uint32 streamId) {
+		if (shuttingDown) {
+			return;
+		}
+		int tunnelIndex = -1;
+		{
+			QMutexLocker lock(&streamsMutex);
+			const auto i = streamTunnel.find(streamId);
+			if (i != end(streamTunnel)) {
+				tunnelIndex = i->second;
+				streamTunnel.erase(i);
+			}
+		}
+		if (tunnelIndex < 0
+			|| tunnelIndex >= int(tunnels.size())
+			|| !tunnels[tunnelIndex]) {
+			return;
+		}
+		const auto frame = details::EncodeMuxFrame(
+			details::MuxFrameType::Close,
+			streamId);
+		tunnels[tunnelIndex]->sendFrame(frame);
+	}
+
 	void failStreamsOnTunnel(int tunnelIndex) {
 		std::vector<uint32> affected;
 		{
@@ -344,10 +375,7 @@ struct WssMuxHub::Private : public QObject {
 			}
 		}
 		for (const auto streamId : affected) {
-			{
-				QMutexLocker lock(&streamsMutex);
-				streamTunnel.erase(streamId);
-			}
+			requestCloseStream(streamId);
 			postStreamEvent(streamId, [](details::MuxStreamSocket *socket) {
 				socket->handleTunnelDown();
 			});
@@ -624,7 +652,6 @@ void WssMuxHub::RegisterStream(
 void WssMuxHub::UnregisterStream(uint32 streamId) {
 	QMutexLocker lock(&_private->streamsMutex);
 	_private->streams.erase(streamId);
-	_private->streamTunnel.erase(streamId);
 }
 
 void WssMuxHub::RequestOpen(
@@ -665,29 +692,15 @@ void WssMuxHub::SendData(uint32 streamId, bytes::const_span data) {
 }
 
 void WssMuxHub::RequestClose(uint32 streamId) {
-	InvokeQueued(_private.get(), [=] {
-		if (_private->shuttingDown) {
-			return;
-		}
-		int tunnelIndex = -1;
-		{
-			QMutexLocker lock(&_private->streamsMutex);
-			const auto i = _private->streamTunnel.find(streamId);
-			if (i != end(_private->streamTunnel)) {
-				tunnelIndex = i->second;
-				_private->streamTunnel.erase(i);
-			}
-		}
-		if (tunnelIndex < 0
-			|| tunnelIndex >= int(_private->tunnels.size())
-			|| !_private->tunnels[tunnelIndex]) {
-			return;
-		}
-		const auto frame = details::EncodeMuxFrame(
-			details::MuxFrameType::Close,
-			streamId);
-		_private->tunnels[tunnelIndex]->sendFrame(frame);
-	});
+	if (!_private->hubThread.isRunning()) {
+		return;
+	} else if (QThread::currentThread() == &_private->hubThread) {
+		_private->requestCloseStream(streamId);
+		return;
+	}
+	QMetaObject::invokeMethod(_private.get(), [=] {
+		_private->requestCloseStream(streamId);
+	}, Qt::BlockingQueuedConnection);
 }
 
 } // namespace MTP

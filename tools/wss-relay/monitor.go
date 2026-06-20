@@ -118,7 +118,7 @@ function render(data) {
     'updated ' + data.now + ' · uptime ' + Math.floor(data.uptime_sec) + 's';
   const cards = [
     ['Mux tunnels', data.mux_tunnels, 'total ' + data.mux_tunnels_total],
-    ['Mux streams', data.mux_streams, 'opened ' + data.mux_streams_opened],
+    ['Mux streams', data.mux_streams, 'opened ' + data.mux_streams_opened + ', closed ' + data.mux_streams_closed + ' (graceful ' + data.mux_streams_closed_graceful + ', idle ' + data.mux_stream_idle_expired + ')'],
     ['To Telegram', fmtBytes(data.bytes_to_upstream), 'from clients'],
     ['From Telegram', fmtBytes(data.bytes_from_upstream), 'to clients'],
     ['Dial errors', data.upstream_dial_errors, 'blocked ' + data.upstream_blocked],
