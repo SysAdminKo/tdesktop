@@ -136,6 +136,7 @@ public:
 	void requestCDNConfig();
 	void setUserPhone(const QString &phone);
 	void badConfigurationError();
+	[[nodiscard]] QString wssEndpointScope() const;
 
 	void restartedByTimeout(ShiftedDcId shiftedDcId);
 	[[nodiscard]] rpl::producer<ShiftedDcId> restartsByTimeout() const;

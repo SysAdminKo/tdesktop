@@ -438,6 +438,15 @@ struct WssMuxHub::Private : public QObject {
 		}
 	}
 
+	void ensureHubThreadRunning() {
+		if (hubThread.isRunning()) {
+			return;
+		}
+		shuttingDown = false;
+		started = false;
+		hubThread.start();
+	}
+
 	void startTunnels() {
 		if (started || shuttingDown || authRejected) {
 			return;
@@ -522,6 +531,7 @@ WssMuxHub::~WssMuxHub() {
 void WssMuxHub::Configure(const ProxyData &proxy, int tunnelCount) {
 	const auto config = ConfigFromProxy(proxy, tunnelCount);
 	InvokeQueued(_private.get(), [=, config = config]() mutable {
+		_private->ensureHubThreadRunning();
 		const auto sameEndpoint = (_private->config == config);
 		if (!config.resolvedIPs.empty()) {
 			_private->config.resolvedIPs = config.resolvedIPs;
@@ -547,7 +557,9 @@ void WssMuxHub::ApplyResolvedIps(
 	InvokeQueued(_private.get(), [=, ips = ips]() mutable {
 		if (_private->shuttingDown || !_private->matchesEndpoint(host)) {
 			return;
-		} else if (SameIpSet(_private->config.resolvedIPs, ips)) {
+		}
+		_private->ensureHubThreadRunning();
+		if (SameIpSet(_private->config.resolvedIPs, ips)) {
 			_private->config.resolvedIPs = std::move(ips);
 			return;
 		}
@@ -557,6 +569,7 @@ void WssMuxHub::ApplyResolvedIps(
 
 void WssMuxHub::EnsureStarted() {
 	InvokeQueued(_private.get(), [=] {
+		_private->ensureHubThreadRunning();
 		_private->startTunnels();
 	});
 }

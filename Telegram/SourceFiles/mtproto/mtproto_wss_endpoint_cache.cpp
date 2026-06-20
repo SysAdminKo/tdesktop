@@ -5,6 +5,8 @@
 #include <optional>
 #include <tuple>
 
+#include <range/v3/algorithm/find.hpp>
+
 #include <QtCore/QDataStream>
 #include <QtCore/QMutex>
 #include <QtCore/QMutexLocker>
@@ -18,6 +20,7 @@ struct Key {
 	QString proxyHost;
 	uint32 proxyPort = 0;
 	QString proxyPath;
+	QString accountScope;
 
 	friend bool operator<(const Key &a, const Key &b) {
 		return std::tie(
@@ -25,18 +28,30 @@ struct Key {
 			a.dcType,
 			a.proxyHost,
 			a.proxyPort,
-			a.proxyPath) < std::tie(
+			a.proxyPath,
+			a.accountScope) < std::tie(
 			b.shiftedDcId,
 			b.dcType,
 			b.proxyHost,
 			b.proxyPort,
-			b.proxyPath);
+			b.proxyPath,
+			b.accountScope);
 	}
 };
 
 QMutex Mutex;
 std::map<Key, WssEndpointCache::Entry> Cache;
+std::map<Key, std::vector<WssEndpointCache::Entry>> Rejected;
 WssEndpointCache::Persistence PersistenceHandlers;
+
+[[nodiscard]] bool SameEntry(
+		const WssEndpointCache::Entry &a,
+		const WssEndpointCache::Entry &b) {
+	return (a.ip == b.ip)
+		&& (a.port == b.port)
+		&& (a.protocol == b.protocol)
+		&& (a.secret == b.secret);
+}
 
 [[nodiscard]] QByteArray PrefKey(const Key &key) {
 	auto blob = QByteArray();
@@ -48,7 +63,8 @@ WssEndpointCache::Persistence PersistenceHandlers;
 			<< qint32(int(key.dcType))
 			<< key.proxyHost
 			<< quint32(key.proxyPort)
-			<< key.proxyPath;
+			<< key.proxyPath
+			<< key.accountScope;
 	}
 	return QByteArray("wss_ep.") + blob.toBase64(QByteArray::Base64UrlEncoding);
 }
@@ -118,13 +134,15 @@ void RemoveEntry(const Key &key) {
 [[nodiscard]] Key MakeKey(
 		ShiftedDcId shiftedDcId,
 		DcType dcType,
-		const ProxyData &proxy) {
+		const ProxyData &proxy,
+		const QString &accountScope) {
 	return {
 		shiftedDcId,
 		dcType,
 		proxy.host,
 		proxy.port,
 		proxy.path,
+		accountScope,
 	};
 }
 
@@ -138,11 +156,12 @@ void WssEndpointCache::SetPersistence(Persistence persistence) {
 std::optional<WssEndpointCache::Entry> WssEndpointCache::lookup(
 		ShiftedDcId shiftedDcId,
 		DcType dcType,
-		const ProxyData &proxy) {
+		const ProxyData &proxy,
+		const QString &accountScope) {
 	if (proxy.type != ProxyData::Type::WebSocket) {
 		return std::nullopt;
 	}
-	const auto key = MakeKey(shiftedDcId, dcType, proxy);
+	const auto key = MakeKey(shiftedDcId, dcType, proxy, accountScope);
 	QMutexLocker lock(&Mutex);
 	const auto i = Cache.find(key);
 	if (i != end(Cache)) {
@@ -159,6 +178,7 @@ void WssEndpointCache::store(
 		ShiftedDcId shiftedDcId,
 		DcType dcType,
 		const ProxyData &proxy,
+		const QString &accountScope,
 		const QString &ip,
 		int port,
 		const bytes::vector &secret,
@@ -166,7 +186,7 @@ void WssEndpointCache::store(
 	if (proxy.type != ProxyData::Type::WebSocket || ip.isEmpty() || !port) {
 		return;
 	}
-	const auto key = MakeKey(shiftedDcId, dcType, proxy);
+	const auto key = MakeKey(shiftedDcId, dcType, proxy, accountScope);
 	const auto entry = Entry{ ip, port, secret, protocol };
 	QMutexLocker lock(&Mutex);
 	Cache[key] = entry;
@@ -176,14 +196,77 @@ void WssEndpointCache::store(
 void WssEndpointCache::clear(
 		ShiftedDcId shiftedDcId,
 		DcType dcType,
-		const ProxyData &proxy) {
+		const ProxyData &proxy,
+		const QString &accountScope) {
 	if (proxy.type != ProxyData::Type::WebSocket) {
 		return;
 	}
-	const auto key = MakeKey(shiftedDcId, dcType, proxy);
+	const auto key = MakeKey(shiftedDcId, dcType, proxy, accountScope);
 	QMutexLocker lock(&Mutex);
 	Cache.erase(key);
 	RemoveEntry(key);
+}
+
+void WssEndpointCache::markRejected(
+		ShiftedDcId shiftedDcId,
+		DcType dcType,
+		const ProxyData &proxy,
+		const QString &accountScope,
+		const Entry &entry) {
+	if (proxy.type != ProxyData::Type::WebSocket
+		|| entry.ip.isEmpty()
+		|| !entry.port) {
+		return;
+	}
+	const auto key = MakeKey(shiftedDcId, dcType, proxy, accountScope);
+	QMutexLocker lock(&Mutex);
+	auto &rejected = Rejected[key];
+	if (ranges::find_if(rejected, [&](const Entry &existing) {
+		return SameEntry(existing, entry);
+	}) != end(rejected)) {
+		return;
+	}
+	rejected.push_back(entry);
+	Cache.erase(key);
+	RemoveEntry(key);
+}
+
+bool WssEndpointCache::isRejected(
+		ShiftedDcId shiftedDcId,
+		DcType dcType,
+		const ProxyData &proxy,
+		const QString &accountScope,
+		const Entry &entry) {
+	if (proxy.type != ProxyData::Type::WebSocket) {
+		return false;
+	}
+	const auto key = MakeKey(shiftedDcId, dcType, proxy, accountScope);
+	QMutexLocker lock(&Mutex);
+	const auto i = Rejected.find(key);
+	if (i == end(Rejected)) {
+		return false;
+	}
+	return ranges::find_if(i->second, [&](const Entry &existing) {
+		return SameEntry(existing, entry);
+	}) != end(i->second);
+}
+
+bool WssEndpointCache::clearRejected(
+		ShiftedDcId shiftedDcId,
+		DcType dcType,
+		const ProxyData &proxy,
+		const QString &accountScope) {
+	if (proxy.type != ProxyData::Type::WebSocket) {
+		return false;
+	}
+	const auto key = MakeKey(shiftedDcId, dcType, proxy, accountScope);
+	QMutexLocker lock(&Mutex);
+	const auto i = Rejected.find(key);
+	if (i == end(Rejected) || i->second.empty()) {
+		return false;
+	}
+	Rejected.erase(i);
+	return true;
 }
 
 } // namespace MTP

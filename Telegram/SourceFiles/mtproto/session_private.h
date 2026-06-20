@@ -11,6 +11,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_serialized_request.h"
 #include "mtproto/mtproto_auth_key.h"
 #include "mtproto/mtproto_dc_options.h"
+#include <optional>
+#include "mtproto/mtproto_wss_endpoint_cache.h"
 #include "mtproto/connection_abstract.h"
 #include "mtproto/facade.h"
 #include "base/timer.h"
@@ -155,6 +157,9 @@ private:
 		int port,
 		const bytes::vector &secret,
 		DcOptions::Variants::Protocol protocol);
+	void invalidateWssEndpointCache();
+	void markActiveWssEndpointRejected();
+	void restartWssWithNextEndpoint();
 
 	// if badTime received - search for ids in sessionData->haveSent and sessionData->wereAcked and sync time/salt, return true if found
 	bool requestsFixTimeSalt(const QVector<MTPlong> &ids, const OuterInfo &info);
@@ -203,6 +208,7 @@ private:
 
 	ConnectionPointer _connection;
 	std::vector<TestConnection> _testConnections;
+	std::optional<WssEndpointCache::Entry> _wssActiveEndpoint;
 	crl::time _startedConnectingAt = 0;
 
 	base::Timer _retryTimer; // exp retry timer

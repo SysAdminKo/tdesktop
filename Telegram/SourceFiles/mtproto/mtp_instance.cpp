@@ -14,7 +14,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_config.h"
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/config_loader.h"
-#include "mtproto/mtproto_wss_connect_gate.h"
 #include "mtproto/mtproto_wss_mux_hub.h"
 #include "mtproto/sender.h"
 #include "storage/localstorage.h"
@@ -94,6 +93,7 @@ public:
 	void requestConfigIfOld();
 	void requestCDNConfig();
 	void setUserPhone(const QString &phone);
+	[[nodiscard]] QString wssEndpointScope() const;
 	void badConfigurationError();
 	void syncHttpUnixtime();
 
@@ -540,6 +540,19 @@ void Instance::Private::setUserPhone(const QString &phone) {
 			_configLoader->setPhone(_userPhone);
 		}
 	}
+}
+
+QString Instance::Private::wssEndpointScope() const {
+	if (!_userPhone.isEmpty()) {
+		return _userPhone;
+	}
+	const auto i = _dcenters.find(_mainDcId.current());
+	if (i != end(_dcenters)) {
+		if (const auto key = i->second->getPersistentKey()) {
+			return QString::number(key->keyId());
+		}
+	}
+	return u"none"_q;
 }
 
 void Instance::Private::badConfigurationError() {
@@ -1840,9 +1853,6 @@ void Instance::Private::prepareToDestroy() {
 	}
 	_mainSession = nullptr;
 
-	WssMuxHub::Instance().Shutdown();
-	WssConnectGate::Clear();
-
 	auto threads = std::vector<std::unique_ptr<QThread>>();
 	threads.push_back(base::take(_mainSessionThread));
 	threads.push_back(base::take(_otherSessionsThread));
@@ -1917,6 +1927,10 @@ void Instance::requestConfig() {
 
 void Instance::setUserPhone(const QString &phone) {
 	_private->setUserPhone(phone);
+}
+
+QString Instance::wssEndpointScope() const {
+	return _private->wssEndpointScope();
 }
 
 void Instance::badConfigurationError() {

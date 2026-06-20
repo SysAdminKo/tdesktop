@@ -21,6 +21,7 @@ class SerializedRequest;
 enum class DcKeyBindState {
 	Success,
 	Failed,
+	ClusterInvalid,
 	DefinitelyDestroyed,
 };
 

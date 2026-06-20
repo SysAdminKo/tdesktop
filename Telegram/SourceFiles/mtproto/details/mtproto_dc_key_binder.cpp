@@ -115,10 +115,17 @@ DcKeyBindState DcKeyBinder::handleResponse(const mtpBuffer &response) {
 	} else if (response[0] == mtpc_rpc_error && error.read(from, end)) {
 		const auto destroyed = error.match([&](const MTPDrpc_error &data) {
 			return (data.verror_code().v == 400)
-				&& (data.verror_message().v == "ENCRYPTED_MESSAGE_INVALID");
+				&& (data.verror_message().v == u"ENCRYPTED_MESSAGE_INVALID"_q);
 		});
-		return destroyed
-			? DcKeyBindState::DefinitelyDestroyed
+		if (destroyed) {
+			return DcKeyBindState::DefinitelyDestroyed;
+		}
+		const auto clusterInvalid = error.match([&](const MTPDrpc_error &data) {
+			return (data.verror_code().v == 403)
+				&& (data.verror_message().v == u"MTPROTO_CLUSTER_INVALID"_q);
+		});
+		return clusterInvalid
+			? DcKeyBindState::ClusterInvalid
 			: DcKeyBindState::Failed;
 	} else {
 		return DcKeyBindState::Failed;

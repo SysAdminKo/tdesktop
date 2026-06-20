@@ -367,6 +367,7 @@ void SessionPrivate::destroyAllConnections() {
 	_waitForConnectedTimer.cancel();
 	_testConnections.clear();
 	_connection = nullptr;
+	_wssActiveEndpoint = std::nullopt;
 }
 
 void SessionPrivate::cdnConfigChanged() {
@@ -1092,11 +1093,41 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 		const auto limitWebSocketTests = (_options->proxy.type
 			== ProxyData::Type::WebSocket);
 		const auto webSocketTestLimit = 1;
+		const auto wssScope = _instance->wssEndpointScope();
+		const auto isRejectedEndpoint = [&](
+				const QString &ip,
+				int port,
+				const bytes::vector &secret,
+				DcOptions::Variants::Protocol protocol) {
+			if (!limitWebSocketTests || ip.isEmpty() || !port) {
+				return false;
+			}
+			return WssEndpointCache::isRejected(
+				_shiftedDcId,
+				_currentDcType,
+				_options->proxy,
+				wssScope,
+				WssEndpointCache::Entry{
+					ip,
+					port,
+					secret,
+					protocol,
+				});
+		};
 		const auto cachedEndpoint = limitWebSocketTests
 			? WssEndpointCache::lookup(
 				_shiftedDcId,
 				_currentDcType,
-				_options->proxy)
+				_options->proxy,
+				wssScope)
+			: std::nullopt;
+		const auto usableCachedEndpoint = cachedEndpoint
+			&& !isRejectedEndpoint(
+				cachedEndpoint->ip,
+				cachedEndpoint->port,
+				cachedEndpoint->secret,
+				cachedEndpoint->protocol)
+			? cachedEndpoint
 			: std::nullopt;
 		auto webSocketTestsAdded = 0;
 		const auto matchesCached = [&](
@@ -1104,23 +1135,24 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 				int port,
 				const bytes::vector &secret,
 				DcOptions::Variants::Protocol protocol) {
-			if (!cachedEndpoint) {
+			if (!usableCachedEndpoint) {
 				return false;
 			}
-			return (ip == cachedEndpoint->ip)
-				&& (port == cachedEndpoint->port)
-				&& (protocol == cachedEndpoint->protocol)
-				&& (secret == cachedEndpoint->secret);
+			return (ip == usableCachedEndpoint->ip)
+				&& (port == usableCachedEndpoint->port)
+				&& (protocol == usableCachedEndpoint->protocol)
+				&& (secret == usableCachedEndpoint->secret);
 		};
-		if (cachedEndpoint) {
+		if (usableCachedEndpoint) {
 			appendTestConnection(
-				cachedEndpoint->protocol,
-				cachedEndpoint->ip,
-				cachedEndpoint->port,
-				cachedEndpoint->secret);
+				usableCachedEndpoint->protocol,
+				usableCachedEndpoint->ip,
+				usableCachedEndpoint->port,
+				usableCachedEndpoint->secret);
 			++webSocketTestsAdded;
 		}
-		const auto skipVariantsLoop = limitWebSocketTests && cachedEndpoint;
+		const auto skipVariantsLoop = limitWebSocketTests
+			&& usableCachedEndpoint;
 		const auto skipAddress = !useIPv4
 			? Variants::IPv4
 			: !useIPv6
@@ -1150,6 +1182,13 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 						}
 					}
 					const auto ip = QString::fromStdString(endpoint.ip);
+					if (isRejectedEndpoint(
+							ip,
+							endpoint.port,
+							endpoint.secret,
+							static_cast<Variants::Protocol>(protocol))) {
+						continue;
+					}
 					if (matchesCached(
 							ip,
 							endpoint.port,
@@ -1176,6 +1215,15 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 				break;
 			}
 		}
+		}
+		if (_testConnections.empty()
+			&& limitWebSocketTests
+			&& WssEndpointCache::clearRejected(
+				_shiftedDcId,
+				_currentDcType,
+				_options->proxy,
+				wssScope)) {
+			return connectToServer(afterConfig);
 		}
 	}
 	if (_testConnections.empty()) {
@@ -2120,7 +2168,12 @@ SessionPrivate::HandleResult SessionPrivate::handleBindResponse(
 			return HandleResult::DestroyTemporaryKey;
 		}
 		[[fallthrough]];
+	case DcKeyBindState::ClusterInvalid:
 	case DcKeyBindState::Failed:
+		if (_options->proxy.type == ProxyData::Type::WebSocket) {
+			restartWssWithNextEndpoint();
+			return HandleResult::Success;
+		}
 		_sessionData->queueNeedToResumeAndSend();
 		return HandleResult::Success;
 	}
@@ -2513,11 +2566,27 @@ void SessionPrivate::invalidateWssEndpointOnFailure(
 		DcOptions::Variants::Protocol protocol) {
 	if (_options->proxy.type != ProxyData::Type::WebSocket) {
 		return;
+	} else if (ip.isEmpty() || !port) {
+		return;
 	}
+	const auto scope = _instance->wssEndpointScope();
+	const auto entry = WssEndpointCache::Entry{
+		ip,
+		port,
+		secret,
+		protocol,
+	};
+	WssEndpointCache::markRejected(
+		_shiftedDcId,
+		_currentDcType,
+		_options->proxy,
+		scope,
+		entry);
 	const auto cached = WssEndpointCache::lookup(
 		_shiftedDcId,
 		_currentDcType,
-		_options->proxy);
+		_options->proxy,
+		scope);
 	if (!cached
 		|| ip != cached->ip
 		|| port != cached->port
@@ -2528,7 +2597,39 @@ void SessionPrivate::invalidateWssEndpointOnFailure(
 	WssEndpointCache::clear(
 		_shiftedDcId,
 		_currentDcType,
-		_options->proxy);
+		_options->proxy,
+		scope);
+}
+
+void SessionPrivate::invalidateWssEndpointCache() {
+	if (_options->proxy.type != ProxyData::Type::WebSocket) {
+		return;
+	}
+	WssEndpointCache::clear(
+		_shiftedDcId,
+		_currentDcType,
+		_options->proxy,
+		_instance->wssEndpointScope());
+}
+
+void SessionPrivate::markActiveWssEndpointRejected() {
+	if (_options->proxy.type != ProxyData::Type::WebSocket
+		|| !_wssActiveEndpoint) {
+		return;
+	}
+	WssEndpointCache::markRejected(
+		_shiftedDcId,
+		_currentDcType,
+		_options->proxy,
+		_instance->wssEndpointScope(),
+		*_wssActiveEndpoint);
+}
+
+void SessionPrivate::restartWssWithNextEndpoint() {
+	markActiveWssEndpointRejected();
+	invalidateWssEndpointCache();
+	_sessionData->queueNeedToResumeAndSend();
+	restart();
 }
 
 void SessionPrivate::storeWssEndpoint(const TestConnection &test) {
@@ -2537,10 +2638,17 @@ void SessionPrivate::storeWssEndpoint(const TestConnection &test) {
 	} else if (test.endpointIp.isEmpty() || !test.endpointPort) {
 		return;
 	}
+	_wssActiveEndpoint = WssEndpointCache::Entry{
+		test.endpointIp,
+		test.endpointPort,
+		test.endpointSecret,
+		test.protocol,
+	};
 	WssEndpointCache::store(
 		_shiftedDcId,
 		_currentDcType,
 		_options->proxy,
+		_instance->wssEndpointScope(),
 		test.endpointIp,
 		test.endpointPort,
 		test.endpointSecret,

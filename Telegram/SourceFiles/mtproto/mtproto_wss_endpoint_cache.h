@@ -23,12 +23,14 @@ public:
 	[[nodiscard]] static std::optional<Entry> lookup(
 		ShiftedDcId shiftedDcId,
 		DcType dcType,
-		const ProxyData &proxy);
+		const ProxyData &proxy,
+		const QString &accountScope);
 
 	static void store(
 		ShiftedDcId shiftedDcId,
 		DcType dcType,
 		const ProxyData &proxy,
+		const QString &accountScope,
 		const QString &ip,
 		int port,
 		const bytes::vector &secret,
@@ -37,7 +39,28 @@ public:
 	static void clear(
 		ShiftedDcId shiftedDcId,
 		DcType dcType,
-		const ProxyData &proxy);
+		const ProxyData &proxy,
+		const QString &accountScope);
+
+	static void markRejected(
+		ShiftedDcId shiftedDcId,
+		DcType dcType,
+		const ProxyData &proxy,
+		const QString &accountScope,
+		const Entry &entry);
+
+	[[nodiscard]] static bool isRejected(
+		ShiftedDcId shiftedDcId,
+		DcType dcType,
+		const ProxyData &proxy,
+		const QString &accountScope,
+		const Entry &entry);
+
+	[[nodiscard]] static bool clearRejected(
+		ShiftedDcId shiftedDcId,
+		DcType dcType,
+		const ProxyData &proxy,
+		const QString &accountScope);
 
 	struct Persistence {
 		std::function<std::optional<QByteArray>(const QByteArray &prefKey)> read;
