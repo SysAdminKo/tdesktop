@@ -12,14 +12,14 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref_name == github.event.repository.default_branch
 
-    env:
-      IMAGE_TAG: ghcr.io/${{ github.repository }}/centos_env:latest
-
     steps:
       - name: Clone.
         uses: actions/checkout@v6
         with:
           submodules: recursive
+
+      - name: Set image tag.
+        run: echo "IMAGE_TAG=ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')/centos_env:latest" >> $GITHUB_ENV
 
       - name: First set up.
         run: |
