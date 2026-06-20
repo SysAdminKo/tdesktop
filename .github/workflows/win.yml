@@ -122,18 +122,32 @@ jobs:
         if: matrix.arch != 'arm64'
         shell: pwsh
         run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $installerDir = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
+          $installPath = & "$installerDir\vswhere.exe" -latest -products * -property installationPath
           if (-not $installPath) {
-            $installPath = & $vswhere -latest -property installationPath
+            Write-Error "Visual Studio installation not found."
+            exit 1
           }
-          if (-not $installPath) { throw "Visual Studio installation not found." }
-          $p = Start-Process -FilePath "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe" -Wait -PassThru -ArgumentList `
-            'modify', `
-            '--installPath', $installPath, `
-            '--add', 'Microsoft.VisualStudio.Component.VC.ATL', `
-            '--quiet', '--wait', '--norestart', '--nocache'
-          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { exit $p.ExitCode }
+          Write-Host "Installing ATL into: $installPath"
+          Set-Location $installerDir
+          $components = @(
+            'Microsoft.VisualStudio.Component.VC.ATL',
+            'Microsoft.VisualStudio.Component.VC.ATLMFC'
+          )
+          $addArgs = ($components | ForEach-Object { " --add $_" }) -join ''
+          $arguments = "/c vs_installer.exe modify --installPath `"$installPath`"$addArgs --quiet --wait --norestart --nocache"
+          1..2 | ForEach-Object {
+            Write-Host "ATL install pass $_"
+            $process = Start-Process -FilePath 'cmd.exe' -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
+            Write-Host "Exit code: $($process.ExitCode)"
+            if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) { exit $process.ExitCode }
+          }
+          $atl = Get-ChildItem -Path $installPath -Recurse -Filter 'atlbase.h' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $atl) {
+            Write-Error 'atlbase.h not found after ATL install.'
+            exit 1
+          }
+          Write-Host "Found $($atl.FullName)"
 
       - uses: Eden-CI/msvc-dev-cmd@master
         name: Native Tools Command Prompt.
