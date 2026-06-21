@@ -40,6 +40,8 @@ public:
 
 	void enqueue(not_null<Task*> task, int priority);
 	void remove(not_null<Task*> task);
+	void warmUpSessions(MTP::DcId dcId, int count);
+	void warmUpMediaCluster(MTP::DcId dcId);
 
 	void notifyTaskFinished() {
 		_taskFinished.fire({});
@@ -49,6 +51,9 @@ public:
 	}
 
 	int changeRequestedAmount(MTP::DcId dcId, int index, int delta);
+	void downloadRequestSent(MTP::DcId dcId, int index);
+	void downloadSessionConnected(MTP::DcId dcId, int index);
+	void downloadSessionReset(MTP::DcId dcId, int index);
 	void requestSucceeded(
 		MTP::DcId dcId,
 		int index,
@@ -88,6 +93,9 @@ private:
 		int requested = 0;
 		int successes = 0; // Since last timeout in this dc in any session.
 		int maxWaitedAmount = 0;
+		crl::time coldStartAt = 0;
+		crl::time connectAt = 0;
+		bool warm = false;
 	};
 	struct DcBalanceData {
 		DcBalanceData();
@@ -113,6 +121,9 @@ private:
 	void sessionTimedOut(MTP::DcId dcId, int index);
 	void removeSession(MTP::DcId dcId);
 
+	[[nodiscard]] bool useWssMux() const;
+	void maybeWarmUpSessions(MTP::DcId dcId);
+
 	const not_null<ApiWrap*> _api;
 
 	rpl::event_stream<> _taskFinished;
@@ -125,6 +136,7 @@ private:
 	base::Timer _killSessionsTimer;
 
 	base::flat_map<MTP::DcId, Queue> _queues;
+	base::flat_map<MTP::DcId, int> _warmedSessionsCount;
 	rpl::lifetime _lifetime;
 
 };

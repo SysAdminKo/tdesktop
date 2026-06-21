@@ -9,6 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "api/api_editing.h"
 #include "api/api_send_progress.h"
+#include "core/application.h"
+#include "core/core_settings.h"
 #include "storage/localimageloader.h"
 #include "storage/file_download.h"
 #include "data/data_document.h"
@@ -59,7 +61,10 @@ constexpr auto kWaitForNormalizeTimeout = 8 * crl::time(1000);
 
 constexpr auto kMaxSessionsCount = 8;
 constexpr auto kFastRequestThreshold = 1 * crl::time(1000);
+constexpr auto kWssFastRequestThreshold = 5 * crl::time(1000);
 constexpr auto kSlowRequestThreshold = 8 * crl::time(1000);
+constexpr auto kWssInitialUploadSessions = 3;
+constexpr auto kWssWarmUpFileSize = 2 * 1024 * 1024;
 
 // Request is 'fast' if it was done in less than 1s and
 // (it-s size + queued before size) >= 512kb.
@@ -158,6 +163,18 @@ Uploader::Uploader(not_null<ApiWrap*> api)
 , _nextTimer([=] { maybeSend(); })
 , _stopSessionsTimer([=] { stopSessions(); }) {
 	const auto session = &_api->session();
+	const auto &instance = _api->instance();
+	instance.uploadSessionStateChanges(
+	) | rpl::on_next([=](const std::pair<MTP::ShiftedDcId, int32> &change) {
+		const auto &[shiftedDcId, state] = change;
+		const auto index = MTP::GetDcIdShift(shiftedDcId)
+			- MTP::kBaseUploadDcShift;
+		if (state == MTP::ConnectedState) {
+			uploadSessionConnected(index);
+		} else if (state == MTP::DisconnectedState) {
+			uploadSessionReset(index);
+		}
+	}, _lifetime);
 	photoReady(
 	) | rpl::on_next([=](UploadedMedia &&data) {
 		if (data.edit) {
@@ -293,6 +310,20 @@ FullMsgId Uploader::currentUploadId() const {
 void Uploader::upload(
 		FullMsgId itemId,
 		const std::shared_ptr<FilePrepareResult> &file) {
+	_useWssMux = useWssMux();
+	const auto largeDocument = (file->type == SendMediaType::File
+		|| file->type == SendMediaType::ThemeFile
+		|| file->type == SendMediaType::Audio
+		|| file->type == SendMediaType::Round)
+		&& file->filesize >= kWssWarmUpFileSize;
+	if (_useWssMux) {
+		const auto warmCount = largeDocument
+			? kWssInitialUploadSessions
+			: 1;
+		if (largeDocument || _sentPerDcIndex.empty()) {
+			warmUpSessions(warmCount);
+		}
+	}
 	if (file->type == SendMediaType::Photo) {
 		const auto photo = session().data().processPhoto(
 			file->photo,
@@ -424,8 +455,67 @@ void Uploader::stopSessions() {
 			_api->instance().stopSession(MTP::uploadDcId(i));
 		}
 		_sentPerDcIndex.clear();
+		_sessionTracks.clear();
 		_dcIndicesWithFastRequests.clear();
 	}
+}
+
+bool Uploader::useWssMux() const {
+	const auto &proxy = Core::App().settings().proxy();
+	return proxy.isEnabled()
+		&& proxy.selected().type == MTP::ProxyData::Type::WebSocket;
+}
+
+crl::time Uploader::fastRequestThreshold() const {
+	return _useWssMux ? kWssFastRequestThreshold : kFastRequestThreshold;
+}
+
+void Uploader::warmUpSessions(int count) {
+	for (auto i = 0; i != count; ++i) {
+		_api->instance().sendAnything(MTP::uploadDcId(i));
+	}
+}
+
+void Uploader::ensureSessionTracks(int count) {
+	if (int(_sessionTracks.size()) < count) {
+		_sessionTracks.resize(count);
+	}
+}
+
+void Uploader::uploadRequestSent(int index) {
+	ensureSessionTracks(index + 1);
+	auto &track = _sessionTracks[index];
+	if (track.warm) {
+		return;
+	}
+	const auto now = crl::now();
+	track.coldStartAt = now;
+	track.connectAt = 0;
+	if (_api->instance().dcstate(MTP::uploadDcId(index)) == MTP::ConnectedState) {
+		track.connectAt = now;
+	}
+}
+
+void Uploader::uploadSessionConnected(int index) {
+	ensureSessionTracks(index + 1);
+	auto &track = _sessionTracks[index];
+	if (track.warm || !track.coldStartAt || track.connectAt) {
+		return;
+	}
+	track.connectAt = crl::now();
+	DEBUG_LOG(("Upload (%1) cold start: connect %2 ms"
+		).arg(index
+		).arg(track.connectAt - track.coldStartAt));
+}
+
+void Uploader::uploadSessionReset(int index) {
+	if (index < 0 || index >= int(_sessionTracks.size())) {
+		return;
+	}
+	auto &track = _sessionTracks[index];
+	track.coldStartAt = 0;
+	track.connectAt = 0;
+	track.warm = false;
 }
 
 QByteArray Uploader::readDocPart(not_null<Entry*> entry) {
@@ -461,8 +551,14 @@ QByteArray Uploader::readDocPart(not_null<Entry*> entry) {
 
 bool Uploader::canAddDcIndex() const {
 	const auto count = int(_sentPerDcIndex.size());
-	return (count < kMaxSessionsCount)
-		&& (count == int(_dcIndicesWithFastRequests.size()));
+	if (count >= kMaxSessionsCount) {
+		return false;
+	}
+	const auto fast = int(_dcIndicesWithFastRequests.size());
+	if (_useWssMux && count < kWssInitialUploadSessions) {
+		return fast >= count;
+	}
+	return count == fast;
 }
 
 std::optional<uchar> Uploader::chooseDcIndexForNextRequest(
@@ -522,6 +618,9 @@ template <typename Prepared>
 void Uploader::sendPreparedRequest(Prepared &&prepared, Request &&request) {
 	auto &sentInSession = _sentPerDcIndex[request.dcIndex];
 	const auto queued = sentInSession;
+	if (queued == 0) {
+		uploadRequestSent(request.dcIndex);
+	}
 	sentInSession += int(request.bytes.size());
 
 	const auto requestId = _api->request(
@@ -759,12 +858,33 @@ void Uploader::partLoaded(const MTPBool &result, mtpRequestId requestId) {
 
 	const auto now = crl::now();
 	const auto duration = now - request.sent;
-	const auto fast = (duration < kFastRequestThreshold);
+	const auto fastThreshold = fastRequestThreshold();
+	const auto fast = (duration < fastThreshold);
 	const auto slowish = !fast;
 	const auto slow = (duration >= kSlowRequestThreshold);
 
+	if (request.dcIndex < int(_sessionTracks.size())) {
+		auto &track = _sessionTracks[request.dcIndex];
+		if (!track.warm && track.coldStartAt) {
+			const auto total = now - track.coldStartAt;
+			const auto connect = track.connectAt
+				? (track.connectAt - track.coldStartAt)
+				: crl::time(0);
+			DEBUG_LOG(("Upload (%1) cold start: connect %2 ms, first part %3 ms, total %4 ms"
+				).arg(request.dcIndex
+				).arg(connect
+				).arg(duration
+				).arg(total));
+			track.warm = true;
+			track.coldStartAt = 0;
+			track.connectAt = 0;
+		}
+	}
+
 	if (slowish) {
-		_dcIndicesWithFastRequests.clear();
+		if (!_useWssMux) {
+			_dcIndicesWithFastRequests.clear();
+		}
 		if (slow) {
 			const auto elapsed = (now - _latestDcIndexRemoved);
 			const auto remove = (elapsed >= kWaitForNormalizeTimeout);
@@ -778,8 +898,9 @@ void Uploader::partLoaded(const MTPBool &result, mtpRequestId requestId) {
 		} else {
 			DEBUG_LOG(("Uploader: Slow-ish request, clear fast records."));
 		}
-	} else if (request.sent > _latestDcIndexAdded
-		&& (request.queued + bytes >= kAcceptAsFastIfTotalAtLeast)) {
+	} else if (_useWssMux
+		|| (request.sent > _latestDcIndexAdded
+			&& (request.queued + bytes >= kAcceptAsFastIfTotalAtLeast))) {
 		if (_dcIndicesWithFastRequests.emplace(request.dcIndex).second) {
 			DEBUG_LOG(("Uploader: Mark %1 of %2 as fast."
 				).arg(request.dcIndex
@@ -847,6 +968,9 @@ void Uploader::removeDcIndex() {
 	}
 	Assert(_sentPerDcIndex.back() == 0);
 	_sentPerDcIndex.pop_back();
+	if (int(_sessionTracks.size()) > dcIndex) {
+		_sessionTracks.pop_back();
+	}
 	_dcIndicesWithFastRequests.remove(dcIndex);
 	_api->instance().stopSession(MTP::uploadDcId(dcIndex));
 	DEBUG_LOG(("Uploader: Removed dc index %1.").arg(dcIndex));

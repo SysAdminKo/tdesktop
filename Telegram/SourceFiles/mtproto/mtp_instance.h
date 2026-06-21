@@ -140,6 +140,10 @@ public:
 
 	void restartedByTimeout(ShiftedDcId shiftedDcId);
 	[[nodiscard]] rpl::producer<ShiftedDcId> restartsByTimeout() const;
+	[[nodiscard]] auto downloadSessionStateChanges() const
+	-> rpl::producer<std::pair<ShiftedDcId, int32>>;
+	[[nodiscard]] auto uploadSessionStateChanges() const
+	-> rpl::producer<std::pair<ShiftedDcId, int32>>;
 
 	[[nodiscard]] auto nonPremiumDelayedRequests() const
 		-> rpl::producer<mtpRequestId>;

@@ -10,6 +10,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/facade.h"
 #include "mtproto/mtproto_auth_key.h"
 #include "mtproto/mtproto_response.h"
+#include "core/application.h"
+#include "core/core_settings.h"
 #include "main/main_session.h"
 #include "data/data_session.h"
 #include "data/data_document.h"
@@ -32,6 +34,7 @@ constexpr auto kMaxTrackedSuccesses = kRetryAddSessionSuccesses
 constexpr auto kRemoveSessionAfterTimeouts = 4;
 constexpr auto kResetDownloadPrioritiesTimeout = crl::time(200);
 constexpr auto kBadRequestDurationThreshold = 8 * crl::time(1000);
+constexpr auto kWssInitialDownloadSessions = 3;
 
 // Each (session remove by timeouts) we wait for time:
 // kRetryAddSessionTimeout * max(removesCount, kMaxTrackedSessionRemoves)
@@ -121,22 +124,77 @@ DownloadManagerMtproto::DownloadManagerMtproto(not_null<ApiWrap*> api)
 : _api(api)
 , _resetGenerationTimer([=] { resetGeneration(); })
 , _killSessionsTimer([=] { killSessions(); }) {
-	_api->instance().restartsByTimeout(
+	const auto &instance = _api->instance();
+	instance.restartsByTimeout(
 	) | rpl::filter([](MTP::ShiftedDcId shiftedDcId) {
 		return MTP::isDownloadDcId(shiftedDcId);
 	}) | rpl::on_next([=](MTP::ShiftedDcId shiftedDcId) {
+		const auto dcId = MTP::BareDcId(shiftedDcId);
+		const auto index = MTP::GetDcIdShift(shiftedDcId)
+			- MTP::kBaseDownloadDcShift;
+		downloadSessionReset(dcId, index);
 		sessionTimedOut(
-			MTP::BareDcId(shiftedDcId),
+			dcId,
 			MTP::GetDcIdShift(shiftedDcId));
 	}, _lifetime);
+	instance.downloadSessionStateChanges(
+	) | rpl::on_next([=](const std::pair<MTP::ShiftedDcId, int32> &change) {
+		const auto &[shiftedDcId, state] = change;
+		const auto dcId = MTP::BareDcId(shiftedDcId);
+		const auto index = MTP::GetDcIdShift(shiftedDcId)
+			- MTP::kBaseDownloadDcShift;
+		if (state == MTP::ConnectedState) {
+			downloadSessionConnected(dcId, index);
+		} else if (state == MTP::DisconnectedState) {
+			downloadSessionReset(dcId, index);
+		}
+	}, _lifetime);
+	if (useWssMux()) {
+		warmUpMediaCluster(_api->instance().mainDcId());
+	}
 }
 
 DownloadManagerMtproto::~DownloadManagerMtproto() {
 	killSessions();
 }
 
+bool DownloadManagerMtproto::useWssMux() const {
+	const auto &proxy = Core::App().settings().proxy();
+	return proxy.isEnabled()
+		&& proxy.selected().type == MTP::ProxyData::Type::WebSocket;
+}
+
+void DownloadManagerMtproto::warmUpSessions(MTP::DcId dcId, int count) {
+	const auto normalized = std::clamp(count, 1, kMaxSessionsCount);
+	const auto i = _warmedSessionsCount.find(dcId);
+	const auto already = (i != end(_warmedSessionsCount)) ? i->second : 0;
+	if (already >= normalized) {
+		return;
+	}
+	for (auto i = already; i != normalized; ++i) {
+		_api->instance().sendAnything(MTP::downloadDcId(dcId, i));
+	}
+	_warmedSessionsCount[dcId] = normalized;
+	DEBUG_LOG(("Download (%1) warm-up sessions %2..%3."
+		).arg(dcId
+		).arg(already
+		).arg(normalized - 1));
+}
+
+void DownloadManagerMtproto::warmUpMediaCluster(MTP::DcId dcId) {
+	if (!useWssMux()) {
+		return;
+	}
+	warmUpSessions(dcId, kWssInitialDownloadSessions);
+}
+
+void DownloadManagerMtproto::maybeWarmUpSessions(MTP::DcId dcId) {
+	warmUpMediaCluster(dcId);
+}
+
 void DownloadManagerMtproto::enqueue(not_null<Task*> task, int priority) {
 	const auto dcId = task->dcId();
+	maybeWarmUpSessions(dcId);
 	auto &queue = _queues[dcId];
 	queue.enqueue(task, priority);
 	if (!_resetGenerationTimer.isActive()) {
@@ -226,6 +284,67 @@ int DownloadManagerMtproto::changeRequestedAmount(
 	return result;
 }
 
+void DownloadManagerMtproto::downloadRequestSent(MTP::DcId dcId, int index) {
+	const auto i = _balanceData.find(dcId);
+	if (i == end(_balanceData)) {
+		return;
+	}
+	auto &dc = i->second;
+	if (index < 0 || index >= int(dc.sessions.size())) {
+		return;
+	}
+	auto &session = dc.sessions[index];
+	if (session.warm) {
+		return;
+	}
+	const auto now = crl::now();
+	session.coldStartAt = now;
+	session.connectAt = 0;
+	const auto shiftedDcId = MTP::downloadDcId(dcId, index);
+	if (_api->instance().dcstate(shiftedDcId) == MTP::ConnectedState) {
+		session.connectAt = now;
+	}
+}
+
+void DownloadManagerMtproto::downloadSessionConnected(
+		MTP::DcId dcId,
+		int index) {
+	const auto i = _balanceData.find(dcId);
+	if (i == end(_balanceData)) {
+		return;
+	}
+	auto &dc = i->second;
+	if (index < 0 || index >= int(dc.sessions.size())) {
+		return;
+	}
+	auto &session = dc.sessions[index];
+	if (session.warm || !session.coldStartAt || session.connectAt) {
+		return;
+	}
+	session.connectAt = crl::now();
+	DEBUG_LOG(("Download (%1,%2) cold start: connect %3 ms"
+		).arg(dcId
+		).arg(index
+		).arg(session.connectAt - session.coldStartAt));
+}
+
+void DownloadManagerMtproto::downloadSessionReset(
+		MTP::DcId dcId,
+		int index) {
+	const auto i = _balanceData.find(dcId);
+	if (i == end(_balanceData)) {
+		return;
+	}
+	auto &dc = i->second;
+	if (index < 0 || index >= int(dc.sessions.size())) {
+		return;
+	}
+	auto &session = dc.sessions[index];
+	session.coldStartAt = 0;
+	session.connectAt = 0;
+	session.warm = false;
+}
+
 void DownloadManagerMtproto::requestSucceeded(
 		MTP::DcId dcId,
 		int index,
@@ -242,6 +361,22 @@ void DownloadManagerMtproto::requestSucceeded(
 		|| (amountAtRequestStart > data.maxWaitedAmount);
 	const auto parts = amountAtRequestStart / kDownloadPartSize;
 	const auto duration = (crl::now() - timeAtRequestStart);
+	if (!data.warm && data.coldStartAt) {
+		const auto now = crl::now();
+		const auto total = now - data.coldStartAt;
+		const auto connect = data.connectAt
+			? (data.connectAt - data.coldStartAt)
+			: crl::time(0);
+		DEBUG_LOG(("Download (%1,%2) cold start: connect %3 ms, first part %4 ms, total %5 ms"
+			).arg(dcId
+			).arg(index
+			).arg(connect
+			).arg(duration
+			).arg(total));
+		data.warm = true;
+		data.coldStartAt = 0;
+		data.connectAt = 0;
+	}
 	DEBUG_LOG(("Download (%1,%2) request done, duration: %3, parts: %4%5"
 		).arg(dcId
 		).arg(index
@@ -409,6 +544,7 @@ void DownloadManagerMtproto::killSessions(MTP::DcId dcId) {
 		}
 		dc.sessions = base::take(sessions);
 	}
+	_warmedSessionsCount.erase(dcId);
 }
 
 DownloadMtprotoTask::DownloadMtprotoTask(
@@ -808,6 +944,9 @@ void DownloadMtprotoTask::placeSentRequest(
 		dcId(),
 		requestData.sessionIndex,
 		Storage::kDownloadPartSize);
+	if (amount == Storage::kDownloadPartSize) {
+		_owner->downloadRequestSent(dcId(), requestData.sessionIndex);
+	}
 	const auto &[i, ok1] = _sentRequests.emplace(requestId, requestData);
 	const auto &[j, ok2] = _requestByOffset.emplace(
 		requestData.offset,

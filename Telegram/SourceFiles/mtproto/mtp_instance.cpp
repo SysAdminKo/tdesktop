@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "mtproto/mtp_instance.h"
 
+#include "mtproto/facade.h"
 #include "mtproto/details/mtproto_dcenter.h"
 #include "mtproto/details/mtproto_rsa_public_key.h"
 #include "mtproto/special_config_request.h"
@@ -99,6 +100,10 @@ public:
 
 	void restartedByTimeout(ShiftedDcId shiftedDcId);
 	[[nodiscard]] rpl::producer<ShiftedDcId> restartsByTimeout() const;
+	[[nodiscard]] auto downloadSessionStateChanges() const
+	-> rpl::producer<std::pair<ShiftedDcId, int32>>;
+	[[nodiscard]] auto uploadSessionStateChanges() const
+	-> rpl::producer<std::pair<ShiftedDcId, int32>>;
 
 	[[nodiscard]] auto nonPremiumDelayedRequests() const
 	-> rpl::producer<mtpRequestId>;
@@ -245,6 +250,8 @@ private:
 	base::flat_map<ShiftedDcId, std::unique_ptr<Session>> _sessions;
 	std::vector<std::unique_ptr<Session>> _sessionsToDestroy;
 	rpl::event_stream<ShiftedDcId> _restartsByTimeout;
+	rpl::event_stream<std::pair<ShiftedDcId, int32>> _downloadSessionStateChanges;
+	rpl::event_stream<std::pair<ShiftedDcId, int32>> _uploadSessionStateChanges;
 
 	std::unique_ptr<ConfigLoader> _configLoader;
 	std::unique_ptr<DomainResolver> _domainResolver;
@@ -578,6 +585,16 @@ void Instance::Private::restartedByTimeout(ShiftedDcId shiftedDcId) {
 
 rpl::producer<ShiftedDcId> Instance::Private::restartsByTimeout() const {
 	return _restartsByTimeout.events();
+}
+
+auto Instance::Private::downloadSessionStateChanges() const
+-> rpl::producer<std::pair<ShiftedDcId, int32>> {
+	return _downloadSessionStateChanges.events();
+}
+
+auto Instance::Private::uploadSessionStateChanges() const
+-> rpl::producer<std::pair<ShiftedDcId, int32>> {
+	return _uploadSessionStateChanges.events();
 }
 
 auto Instance::Private::nonPremiumDelayedRequests() const
@@ -1229,6 +1246,11 @@ void Instance::Private::processUpdate(const Response &message) {
 }
 
 void Instance::Private::onStateChange(ShiftedDcId dcWithShift, int32 state) {
+	if (isDownloadDcId(dcWithShift)) {
+		_downloadSessionStateChanges.fire_copy({ dcWithShift, state });
+	} else if (isUploadDcId(dcWithShift)) {
+		_uploadSessionStateChanges.fire_copy({ dcWithShift, state });
+	}
 	if (_stateChangedHandler) {
 		_stateChangedHandler(dcWithShift, state);
 	}
@@ -1947,6 +1969,16 @@ void Instance::restartedByTimeout(ShiftedDcId shiftedDcId) {
 
 rpl::producer<ShiftedDcId> Instance::restartsByTimeout() const {
 	return _private->restartsByTimeout();
+}
+
+auto Instance::downloadSessionStateChanges() const
+-> rpl::producer<std::pair<ShiftedDcId, int32>> {
+	return _private->downloadSessionStateChanges();
+}
+
+auto Instance::uploadSessionStateChanges() const
+-> rpl::producer<std::pair<ShiftedDcId, int32>> {
+	return _private->uploadSessionStateChanges();
 }
 
 rpl::producer<mtpRequestId> Instance::nonPremiumDelayedRequests() const {

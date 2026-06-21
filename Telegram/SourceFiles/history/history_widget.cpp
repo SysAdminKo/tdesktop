@@ -161,6 +161,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/localimageloader.h"
 #include "storage/storage_account.h"
 #include "storage/file_upload.h"
+#include "storage/download_manager_mtproto.h"
 #include "storage/storage_media_prepare.h"
 #include "media/audio/media_audio.h"
 #include "media/audio/media_audio_capture.h"
@@ -2885,6 +2886,7 @@ void HistoryWidget::showHistory(
 
 	if (_peer) {
 		setHistory(_peer->owner().history(_peer));
+		session().downloader().warmUpMediaCluster(session().mainDcId());
 		if (_migrated
 			&& !_migrated->isEmpty()
 			&& (!_history->loadedAtTop() || !_migrated->loadedAtBottom())) {

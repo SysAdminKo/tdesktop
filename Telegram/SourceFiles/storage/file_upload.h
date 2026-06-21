@@ -99,8 +99,15 @@ public:
 
 	void unpause();
 	void stopSessions();
+	void warmUpSessions(int count = 1);
 
 private:
+	struct UploadSessionTrack {
+		crl::time coldStartAt = 0;
+		crl::time connectAt = 0;
+		bool warm = false;
+	};
+
 	struct Entry;
 	struct Request;
 
@@ -124,6 +131,13 @@ private:
 		-> SendResult;
 	[[nodiscard]] QByteArray readDocPart(not_null<Entry*> entry);
 	void removeDcIndex();
+
+	[[nodiscard]] bool useWssMux() const;
+	void ensureSessionTracks(int count);
+	void uploadRequestSent(int index);
+	void uploadSessionConnected(int index);
+	void uploadSessionReset(int index);
+	[[nodiscard]] crl::time fastRequestThreshold() const;
 
 	template <typename Prepared>
 	void sendPreparedRequest(Prepared &&prepared, Request &&request);
@@ -162,6 +176,8 @@ private:
 
 	base::flat_map<mtpRequestId, Request> _requests;
 	std::vector<int> _sentPerDcIndex;
+	std::vector<UploadSessionTrack> _sessionTracks;
+	bool _useWssMux = false;
 
 	// Fast requests since the latest dc index addition.
 	base::flat_set<uchar> _dcIndicesWithFastRequests;
