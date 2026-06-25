@@ -501,6 +501,9 @@ void TcpConnection::disconnectFromServer() {
 	_status = Status::Finished;
 	_connectedLifetime.destroy();
 	_lifetime.destroy();
+	if (_socket) {
+		_socket->closeGracefully();
+	}
 	_socket = nullptr;
 }
 

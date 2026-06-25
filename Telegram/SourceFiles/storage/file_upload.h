@@ -100,6 +100,15 @@ public:
 	void unpause();
 	void stopSessions();
 	void warmUpSessions(int count = 1);
+	void tryWarmUpSessions();
+	void warmUpSessionConnected(int index);
+	[[nodiscard]] bool isWarmUpReady() const;
+	[[nodiscard]] bool isWarmUpComplete() const;
+	void onWarmUpReady();
+	void scheduleWarmUpSettle();
+	[[nodiscard]] bool isUploadSessionWarmReady(int index) const;
+	void markUploadSessionWarm(int index);
+	void warmSessionDisconnected(int index);
 
 private:
 	struct UploadSessionTrack {
@@ -133,6 +142,7 @@ private:
 	void removeDcIndex();
 
 	[[nodiscard]] bool useWssMux() const;
+	[[nodiscard]] crl::time killSessionTimeout() const;
 	void ensureSessionTracks(int count);
 	void uploadRequestSent(int index);
 	void uploadSessionConnected(int index);
@@ -178,6 +188,10 @@ private:
 	std::vector<int> _sentPerDcIndex;
 	std::vector<UploadSessionTrack> _sessionTracks;
 	bool _useWssMux = false;
+	int _warmUpTarget = 0;
+	base::flat_set<int> _warmUpConnected;
+	bool _warmUpReadyLogged = false;
+	crl::time _warmUpSettleUntil = 0;
 
 	// Fast requests since the latest dc index addition.
 	base::flat_set<uchar> _dcIndicesWithFastRequests;
@@ -189,7 +203,7 @@ private:
 	base::flat_map<FullMsgId, UploadedMedia> _videoWaitingCover;
 
 	FullMsgId _pausedId;
-	base::Timer _nextTimer, _stopSessionsTimer;
+	base::Timer _nextTimer, _stopSessionsTimer, _warmUpSettleTimer;
 
 	rpl::event_stream<UploadedMedia> _photoReady;
 	rpl::event_stream<UploadedMedia> _documentReady;

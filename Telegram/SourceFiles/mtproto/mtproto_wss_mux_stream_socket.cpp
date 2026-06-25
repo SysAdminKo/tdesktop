@@ -181,6 +181,10 @@ void MuxStreamSocket::timedOut() {
 	_error.fire({});
 }
 
+void MuxStreamSocket::closeGracefully() {
+	sendClose();
+}
+
 bool MuxStreamSocket::isConnected() {
 	return (_state == State::Connected);
 }

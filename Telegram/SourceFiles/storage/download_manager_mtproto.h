@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "data/data_file_origin.h"
+#include "base/flat_set.h"
 #include "base/timer.h"
 #include "base/weak_ptr.h"
 
@@ -122,7 +123,17 @@ private:
 	void removeSession(MTP::DcId dcId);
 
 	[[nodiscard]] bool useWssMux() const;
+	[[nodiscard]] crl::time killSessionTimeout() const;
 	void maybeWarmUpSessions(MTP::DcId dcId);
+	[[nodiscard]] bool isWarmUpReady(MTP::DcId dcId) const;
+	[[nodiscard]] bool isWarmUpComplete(MTP::DcId dcId) const;
+	void tryWarmUpSessions(MTP::DcId dcId);
+	void warmSessionConnected(MTP::DcId dcId, int index);
+	void onWarmUpReady(MTP::DcId dcId);
+	void scheduleWarmUpSettle(MTP::DcId dcId);
+	[[nodiscard]] bool isSessionWarmReady(MTP::DcId dcId, int index) const;
+	void markBalanceSessionWarm(MTP::DcId dcId, int index);
+	void warmSessionDisconnected(MTP::DcId dcId, int index);
 
 	const not_null<ApiWrap*> _api;
 
@@ -136,7 +147,11 @@ private:
 	base::Timer _killSessionsTimer;
 
 	base::flat_map<MTP::DcId, Queue> _queues;
-	base::flat_map<MTP::DcId, int> _warmedSessionsCount;
+	base::flat_map<MTP::DcId, int> _warmUpTarget;
+	base::flat_map<MTP::DcId, base::flat_set<int>> _warmUpConnected;
+	base::flat_set<MTP::DcId> _warmUpReadyLogged;
+	base::flat_map<MTP::DcId, crl::time> _warmUpSettleUntil;
+	base::Timer _warmUpSettleTimer;
 	rpl::lifetime _lifetime;
 
 };

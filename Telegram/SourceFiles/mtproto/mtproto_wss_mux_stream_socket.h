@@ -20,6 +20,7 @@ public:
 	void connectToHost(const QString &address, int port) override;
 	bool isGoodStartNonce(bytes::const_span nonce) override;
 	void timedOut() override;
+	void closeGracefully() override;
 	bool isConnected() override;
 	bool hasBytesAvailable() override;
 	int64 read(bytes::span buffer) override;

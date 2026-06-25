@@ -60,6 +60,9 @@ public:
 		bytes::const_span prefix,
 		bytes::const_span buffer) = 0;
 
+	virtual void closeGracefully() {
+	}
+
 	virtual int32 debugState() = 0;
 	[[nodiscard]] virtual QString debugPostfix() const = 0;
 

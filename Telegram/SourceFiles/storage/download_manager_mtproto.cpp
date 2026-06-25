@@ -22,6 +22,7 @@ namespace Storage {
 namespace {
 
 constexpr auto kKillSessionTimeout = 15 * crl::time(1000);
+constexpr auto kWssKillSessionTimeout = 3 * 60 * crl::time(1000);
 constexpr auto kStartWaitedInSession = 4 * kDownloadPartSize;
 constexpr auto kMaxWaitedInSession = 16 * kDownloadPartSize;
 constexpr auto kStartSessionsCount = 1;
@@ -35,6 +36,8 @@ constexpr auto kRemoveSessionAfterTimeouts = 4;
 constexpr auto kResetDownloadPrioritiesTimeout = crl::time(200);
 constexpr auto kBadRequestDurationThreshold = 8 * crl::time(1000);
 constexpr auto kWssInitialDownloadSessions = 3;
+constexpr auto kWssWarmUpMinReadySessions = 1;
+constexpr auto kWssWarmUpSettleDelay = crl::time(150);
 
 // Each (session remove by timeouts) we wait for time:
 // kRetryAddSessionTimeout * max(removesCount, kMaxTrackedSessionRemoves)
@@ -123,7 +126,8 @@ DownloadManagerMtproto::DcBalanceData::DcBalanceData()
 DownloadManagerMtproto::DownloadManagerMtproto(not_null<ApiWrap*> api)
 : _api(api)
 , _resetGenerationTimer([=] { resetGeneration(); })
-, _killSessionsTimer([=] { killSessions(); }) {
+, _killSessionsTimer([=] { killSessions(); })
+, _warmUpSettleTimer([=] { checkSendNext(); }) {
 	const auto &instance = _api->instance();
 	instance.restartsByTimeout(
 	) | rpl::filter([](MTP::ShiftedDcId shiftedDcId) {
@@ -144,6 +148,7 @@ DownloadManagerMtproto::DownloadManagerMtproto(not_null<ApiWrap*> api)
 		const auto index = MTP::GetDcIdShift(shiftedDcId)
 			- MTP::kBaseDownloadDcShift;
 		if (state == MTP::ConnectedState) {
+			warmSessionConnected(dcId, index);
 			downloadSessionConnected(dcId, index);
 		} else if (state == MTP::DisconnectedState) {
 			downloadSessionReset(dcId, index);
@@ -164,26 +169,202 @@ bool DownloadManagerMtproto::useWssMux() const {
 		&& proxy.selected().type == MTP::ProxyData::Type::WebSocket;
 }
 
+crl::time DownloadManagerMtproto::killSessionTimeout() const {
+	return useWssMux() ? kWssKillSessionTimeout : kKillSessionTimeout;
+}
+
 void DownloadManagerMtproto::warmUpSessions(MTP::DcId dcId, int count) {
-	const auto normalized = std::clamp(count, 1, kMaxSessionsCount);
-	const auto i = _warmedSessionsCount.find(dcId);
-	const auto already = (i != end(_warmedSessionsCount)) ? i->second : 0;
-	if (already >= normalized) {
+	if (!useWssMux()) {
 		return;
 	}
-	for (auto i = already; i != normalized; ++i) {
-		_api->instance().sendAnything(MTP::downloadDcId(dcId, i));
+	const auto normalized = std::clamp(count, 1, kMaxSessionsCount);
+	const auto i = _warmUpTarget.find(dcId);
+	if (i != end(_warmUpTarget)) {
+		i->second = std::max(i->second, normalized);
+	} else {
+		_warmUpTarget.emplace(dcId, normalized);
 	}
-	_warmedSessionsCount[dcId] = normalized;
-	DEBUG_LOG(("Download (%1) warm-up sessions %2..%3."
-		).arg(dcId
-		).arg(already
-		).arg(normalized - 1));
+	tryWarmUpSessions(dcId);
+}
+
+bool DownloadManagerMtproto::isWarmUpReady(MTP::DcId dcId) const {
+	const auto target = _warmUpTarget.find(dcId);
+	if (target == end(_warmUpTarget)) {
+		return true;
+	}
+	const auto connected = _warmUpConnected.find(dcId);
+	if (connected == end(_warmUpConnected)) {
+		return false;
+	}
+	const auto minReady = std::min(
+		target->second,
+		kWssWarmUpMinReadySessions);
+	for (auto i = 0; i != minReady; ++i) {
+		if (!connected->second.contains(i)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool DownloadManagerMtproto::isWarmUpComplete(MTP::DcId dcId) const {
+	const auto target = _warmUpTarget.find(dcId);
+	if (target == end(_warmUpTarget)) {
+		return true;
+	}
+	const auto connected = _warmUpConnected.find(dcId);
+	if (connected == end(_warmUpConnected)) {
+		return false;
+	}
+	for (auto i = 0; i != target->second; ++i) {
+		if (!connected->second.contains(i)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+void DownloadManagerMtproto::onWarmUpReady(MTP::DcId dcId) {
+	if (!_warmUpReadyLogged.emplace(dcId).second) {
+		return;
+	}
+	DEBUG_LOG(("Download (%1) warm-up session 0 connected, ready."
+		).arg(dcId));
+	scheduleWarmUpSettle(dcId);
+	const auto queueIt = _queues.find(dcId);
+	if (queueIt != end(_queues)) {
+		checkSendNext(dcId, queueIt->second);
+	}
+}
+
+void DownloadManagerMtproto::scheduleWarmUpSettle(MTP::DcId dcId) {
+	if (_warmUpSettleUntil.contains(dcId)) {
+		return;
+	}
+	_warmUpSettleUntil.emplace(dcId, crl::now() + kWssWarmUpSettleDelay);
+	if (!_warmUpSettleTimer.isActive()) {
+		_warmUpSettleTimer.callOnce(kWssWarmUpSettleDelay);
+	}
+}
+
+bool DownloadManagerMtproto::isSessionWarmReady(
+		MTP::DcId dcId,
+		int index) const {
+	if (!useWssMux()) {
+		return true;
+	}
+	const auto targetIt = _warmUpTarget.find(dcId);
+	if (targetIt == end(_warmUpTarget) || index >= targetIt->second) {
+		return true;
+	}
+	const auto connectedIt = _warmUpConnected.find(dcId);
+	return connectedIt != end(_warmUpConnected)
+		&& connectedIt->second.contains(index);
+}
+
+void DownloadManagerMtproto::markBalanceSessionWarm(
+		MTP::DcId dcId,
+		int index) {
+	const auto i = _balanceData.find(dcId);
+	if (i == end(_balanceData) || index >= int(i->second.sessions.size())) {
+		return;
+	}
+	auto &session = i->second.sessions[index];
+	session.warm = true;
+	session.coldStartAt = 0;
+	session.connectAt = 0;
+}
+
+void DownloadManagerMtproto::warmSessionDisconnected(
+		MTP::DcId dcId,
+		int index) {
+	if (!useWssMux()) {
+		return;
+	}
+	const auto targetIt = _warmUpTarget.find(dcId);
+	if (targetIt == end(_warmUpTarget) || index >= targetIt->second) {
+		return;
+	}
+	const auto connectedIt = _warmUpConnected.find(dcId);
+	if (connectedIt == end(_warmUpConnected)) {
+		return;
+	} else if (!connectedIt->second.remove(index)) {
+		return;
+	}
+	tryWarmUpSessions(dcId);
+}
+
+void DownloadManagerMtproto::tryWarmUpSessions(MTP::DcId dcId) {
+	const auto targetIt = _warmUpTarget.find(dcId);
+	if (targetIt == end(_warmUpTarget)) {
+		return;
+	}
+	const auto target = targetIt->second;
+	auto &connected = _warmUpConnected[dcId];
+	auto &instance = _api->instance();
+	for (auto i = 0; i != target; ++i) {
+		if (connected.contains(i)) {
+			continue;
+		}
+		const auto shiftedDcId = MTP::downloadDcId(dcId, i);
+		if (instance.dcstate(shiftedDcId) == MTP::ConnectedState) {
+			connected.emplace(i);
+			markBalanceSessionWarm(dcId, i);
+			continue;
+		}
+		instance.sendAnything(shiftedDcId);
+	}
+	if (isWarmUpReady(dcId)) {
+		onWarmUpReady(dcId);
+	}
+	if (isWarmUpComplete(dcId)) {
+		DEBUG_LOG(("Download (%1) warm-up sessions 0..%2 connected."
+			).arg(dcId
+			).arg(target - 1));
+	}
+	const auto queueIt = _queues.find(dcId);
+	if (queueIt != end(_queues) && !queueIt->second.empty()) {
+		checkSendNext(dcId, queueIt->second);
+	}
+}
+
+void DownloadManagerMtproto::warmSessionConnected(
+		MTP::DcId dcId,
+		int index) {
+	if (!useWssMux()) {
+		return;
+	}
+	const auto targetIt = _warmUpTarget.find(dcId);
+	if (targetIt == end(_warmUpTarget) || index >= targetIt->second) {
+		return;
+	}
+	auto &connected = _warmUpConnected[dcId];
+	if (!connected.emplace(index).second) {
+		return;
+	}
+	markBalanceSessionWarm(dcId, index);
+	if (isWarmUpReady(dcId)) {
+		onWarmUpReady(dcId);
+	}
+	if (isWarmUpComplete(dcId)) {
+		DEBUG_LOG(("Download (%1) warm-up sessions 0..%2 connected."
+			).arg(dcId
+			).arg(targetIt->second - 1));
+	}
+	const auto queueIt = _queues.find(dcId);
+	if (queueIt != end(_queues)) {
+		checkSendNext(dcId, queueIt->second);
+	}
 }
 
 void DownloadManagerMtproto::warmUpMediaCluster(MTP::DcId dcId) {
 	if (!useWssMux()) {
 		return;
+	} else if (isWarmUpComplete(dcId)) {
+		const auto i = _warmUpTarget.find(dcId);
+		if (i != end(_warmUpTarget) && i->second >= kWssInitialDownloadSessions) {
+			return;
+		}
 	}
 	warmUpSessions(dcId, kWssInitialDownloadSessions);
 }
@@ -236,6 +417,16 @@ void DownloadManagerMtproto::checkSendNextAfterSuccess(MTP::DcId dcId) {
 }
 
 bool DownloadManagerMtproto::trySendNextPart(MTP::DcId dcId, Queue &queue) {
+	if (useWssMux()) {
+		if (_warmUpTarget.contains(dcId) && !isWarmUpReady(dcId)) {
+			return false;
+		}
+		const auto settleIt = _warmUpSettleUntil.find(dcId);
+		if (settleIt != end(_warmUpSettleUntil)
+			&& crl::now() < settleIt->second) {
+			return false;
+		}
+	}
 	auto &balanceData = _balanceData[dcId];
 	const auto &sessions = balanceData.sessions;
 	const auto bestIndex = [&] {
@@ -244,10 +435,21 @@ bool DownloadManagerMtproto::trySendNextPart(MTP::DcId dcId, Queue &queue) {
 				? data.requested
 				: kMaxWaitedInSession;
 		};
-		const auto j = ranges::min_element(sessions, ranges::less(), proj);
-		return (j->requested + kDownloadPartSize <= j->maxWaitedAmount)
-			? (j - begin(sessions))
-			: -1;
+		auto best = -1;
+		auto bestLoad = kMaxWaitedInSession;
+		for (auto i = 0; i != int(sessions.size()); ++i) {
+			if (!isSessionWarmReady(dcId, i)) {
+				continue;
+			}
+			const auto &data = sessions[i];
+			const auto load = proj(data);
+			if (load < bestLoad
+				&& data.requested + kDownloadPartSize <= data.maxWaitedAmount) {
+				bestLoad = load;
+				best = i;
+			}
+		}
+		return best;
 	}();
 	if (bestIndex < 0) {
 		return false;
@@ -297,6 +499,14 @@ void DownloadManagerMtproto::downloadRequestSent(MTP::DcId dcId, int index) {
 	if (session.warm) {
 		return;
 	}
+	const auto warmed = [&] {
+		const auto i = _warmUpConnected.find(dcId);
+		return (i != end(_warmUpConnected) && i->second.contains(index));
+	}();
+	if (warmed) {
+		session.warm = true;
+		return;
+	}
 	const auto now = crl::now();
 	session.coldStartAt = now;
 	session.connectAt = 0;
@@ -343,6 +553,7 @@ void DownloadManagerMtproto::downloadSessionReset(
 	session.coldStartAt = 0;
 	session.connectAt = 0;
 	session.warm = false;
+	warmSessionDisconnected(dcId, index);
 }
 
 void DownloadManagerMtproto::requestSucceeded(
@@ -427,10 +638,14 @@ void DownloadManagerMtproto::requestSucceeded(
 		return;
 	}
 	dc.sessions.emplace_back();
+	const auto newIndex = int(dc.sessions.size()) - 1;
 	DEBUG_LOG(("Download (%1,%2) adding, now sessions: %3"
 		).arg(dcId
-		).arg(dc.sessions.size() - 1
+		).arg(newIndex
 		).arg(dc.sessions.size()));
+	if (useWssMux()) {
+		warmUpSessions(dcId, dc.sessions.size());
+	}
 }
 
 int DownloadManagerMtproto::chooseSessionIndex(MTP::DcId dcId) const {
@@ -496,11 +711,12 @@ void DownloadManagerMtproto::removeSession(MTP::DcId dcId) {
 }
 
 void DownloadManagerMtproto::killSessionsSchedule(MTP::DcId dcId) {
+	const auto timeout = killSessionTimeout();
 	if (!_killSessionsWhen.contains(dcId)) {
-		_killSessionsWhen.emplace(dcId, crl::now() + kKillSessionTimeout);
+		_killSessionsWhen.emplace(dcId, crl::now() + timeout);
 	}
 	if (!_killSessionsTimer.isActive()) {
-		_killSessionsTimer.callOnce(kKillSessionTimeout + 5);
+		_killSessionsTimer.callOnce(timeout + 5);
 	}
 }
 
@@ -513,7 +729,7 @@ void DownloadManagerMtproto::killSessionsCancel(MTP::DcId dcId) {
 
 void DownloadManagerMtproto::killSessions() {
 	const auto now = crl::now();
-	auto left = kKillSessionTimeout;
+	auto left = killSessionTimeout();
 	for (auto i = begin(_killSessionsWhen); i != end(_killSessionsWhen); ) {
 		if (i->second <= now) {
 			killSessions(i->first);
@@ -544,7 +760,10 @@ void DownloadManagerMtproto::killSessions(MTP::DcId dcId) {
 		}
 		dc.sessions = base::take(sessions);
 	}
-	_warmedSessionsCount.erase(dcId);
+	_warmUpTarget.erase(dcId);
+	_warmUpConnected.erase(dcId);
+	_warmUpReadyLogged.remove(dcId);
+	_warmUpSettleUntil.erase(dcId);
 }
 
 DownloadMtprotoTask::DownloadMtprotoTask(

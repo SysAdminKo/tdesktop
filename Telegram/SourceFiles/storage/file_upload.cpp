@@ -55,6 +55,7 @@ constexpr auto kUploadRequestInterval = crl::time(250);
 
 // How much time without upload causes additional session kill.
 constexpr auto kKillSessionTimeout = 15 * crl::time(1000);
+constexpr auto kWssKillSessionTimeout = 3 * 60 * crl::time(1000);
 
 // How much wait after session kill before killing another one.
 constexpr auto kWaitForNormalizeTimeout = 8 * crl::time(1000);
@@ -65,6 +66,8 @@ constexpr auto kWssFastRequestThreshold = 5 * crl::time(1000);
 constexpr auto kSlowRequestThreshold = 8 * crl::time(1000);
 constexpr auto kWssInitialUploadSessions = 3;
 constexpr auto kWssWarmUpFileSize = 2 * 1024 * 1024;
+constexpr auto kWssWarmUpMinReadySessions = 1;
+constexpr auto kWssWarmUpSettleDelay = crl::time(150);
 
 // Request is 'fast' if it was done in less than 1s and
 // (it-s size + queued before size) >= 512kb.
@@ -161,7 +164,8 @@ bool Uploader::Entry::setPartSize(int partSize) {
 Uploader::Uploader(not_null<ApiWrap*> api)
 : _api(api)
 , _nextTimer([=] { maybeSend(); })
-, _stopSessionsTimer([=] { stopSessions(); }) {
+, _stopSessionsTimer([=] { stopSessions(); })
+, _warmUpSettleTimer([=] { maybeSend(); }) {
 	const auto session = &_api->session();
 	const auto &instance = _api->instance();
 	instance.uploadSessionStateChanges(
@@ -170,6 +174,7 @@ Uploader::Uploader(not_null<ApiWrap*> api)
 		const auto index = MTP::GetDcIdShift(shiftedDcId)
 			- MTP::kBaseUploadDcShift;
 		if (state == MTP::ConnectedState) {
+			warmUpSessionConnected(index);
 			uploadSessionConnected(index);
 		} else if (state == MTP::DisconnectedState) {
 			uploadSessionReset(index);
@@ -449,7 +454,7 @@ void Uploader::notifyFailed(const Entry &entry) {
 
 void Uploader::stopSessions() {
 	if (ranges::any_of(_sentPerDcIndex, rpl::mappers::_1 != 0)) {
-		_stopSessionsTimer.callOnce(kKillSessionTimeout);
+		_stopSessionsTimer.callOnce(killSessionTimeout());
 	} else {
 		for (auto i = 0; i != int(_sentPerDcIndex.size()); ++i) {
 			_api->instance().stopSession(MTP::uploadDcId(i));
@@ -457,6 +462,10 @@ void Uploader::stopSessions() {
 		_sentPerDcIndex.clear();
 		_sessionTracks.clear();
 		_dcIndicesWithFastRequests.clear();
+		_warmUpTarget = 0;
+		_warmUpConnected.clear();
+		_warmUpReadyLogged = false;
+		_warmUpSettleUntil = 0;
 	}
 }
 
@@ -466,14 +475,139 @@ bool Uploader::useWssMux() const {
 		&& proxy.selected().type == MTP::ProxyData::Type::WebSocket;
 }
 
+crl::time Uploader::killSessionTimeout() const {
+	return _useWssMux ? kWssKillSessionTimeout : kKillSessionTimeout;
+}
+
 crl::time Uploader::fastRequestThreshold() const {
 	return _useWssMux ? kWssFastRequestThreshold : kFastRequestThreshold;
 }
 
 void Uploader::warmUpSessions(int count) {
-	for (auto i = 0; i != count; ++i) {
-		_api->instance().sendAnything(MTP::uploadDcId(i));
+	if (!_useWssMux) {
+		return;
 	}
+	const auto normalized = std::clamp(count, 1, kMaxSessionsCount);
+	_warmUpTarget = std::max(_warmUpTarget, normalized);
+	tryWarmUpSessions();
+}
+
+bool Uploader::isWarmUpReady() const {
+	if (!_warmUpTarget) {
+		return true;
+	}
+	const auto minReady = std::min(
+		_warmUpTarget,
+		kWssWarmUpMinReadySessions);
+	for (auto i = 0; i != minReady; ++i) {
+		if (!_warmUpConnected.contains(i)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool Uploader::isWarmUpComplete() const {
+	if (!_warmUpTarget) {
+		return true;
+	}
+	for (auto i = 0; i != _warmUpTarget; ++i) {
+		if (!_warmUpConnected.contains(i)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+void Uploader::onWarmUpReady() {
+	if (_warmUpReadyLogged) {
+		return;
+	}
+	_warmUpReadyLogged = true;
+	DEBUG_LOG(("Upload warm-up session 0 connected, ready."));
+	scheduleWarmUpSettle();
+	maybeSend();
+}
+
+void Uploader::scheduleWarmUpSettle() {
+	if (_warmUpSettleUntil) {
+		return;
+	}
+	_warmUpSettleUntil = crl::now() + kWssWarmUpSettleDelay;
+	if (!_warmUpSettleTimer.isActive()) {
+		_warmUpSettleTimer.callOnce(kWssWarmUpSettleDelay);
+	}
+}
+
+bool Uploader::isUploadSessionWarmReady(int index) const {
+	if (!_useWssMux || !_warmUpTarget || index >= _warmUpTarget) {
+		return true;
+	}
+	return _warmUpConnected.contains(index);
+}
+
+void Uploader::markUploadSessionWarm(int index) {
+	ensureSessionTracks(index + 1);
+	auto &track = _sessionTracks[index];
+	track.warm = true;
+	track.coldStartAt = 0;
+	track.connectAt = 0;
+}
+
+void Uploader::warmSessionDisconnected(int index) {
+	if (!_useWssMux || !_warmUpTarget || index >= _warmUpTarget) {
+		return;
+	} else if (!_warmUpConnected.remove(index)) {
+		return;
+	}
+	tryWarmUpSessions();
+}
+
+void Uploader::tryWarmUpSessions() {
+	if (!_warmUpTarget) {
+		return;
+	}
+	auto &instance = _api->instance();
+	for (auto i = 0; i != _warmUpTarget; ++i) {
+		if (_warmUpConnected.contains(i)) {
+			continue;
+		}
+		const auto shiftedDcId = MTP::uploadDcId(i);
+		if (instance.dcstate(shiftedDcId) == MTP::ConnectedState) {
+			_warmUpConnected.emplace(i);
+			markUploadSessionWarm(i);
+			continue;
+		}
+		instance.sendAnything(shiftedDcId);
+	}
+	if (isWarmUpReady()) {
+		onWarmUpReady();
+	}
+	if (isWarmUpComplete()) {
+		DEBUG_LOG(("Upload warm-up sessions 0..%1 connected."
+			).arg(_warmUpTarget - 1));
+	}
+	if (!_queue.empty()) {
+		maybeSend();
+	}
+}
+
+void Uploader::warmUpSessionConnected(int index) {
+	if (!_useWssMux || index >= _warmUpTarget) {
+		return;
+	}
+	if (!_warmUpConnected.emplace(index).second) {
+		return;
+	}
+	markUploadSessionWarm(index);
+	if (isWarmUpReady()) {
+		onWarmUpReady();
+	}
+	if (isWarmUpComplete()) {
+		DEBUG_LOG(("Upload warm-up sessions 0..%1 connected."
+			).arg(_warmUpTarget - 1));
+	}
+	maybeSend();
 }
 
 void Uploader::ensureSessionTracks(int count) {
@@ -486,6 +620,9 @@ void Uploader::uploadRequestSent(int index) {
 	ensureSessionTracks(index + 1);
 	auto &track = _sessionTracks[index];
 	if (track.warm) {
+		return;
+	} else if (_warmUpConnected.contains(index)) {
+		track.warm = true;
 		return;
 	}
 	const auto now = crl::now();
@@ -516,6 +653,7 @@ void Uploader::uploadSessionReset(int index) {
 	track.coldStartAt = 0;
 	track.connectAt = 0;
 	track.warm = false;
+	warmSessionDisconnected(index);
 }
 
 QByteArray Uploader::readDocPart(not_null<Entry*> entry) {
@@ -564,7 +702,9 @@ bool Uploader::canAddDcIndex() const {
 std::optional<uchar> Uploader::chooseDcIndexForNextRequest(
 		const base::flat_set<uchar> &used) {
 	for (auto i = 0, count = int(_sentPerDcIndex.size()); i != count; ++i) {
-		if (!_sentPerDcIndex[i] && !used.contains(i)) {
+		if (!_sentPerDcIndex[i]
+			&& !used.contains(i)
+			&& isUploadSessionWarmReady(i)) {
 			return i;
 		}
 	}
@@ -573,13 +713,19 @@ std::optional<uchar> Uploader::chooseDcIndexForNextRequest(
 		_sentPerDcIndex.push_back(0);
 		_dcIndicesWithFastRequests.clear();
 		_latestDcIndexAdded = crl::now();
+		if (_useWssMux) {
+			warmUpSessions(result + 1);
+		}
 
 		DEBUG_LOG(("Uploader: Added dc index %1.").arg(result));
-		return result;
+		if (isUploadSessionWarmReady(result)) {
+			return result;
+		}
 	}
 	auto result = std::optional<int>();
 	for (auto i = 0, count = int(_sentPerDcIndex.size()); i != count; ++i) {
 		if (!used.contains(i)
+			&& isUploadSessionWarmReady(i)
 			&& (!result.has_value()
 				|| _sentPerDcIndex[i] < _sentPerDcIndex[*result])) {
 			result = i;
@@ -739,7 +885,7 @@ void Uploader::maybeSend() {
 	const auto stopping = _stopSessionsTimer.isActive();
 	if (_queue.empty()) {
 		if (!stopping) {
-			_stopSessionsTimer.callOnce(kKillSessionTimeout);
+			_stopSessionsTimer.callOnce(killSessionTimeout());
 		}
 		_pausedId = FullMsgId();
 		return;
@@ -747,6 +893,12 @@ void Uploader::maybeSend() {
 		return;
 	} else if (stopping) {
 		_stopSessionsTimer.cancel();
+	} else if (_useWssMux && _warmUpTarget && !isWarmUpReady()) {
+		return;
+	} else if (_useWssMux
+		&& _warmUpSettleUntil
+		&& crl::now() < _warmUpSettleUntil) {
+		return;
 	}
 
 	auto usedDcIndices = base::flat_set<uchar>();
