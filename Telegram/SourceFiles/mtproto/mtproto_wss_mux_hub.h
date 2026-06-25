@@ -25,6 +25,8 @@ public:
 		const QString &host,
 		const std::vector<QString> &ips);
 	void EnsureStarted();
+	void SetProxyActive(bool active);
+	void StopTunnels();
 	void Shutdown();
 
 	[[nodiscard]] std::unique_ptr<details::AbstractSocket> AcquireStream(

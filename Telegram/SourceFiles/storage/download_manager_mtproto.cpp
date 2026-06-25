@@ -253,13 +253,26 @@ bool DownloadManagerMtproto::isSessionWarmReady(
 	if (!useWssMux()) {
 		return true;
 	}
+	const auto balanceIt = _balanceData.find(dcId);
+	if (balanceIt == end(_balanceData)
+		|| index >= int(balanceIt->second.sessions.size())) {
+		return true;
+	}
 	const auto targetIt = _warmUpTarget.find(dcId);
 	if (targetIt == end(_warmUpTarget) || index >= targetIt->second) {
-		return true;
+		return false;
 	}
 	const auto connectedIt = _warmUpConnected.find(dcId);
 	return connectedIt != end(_warmUpConnected)
 		&& connectedIt->second.contains(index);
+}
+
+int DownloadManagerMtproto::warmUpRequiredSessionCount(MTP::DcId dcId) const {
+	const auto i = _balanceData.find(dcId);
+	const auto existing = (i != end(_balanceData))
+		? int(i->second.sessions.size())
+		: 0;
+	return std::max(kWssInitialDownloadSessions, existing);
 }
 
 void DownloadManagerMtproto::markBalanceSessionWarm(
@@ -360,13 +373,15 @@ void DownloadManagerMtproto::warmSessionConnected(
 void DownloadManagerMtproto::warmUpMediaCluster(MTP::DcId dcId) {
 	if (!useWssMux()) {
 		return;
-	} else if (isWarmUpComplete(dcId)) {
+	}
+	const auto required = warmUpRequiredSessionCount(dcId);
+	if (isWarmUpComplete(dcId)) {
 		const auto i = _warmUpTarget.find(dcId);
-		if (i != end(_warmUpTarget) && i->second >= kWssInitialDownloadSessions) {
+		if (i != end(_warmUpTarget) && i->second >= required) {
 			return;
 		}
 	}
-	warmUpSessions(dcId, kWssInitialDownloadSessions);
+	warmUpSessions(dcId, required);
 }
 
 void DownloadManagerMtproto::maybeWarmUpSessions(MTP::DcId dcId) {

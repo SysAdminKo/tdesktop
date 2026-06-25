@@ -3,6 +3,7 @@
 #include "mtproto/mtproto_wss_mux_stream_socket.h"
 #include "mtproto/mtproto_wss_mux_tunnel.h"
 #include "mtproto/mtproto_proxy_data.h"
+#include "mtproto/mtproto_wss_connect_gate.h"
 #include "mtproto/details/mtproto_wss_mux_framing.h"
 
 #include "base/invoke_queued.h"
@@ -119,6 +120,7 @@ struct WssMuxHub::Private : public QObject {
 	HubConfig config;
 	bool started = false;
 	bool shuttingDown = false;
+	bool proxyActive = false;
 	bool authRejected = false;
 	uint32 nextStreamId = 1;
 	QMutex streamsMutex;
@@ -204,7 +206,10 @@ struct WssMuxHub::Private : public QObject {
 	}
 
 	void replaceTunnel(int index, const ProxyData &proxy) {
-		if (authRejected || index < 0 || index >= config.tunnelCount) {
+		if (!proxyActive
+			|| authRejected
+			|| index < 0
+			|| index >= config.tunnelCount) {
 			return;
 		}
 		failStreamsOnTunnel(index);
@@ -220,7 +225,7 @@ struct WssMuxHub::Private : public QObject {
 	}
 
 	void syncTunnelsToResolvedIps() {
-		if (shuttingDown || !started || authRejected) {
+		if (shuttingDown || !proxyActive || !started || authRejected) {
 			return;
 		}
 		auto ips = config.resolvedIPs;
@@ -314,6 +319,7 @@ struct WssMuxHub::Private : public QObject {
 
 	void scheduleReconnect(int index) {
 		if (shuttingDown
+			|| !proxyActive
 			|| authRejected
 			|| index < 0
 			|| index >= int(tunnels.size())) {
@@ -330,6 +336,7 @@ struct WssMuxHub::Private : public QObject {
 
 	void tryReconnectTunnel(int index) {
 		if (shuttingDown
+			|| !proxyActive
 			|| authRejected
 			|| index < 0
 			|| index >= int(tunnels.size())
@@ -476,7 +483,7 @@ struct WssMuxHub::Private : public QObject {
 	}
 
 	void startTunnels() {
-		if (started || shuttingDown || authRejected) {
+		if (started || shuttingDown || !proxyActive || authRejected) {
 			return;
 		}
 		started = true;
@@ -498,6 +505,11 @@ struct WssMuxHub::Private : public QObject {
 	void requestOpen(uint32 streamId, const QString &host, int port) {
 		if (shuttingDown) {
 			return;
+		} else if (!proxyActive) {
+			postStreamEvent(streamId, [](details::MuxStreamSocket *socket) {
+				socket->handleOpenFail();
+			});
+			return;
 		} else if (authRejected) {
 			postStreamEvent(streamId, [](details::MuxStreamSocket *socket) {
 				socket->handleOpenFail();
@@ -509,6 +521,12 @@ struct WssMuxHub::Private : public QObject {
 			const auto weak = QPointer<Private>(this);
 			QTimer::singleShot(kOpenRetryDelay, this, [=] {
 				if (!weak || weak->shuttingDown) {
+					return;
+				} else if (!weak->proxyActive) {
+					weak->postStreamEvent(streamId, [](
+							details::MuxStreamSocket *socket) {
+						socket->handleOpenFail();
+					});
 					return;
 				}
 				{
@@ -559,6 +577,9 @@ WssMuxHub::~WssMuxHub() {
 void WssMuxHub::Configure(const ProxyData &proxy, int tunnelCount) {
 	const auto config = ConfigFromProxy(proxy, tunnelCount);
 	InvokeQueued(_private.get(), [=, config = config]() mutable {
+		if (!_private->proxyActive) {
+			return;
+		}
 		_private->ensureHubThreadRunning();
 		const auto sameEndpoint = (_private->config == config);
 		if (!config.resolvedIPs.empty()) {
@@ -583,7 +604,9 @@ void WssMuxHub::ApplyResolvedIps(
 		return;
 	}
 	InvokeQueued(_private.get(), [=, ips = ips]() mutable {
-		if (_private->shuttingDown || !_private->matchesEndpoint(host)) {
+		if (_private->shuttingDown
+			|| !_private->proxyActive
+			|| !_private->matchesEndpoint(host)) {
 			return;
 		}
 		_private->ensureHubThreadRunning();
@@ -597,9 +620,54 @@ void WssMuxHub::ApplyResolvedIps(
 
 void WssMuxHub::EnsureStarted() {
 	InvokeQueued(_private.get(), [=] {
+		if (!_private->proxyActive) {
+			return;
+		}
 		_private->ensureHubThreadRunning();
 		_private->startTunnels();
 	});
+}
+
+void WssMuxHub::SetProxyActive(bool active) {
+	if (!_private->hubThread.isRunning()) {
+		return;
+	}
+	const auto apply = [=] {
+		_private->proxyActive = active;
+	};
+	if (QThread::currentThread() == &_private->hubThread) {
+		apply();
+	} else {
+		QEventLoop loop;
+		InvokeQueued(_private.get(), [&] {
+			apply();
+			loop.quit();
+		});
+		loop.exec();
+	}
+}
+
+void WssMuxHub::StopTunnels() {
+	if (!_private->hubThread.isRunning()) {
+		return;
+	}
+	WssConnectGate::Clear();
+	const auto cleanup = [=] {
+		_private->proxyActive = false;
+		_private->ipUpdateScheduled = false;
+		_private->pendingResolvedIPs.clear();
+		_private->resetTunnels();
+	};
+	if (QThread::currentThread() == &_private->hubThread) {
+		cleanup();
+	} else {
+		QEventLoop loop;
+		InvokeQueued(_private.get(), [&] {
+			cleanup();
+			loop.quit();
+		});
+		loop.exec();
+	}
 }
 
 void WssMuxHub::Shutdown() {
@@ -666,7 +734,7 @@ void WssMuxHub::RequestOpen(
 void WssMuxHub::SendData(uint32 streamId, bytes::const_span data) {
 	auto copy = bytes::vector(data.begin(), data.end());
 	InvokeQueued(_private.get(), [=, data = std::move(copy)]() mutable {
-		if (_private->shuttingDown) {
+		if (_private->shuttingDown || !_private->proxyActive) {
 			return;
 		}
 		int tunnelIndex = -1;

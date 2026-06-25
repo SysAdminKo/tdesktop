@@ -134,6 +134,7 @@ private:
 	[[nodiscard]] bool isSessionWarmReady(MTP::DcId dcId, int index) const;
 	void markBalanceSessionWarm(MTP::DcId dcId, int index);
 	void warmSessionDisconnected(MTP::DcId dcId, int index);
+	[[nodiscard]] int warmUpRequiredSessionCount(MTP::DcId dcId) const;
 
 	const not_null<ApiWrap*> _api;
 

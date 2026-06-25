@@ -842,6 +842,11 @@ void Application::setCurrentProxy(
 	my.setSelected(proxy);
 	my.setSettings(settings);
 	const auto now = current();
+	if (now.type == MTP::ProxyData::Type::WebSocket) {
+		MTP::WssMuxHub::Instance().SetProxyActive(true);
+	} else if (was.type == MTP::ProxyData::Type::WebSocket) {
+		MTP::WssMuxHub::Instance().StopTunnels();
+	}
 	refreshGlobalProxy();
 	_proxyChanges.fire({ was, now });
 	my.connectionTypeChangesNotify();
@@ -1827,6 +1832,11 @@ void Application::postponeCall(FnMut<void()> &&callable) {
 
 void Application::refreshGlobalProxy() {
 	Sandbox::Instance().refreshGlobalProxy();
+	const auto &proxy = settings().proxy();
+	if (proxy.isEnabled()
+		&& proxy.selected().type == MTP::ProxyData::Type::WebSocket) {
+		MTP::WssMuxHub::Instance().SetProxyActive(true);
+	}
 }
 
 void QuitAttempt() {
