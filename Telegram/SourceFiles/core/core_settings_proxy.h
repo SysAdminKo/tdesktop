@@ -13,6 +13,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Core {
 
+[[nodiscard]] qint32 ProxyCHelloTypeToInt(MTP::ProxyData::CHelloType settings);
+[[nodiscard]] MTP::ProxyData::CHelloType IntToProxyCHelloType(qint32 value);
+
 class SettingsProxy final {
 public:
 	static constexpr auto kProxyRotationTimeouts = std::array{
@@ -45,6 +48,18 @@ public:
 
 	[[nodiscard]] int proxyRotationTimeout() const;
 	void setProxyRotationTimeout(int value);
+
+	[[nodiscard]] MTP::ProxyData::CHelloType proxyCHelloType() const;
+	void setProxyCHelloType(MTP::ProxyData::CHelloType value);
+
+	[[nodiscard]] bool proxySlowMode() const;
+	void setProxySlowMode(bool value);
+
+	[[nodiscard]] int proxySlowDelay() const;
+	void setProxySlowDelay(int value);
+
+	[[nodiscard]] int proxySlowJitter() const;
+	void setProxySlowJitter(int value);
 
 	[[nodiscard]] MTP::ProxyData::Settings settings() const;
 	void setSettings(MTP::ProxyData::Settings value);
@@ -80,6 +95,11 @@ private:
 	bool _checkIpWarningShown = false;
 	int _proxyRotationTimeout = kDefaultProxyRotationTimeout;
 	MTP::ProxyData::Settings _settings = MTP::ProxyData::Settings::System;
+	MTP::ProxyData::CHelloType _ch_type = MTP::ProxyData::CHelloType::Firefox;
+	bool _proxySlowMode = false;
+	int _proxySlowDelay = 250;
+	int _proxySlowJitter = 150;
+
 	MTP::ProxyData _selected;
 	std::vector<MTP::ProxyData> _list;
 	std::vector<int> _proxyRotationPreferredIndices;

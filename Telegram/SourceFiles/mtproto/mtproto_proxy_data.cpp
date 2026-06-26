@@ -245,4 +245,41 @@ QNetworkProxy ToNetworkProxy(const ProxyData &proxy) {
 		proxy.password);
 }
 
+ProxyData::CHelloType ProxyData::global_ch_type = ProxyData::CHelloType::Firefox;
+bool ProxyData::global_slow_mode   = false;
+int  ProxyData::global_slow_delay  = 250;
+int  ProxyData::global_slow_jitter = 150;
+
+void ProxyData::setGlobalClienHelloRulesType(const ProxyData::CHelloType value) {
+	global_ch_type = value;
+}
+
+ProxyData::CHelloType ProxyData::globalClienHelloRulesType() {
+	return global_ch_type;
+}
+
+void ProxyData::setGlobalSlowMode(bool value) {
+	global_slow_mode = value;
+}
+
+bool ProxyData::globalSlowMode() {
+	return global_slow_mode;
+}
+
+void ProxyData::setGlobalSlowDelay(int value) {
+	global_slow_delay = value;
+}
+
+int ProxyData::globalSlowDelay() {
+	return global_slow_delay;
+}
+
+void ProxyData::setGlobalSlowJitter(int value) {
+	global_slow_jitter = value;
+}
+
+int ProxyData::globalSlowJitter() {
+	return global_slow_jitter;
+}
+
 } // namespace MTP

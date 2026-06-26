@@ -34,12 +34,12 @@ constexpr auto kIntSize = static_cast<int>(sizeof(mtpPrime));
 constexpr auto kWaitForBetterTimeout = crl::time(2000);
 constexpr auto kMinConnectedTimeout = crl::time(1000);
 constexpr auto kMaxConnectedTimeout = crl::time(8000);
-constexpr auto kMinReceiveTimeout = crl::time(4000);
+constexpr auto kMinReceiveTimeout = crl::time(8000);
 constexpr auto kMaxReceiveTimeout = crl::time(64000);
 constexpr auto kMarkConnectionOldTimeout = crl::time(192000);
-constexpr auto kPingDelayDisconnect = 60;
+constexpr auto kPingDelayDisconnect = 120;
 constexpr auto kPingSendAfter = 30 * crl::time(1000);
-constexpr auto kPingSendAfterForce = 45 * crl::time(1000);
+constexpr auto kPingSendAfterForce = 12 * crl::time(1000);
 constexpr auto kTemporaryExpiresIn = TimeId(86400);
 constexpr auto kBindKeyAdditionalExpiresTimeout = TimeId(30);
 constexpr auto kKeyOldEnoughForDestroy = 60 * crl::time(1000);
@@ -588,8 +588,7 @@ void SessionPrivate::tryToSend() {
 	if (sendOnlyFirstPing && !_pingIdToSend) {
 		DEBUG_LOG(("MTP Info: dc %1 not sending, waiting for Connected state, state: %2").arg(_shiftedDcId).arg(state));
 		return; // just do nothing, if is not connected yet
-	} else if (isMainSession
-		&& !sendOnlyFirstPing
+	} else if (!sendOnlyFirstPing
 		&& !_pingIdToSend
 		&& !_pingId
 		&& _pingSendAt <= crl::now()) {
@@ -607,20 +606,10 @@ void SessionPrivate::tryToSend() {
 	auto httpWaitRequest = SerializedRequest();
 	auto bindDcKeyRequest = SerializedRequest();
 	if (_pingIdToSend) {
-		if (sendOnlyFirstPing || !isMainSession) {
-			DEBUG_LOG(("MTP Info: sending ping, ping_id: %1"
-				).arg(_pingIdToSend));
-			pingRequest = SerializedRequest::Serialize(MTPPing(
-				MTP_long(_pingIdToSend)
-			));
-		} else {
-			DEBUG_LOG(("MTP Info: sending ping_delay_disconnect, "
-				"ping_id: %1").arg(_pingIdToSend));
-			pingRequest = SerializedRequest::Serialize(MTPPing_delay_disconnect(
-				MTP_long(_pingIdToSend),
-				MTP_int(kPingDelayDisconnect)));
-			_pingSender.callOnce(kPingSendAfterForce);
-		}
+		pingRequest = SerializedRequest::Serialize(MTPPing_delay_disconnect(
+			MTP_long(_pingIdToSend),
+			MTP_int(kPingDelayDisconnect)));
+		_pingSender.callOnce(kPingSendAfterForce);
 		_pingSendAt = pingRequest->lastSentTime + kPingSendAfter;
 		_pingId = base::take(_pingIdToSend);
 	} else if (!sendAll) {

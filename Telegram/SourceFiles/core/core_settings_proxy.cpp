@@ -13,6 +13,31 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <algorithm>
 
 namespace Core {
+
+[[nodiscard]] qint32 ProxyCHelloTypeToInt(MTP::ProxyData::CHelloType settings) {
+	switch(settings) {
+	case MTP::ProxyData::CHelloType::RANDOM:  return -1;
+	case MTP::ProxyData::CHelloType::Firefox: return 0;
+	case MTP::ProxyData::CHelloType::Chrome:  return 1;
+	case MTP::ProxyData::CHelloType::Custom:  return 2;
+	case MTP::ProxyData::CHelloType::SafariMac: return 3;
+	case MTP::ProxyData::CHelloType::YandexGost: return 4;
+	}
+	Unexpected("Bad type in ProxyCHelloTypesToInt");
+}
+
+[[nodiscard]] MTP::ProxyData::CHelloType IntToProxyCHelloType(qint32 value) {
+	switch(value) {
+	case -1: return MTP::ProxyData::CHelloType::RANDOM;
+	case 0: return MTP::ProxyData::CHelloType::Firefox;
+	case 1: return MTP::ProxyData::CHelloType::Chrome;
+	case 2: return MTP::ProxyData::CHelloType::Custom;
+	case 3: return MTP::ProxyData::CHelloType::SafariMac;
+	case 4: return MTP::ProxyData::CHelloType::YandexGost;
+	}
+	return MTP::ProxyData::CHelloType::Firefox;
+}
+
 namespace {
 
 [[nodiscard]] qint32 ProxySettingsToInt(MTP::ProxyData::Settings settings) {
@@ -145,6 +170,12 @@ QByteArray SettingsProxy::serialize() const {
 	for (const auto index : _proxyRotationPreferredIndices) {
 		stream << qint32(index);
 	}
+	// custom Client Hello
+	stream << ProxyCHelloTypeToInt(_ch_type);
+	// proxy slow connect
+	stream << qint32(_proxySlowMode ? 1 : 0);
+	stream << qint32(_proxySlowDelay);
+	stream << qint32(_proxySlowJitter);
 	return std::move(stream).result();
 }
 
@@ -210,6 +241,22 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
 			}
 		}
 	}
+	qint32 proxyCHtype = ProxyCHelloTypeToInt(_ch_type);
+	if (!stream.atEnd()) {
+		stream >> proxyCHtype;
+	}
+	qint32 proxySlowMode = qint32(_proxySlowMode ? 1 : 0);
+	if (!stream.atEnd()) {
+		stream >> proxySlowMode;
+	}
+	qint32 proxySlowDelay = _proxySlowDelay;
+	if (!stream.atEnd()) {
+		stream >> proxySlowDelay;
+	}
+	qint32 proxySlowJitter = _proxySlowJitter;
+	if (!stream.atEnd()) {
+		stream >> proxySlowJitter;
+	}
 
 	if (!stream.ok()) {
 		LOG(("App Error: "
@@ -226,7 +273,16 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
 	_selected = DeserializeProxyData(selectedProxy);
 	_list = std::move(list);
 	setProxyRotationPreferredIndices(std::move(preferredIndices));
-
+	// custom Client Hello
+	_ch_type = IntToProxyCHelloType(proxyCHtype);
+	MTP::ProxyData::setGlobalClienHelloRulesType(_ch_type);
+	// slow mode
+	_proxySlowMode = (proxySlowMode == 1);
+	_proxySlowDelay = qMax(proxySlowDelay, 1);
+	_proxySlowJitter = qMax(proxySlowJitter, 0);
+	MTP::ProxyData::setGlobalSlowMode(_proxySlowMode);
+	MTP::ProxyData::setGlobalSlowDelay(_proxySlowDelay);
+	MTP::ProxyData::setGlobalSlowJitter(_proxySlowJitter);
 	return true;
 }
 
@@ -308,6 +364,38 @@ void SettingsProxy::setProxyRotationTimeout(int value) {
 	_proxyRotationTimeout = (value > 0)
 		? value
 		: kDefaultProxyRotationTimeout;
+}
+
+MTP::ProxyData::CHelloType SettingsProxy::proxyCHelloType() const {
+	return _ch_type;
+}
+
+void SettingsProxy::setProxyCHelloType(MTP::ProxyData::CHelloType value) {
+	_ch_type = value;
+}
+
+bool SettingsProxy::proxySlowMode() const {
+	return _proxySlowMode;
+}
+
+void SettingsProxy::setProxySlowMode(bool value) {
+	_proxySlowMode = value;
+}
+
+int SettingsProxy::proxySlowDelay() const {
+	return _proxySlowDelay;
+}
+
+void SettingsProxy::setProxySlowDelay(int value) {
+	_proxySlowDelay = value;
+}
+
+int SettingsProxy::proxySlowJitter() const {
+	return _proxySlowJitter;
+}
+
+void SettingsProxy::setProxySlowJitter(int value) {
+	_proxySlowJitter = value;
 }
 
 MTP::ProxyData::Settings SettingsProxy::settings() const {

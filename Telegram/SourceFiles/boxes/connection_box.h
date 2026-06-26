@@ -84,6 +84,10 @@ public:
 	object_ptr<Ui::BoxContent> editItemBox(int id);
 	object_ptr<Ui::BoxContent> addNewItemBox();
 	bool setProxySettings(ProxyData::Settings value);
+	bool setProxyCHelloType(ProxyData::CHelloType value);
+	bool setProxySlowMode(bool value);
+	bool setProxySlowDelay(int value);
+	bool setProxySlowJitter(int value);
 	void setProxyForCalls(bool enabled);
 	void setProxyRotationEnabled(bool enabled);
 	void setProxyRotationTimeout(int value);

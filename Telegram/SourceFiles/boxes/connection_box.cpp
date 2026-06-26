@@ -44,6 +44,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/menu/menu_add_action_callback.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
 #include "ui/widgets/popup_menu.h"
+#include "ui/widgets/fields/number_input.h"
+#include "ui/wrap/padding_wrap.h"
 #include "ui/wrap/slide_wrap.h"
 #include "ui/wrap/table_layout.h"
 #include "ui/wrap/vertical_layout.h"
@@ -618,16 +620,23 @@ private:
 	int rowHeight() const;
 	void refreshProxyForCalls();
 	void refreshProxyRotation();
+	void refreshProxySlowMode();
 
 	not_null<ProxiesBoxController*> _controller;
 	Core::SettingsProxy &_settings;
 	QPointer<Ui::Checkbox> _tryIPv6;
 	std::shared_ptr<Ui::RadioenumGroup<ProxyData::Settings>> _proxySettings;
+	std::shared_ptr<Ui::RadioenumGroup<ProxyData::CHelloType>> _proxyCHelloSettings;
 	QPointer<Ui::SlideWrap<Ui::Checkbox>> _proxyForCalls;
 	QPointer<Ui::SlideWrap<Ui::Checkbox>> _proxyRotation;
 	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _proxyRotationOptions;
 	QPointer<Ui::SettingsSlider> _proxyRotationTimeout;
 	QPointer<Ui::DividerLabel> _about;
+	QPointer<Ui::Checkbox> _proxySlowMode;
+	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _proxySlowModeOptionsLayout;
+	QPointer<Ui::FixedHeightWidget> _proxySlowModeOptions;
+	QPointer<Ui::NumberInput> _proxySlowDelayInput;
+	QPointer<Ui::NumberInput> _proxySlowJitterInput;
 	base::unique_qptr<Ui::RpWidget> _noRows;
 	object_ptr<Ui::VerticalLayout> _initialWrap;
 	QPointer<Ui::VerticalLayout> _wrap;
@@ -1129,6 +1138,109 @@ void ProxiesBox::setupContent() {
 			ProxyData::Settings::Enabled,
 			tr::lng_proxy_use_custom(tr::now)),
 		st::proxyUsePadding);
+	// ++ ClientHello customization
+	inner->add(
+		object_ptr<Ui::FlatLabel>(
+			inner,
+			tr::lng_proxy_chello_about(tr::now),
+			st::proxyEditTitle),
+		st::proxyEditTitlePadding);
+
+	_proxyCHelloSettings
+		= std::make_shared<Ui::RadioenumGroup<ProxyData::CHelloType>>(
+			_settings.proxyCHelloType());
+
+	inner->add(
+		object_ptr<Ui::Radioenum<ProxyData::CHelloType>>(
+			inner,
+			_proxyCHelloSettings,
+			ProxyData::CHelloType::Firefox,
+			tr::lng_proxy_chello_firefox(tr::now)),
+		st::proxyUsePadding);
+	inner->add(
+		object_ptr<Ui::Radioenum<ProxyData::CHelloType>>(
+			inner,
+			_proxyCHelloSettings,
+			ProxyData::CHelloType::Chrome,
+			tr::lng_proxy_chello_chrome(tr::now)),
+		st::proxyUsePadding);
+	inner->add(
+		object_ptr<Ui::Radioenum<ProxyData::CHelloType>>(
+			inner,
+			_proxyCHelloSettings,
+			ProxyData::CHelloType::Custom,
+			tr::lng_proxy_chello_custom(tr::now)),
+		st::proxyUsePadding);
+	inner->add(
+		object_ptr<Ui::Radioenum<ProxyData::CHelloType>>(
+			inner,
+			_proxyCHelloSettings,
+			ProxyData::CHelloType::SafariMac,
+			tr::lng_proxy_chello_safari_mac(tr::now)),
+		st::proxyUsePadding);
+	inner->add(
+		object_ptr<Ui::Radioenum<ProxyData::CHelloType>>(
+			inner,
+			_proxyCHelloSettings,
+			ProxyData::CHelloType::YandexGost,
+			tr::lng_proxy_chello_yandex_gost(tr::now)),
+		st::proxyUsePadding);
+	inner->add(
+		object_ptr<Ui::Radioenum<ProxyData::CHelloType>>(
+			inner,
+			_proxyCHelloSettings,
+			ProxyData::CHelloType::RANDOM,
+			tr::lng_proxy_chello_random(tr::now)),
+		st::proxyUsePadding);
+	// -- ClientHello customization
+	// ++ proxy slow connect controls
+	_proxySlowMode = inner->add(
+		object_ptr<Ui::Checkbox>(
+			inner,
+			tr::lng_proxy_slow_mode(tr::now),
+			_settings.proxySlowMode()),
+		style::margins(
+			st::proxyTryIPv6Padding.left(),
+			0,
+			st::proxyTryIPv6Padding.right(),
+			st::proxyTryIPv6Padding.top()));
+
+	{
+		_proxySlowModeOptionsLayout = inner->add(
+			object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+				inner,
+				object_ptr<Ui::VerticalLayout>(inner)));
+
+		_proxySlowModeOptions = _proxySlowModeOptionsLayout->entity()->add(
+			object_ptr<Ui::FixedHeightWidget>(
+				_proxySlowModeOptionsLayout->entity(),
+				st::connectionPortInputField.heightMin),
+			st::proxyEditInputPadding);
+
+		_proxySlowDelayInput = Ui::CreateChild<Ui::NumberInput>(
+			_proxySlowModeOptions,
+			st::connectionPortInputField,
+			tr::lng_proxy_slow_delay(),
+			QString::number(_settings.proxySlowDelay()),
+			9999);
+
+		_proxySlowJitterInput = Ui::CreateChild<Ui::NumberInput>(
+			_proxySlowModeOptions,
+			st::connectionPortInputField,
+			tr::lng_proxy_slow_jitter(),
+			QString::number(_settings.proxySlowJitter()),
+			9999);
+
+		_proxySlowModeOptions->widthValue() | rpl::on_next([=](int width) {
+			_proxySlowDelayInput->moveToLeft(0,0);
+			_proxySlowJitterInput->moveToRight(0,0);
+			_proxySlowDelayInput->resize(width / 2 - st::proxyEditSkip, _proxySlowDelayInput->height());
+			_proxySlowJitterInput->resize(width / 2 - st::proxyEditSkip, _proxySlowJitterInput->height());
+		}, _proxySlowModeOptions->lifetime());
+
+	}
+	// -- proxy slow connect controls
+
 	_proxyForCalls = inner->add(
 		object_ptr<Ui::SlideWrap<Ui::Checkbox>>(
 			inner,
@@ -1211,6 +1323,33 @@ void ProxiesBox::setupContent() {
 		refreshProxyForCalls();
 		refreshProxyRotation();
 	});
+	_proxyCHelloSettings->setChangedCallback([=](ProxyData::CHelloType value) {
+		if (!_controller->setProxyCHelloType(value)) {
+			_proxyCHelloSettings->setValue(_settings.proxyCHelloType());
+		}
+	});
+	// ++ proxy slow connect
+	_proxySlowMode->checkedChanges(
+	) | rpl::on_next([=](bool checked) {
+		_controller->setProxySlowMode(checked);
+		refreshProxySlowMode();
+	}, _proxySlowMode->lifetime());
+	connect(_proxySlowDelayInput, &Ui::MaskedInputField::changed, [=] {
+		const auto value = _proxySlowDelayInput->getLastText().toInt();
+		if(!_controller->setProxySlowDelay(value)) {
+			_proxySlowDelayInput->setText(QString::number(_settings.proxySlowDelay()));
+		}
+	});
+
+	connect(_proxySlowJitterInput, &Ui::MaskedInputField::changed, [=] {
+		const auto value = _proxySlowJitterInput->getLastText().toInt();
+		if (!_controller->setProxySlowJitter(value)) {
+			_proxySlowJitterInput->setText(QString::number(_settings.proxySlowJitter()));
+		}
+	});
+	refreshProxySlowMode();
+	// -- proxy slow connect
+
 	_tryIPv6->checkedChanges(
 	) | rpl::on_next([=](bool checked) {
 		_controller->setTryIPv6(checked);
@@ -1245,6 +1384,7 @@ void ProxiesBox::setupContent() {
 	refreshProxyRotation();
 	_proxyForCalls->finishAnimating();
 	_proxyRotation->finishAnimating();
+	_proxySlowModeOptionsLayout->finishAnimating();
 	_proxyRotationOptions->finishAnimating();
 
 	{
@@ -1302,6 +1442,14 @@ void ProxiesBox::refreshProxyRotation() {
 	_proxyRotationOptions->toggle(
 		visible && _proxyRotation->entity()->checked(),
 		anim::type::normal);
+}
+
+void ProxiesBox::refreshProxySlowMode() {
+	if (!_proxySlowMode || !_proxySlowModeOptions || !_proxySlowModeOptionsLayout) {
+		return;
+	}
+	_proxySlowModeOptionsLayout->toggle(_proxySlowMode->checked(), anim::type::normal);
+	// _proxySlowModeOptions->setVisible(_proxySlowMode->checked());
 }
 
 int ProxiesBox::rowHeight() const {
@@ -2285,6 +2433,52 @@ bool ProxiesBoxController::setProxySettings(ProxyData::Settings value) {
 		}
 	}
 	Core::App().setCurrentProxy(_settings.selected(), value);
+	saveDelayed();
+	return true;
+}
+
+bool ProxiesBoxController::setProxyCHelloType(ProxyData::CHelloType value) {
+	if (_settings.proxyCHelloType() == value) {
+		return true;
+	}
+	_settings.setProxyCHelloType(value);
+	MTP::ProxyData::setGlobalClienHelloRulesType(value);
+	saveDelayed();
+	return true;
+}
+
+bool ProxiesBoxController::setProxySlowMode(bool value) {
+	if (_settings.proxySlowMode() == value) {
+		return true;
+	}
+	_settings.setProxySlowMode(value);
+	MTP::ProxyData::setGlobalSlowMode(value);
+	saveDelayed();
+	return true;
+}
+
+bool ProxiesBoxController::setProxySlowDelay(int value) {
+	if(value < 0) {
+		return false;
+	}
+	if (_settings.proxySlowDelay() == value) {
+		return true;
+	}
+	_settings.setProxySlowDelay(value);
+	MTP::ProxyData::setGlobalSlowDelay(value);
+	saveDelayed();
+	return true;
+}
+
+bool ProxiesBoxController::setProxySlowJitter(int value) {
+	if(value < 0) {
+		return false;
+	}
+	if (_settings.proxySlowJitter() == value) {
+		return true;
+	}
+	_settings.setProxySlowJitter(value);
+	MTP::ProxyData::setGlobalSlowJitter(value);
 	saveDelayed();
 	return true;
 }

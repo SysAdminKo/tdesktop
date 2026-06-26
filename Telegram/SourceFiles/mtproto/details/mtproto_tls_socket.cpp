@@ -8,13 +8,21 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_tls_socket.h"
 
 #include "mtproto/details/mtproto_tcp_socket.h"
+#include "mtproto/mtproto_proxy_data.h"
+#include "core/core_settings_proxy.h"
 #include "base/openssl_help.h"
 #include "base/bytes.h"
 #include "base/invoke_queued.h"
 #include "base/random.h"
 #include "base/unixtime.h"
+#include <chrono>
+#include <thread>
+#include <map>
 
 #include <QtCore/QtEndian>
+#include <QtCore/QMutex>
+#include <QtCore/QRandomGenerator>
+#include <QtCore/QTimer>
 #include <range/v3/algorithm/reverse.hpp>
 
 namespace MTP::details {
@@ -35,7 +43,7 @@ const auto kClientHeader = qstr("\x17\x03\x03");
 using BigNum = openssl::BigNum;
 using BigNumContext = openssl::Context;
 
-[[nodiscard]] MTPTlsClientHello PrepareClientHelloRules() {
+[[nodiscard]] MTPTlsClientHello PrepareClientHelloRules_Chrome() {
 	using Scope = QVector<MTPTlsBlock>;
 	using Permutation = std::vector<Scope>;
 	using StackElement = std::variant<Scope, Permutation>;
@@ -228,6 +236,652 @@ using BigNumContext = openssl::Context;
 	CloseScope();
 
 	return MTP_tlsClientHello(MTP_vector<MTPTlsBlock>(Finish()));
+}
+
+[[nodiscard]] MTPTlsClientHello PrepareClientHelloRules_Firefox(const bool ext_permutation = false) {
+	using Scope = QVector<MTPTlsBlock>;
+	using Permutation = std::vector<Scope>;
+	using StackElement = std::variant<Scope, Permutation>;
+	auto stack = std::vector<StackElement>();
+	const auto pushToBack = [&](MTPTlsBlock &&block) {
+		Expects(!stack.empty());
+
+		if (const auto scope = std::get_if<Scope>(&stack.back())) {
+			scope->push_back(std::move(block));
+		} else {
+			auto &permutation = v::get<Permutation>(stack.back());
+			Assert(!permutation.empty());
+			permutation.back().push_back(std::move(block));
+		}
+	};
+	const auto S = [&](QByteArray data) {
+		pushToBack(MTP_tlsBlockString(MTP_bytes(data)));
+	};
+	const auto Z = [&](int length) {
+		pushToBack(MTP_tlsBlockZero(MTP_int(length)));
+	};
+	const auto R = [&](int length) {
+		pushToBack(MTP_tlsBlockRandom(MTP_int(length)));
+	};
+	const auto D = [&] {
+		pushToBack(MTP_tlsBlockDomain());
+	};
+	const auto K = [&] {
+		pushToBack(MTP_tlsBlockPublicKey());
+	};
+	const auto M = [&] {
+		pushToBack(MTP_tlsBlockM());
+	};
+	const auto E = [&] {
+		pushToBack(MTP_tlsBlockE());
+	};
+	const auto P = [&] {
+		pushToBack(MTP_tlsBlockPadding());
+	};
+	const auto OpenScope = [&] {
+		stack.emplace_back(Scope());
+	};
+	const auto CloseScope = [&] {
+		Expects(stack.size() > 1);
+		Expects(v::is<Scope>(stack.back()));
+
+		const auto blocks = std::move(v::get<Scope>(stack.back()));
+		stack.pop_back();
+		pushToBack(MTP_tlsBlockScope(MTP_vector<MTPTlsBlock>(blocks)));
+	};
+	const auto OpenPermutation = [&] {
+		stack.emplace_back(Permutation());
+	};
+	const auto ClosePermutation = [&] {
+		Expects(stack.size() > 1);
+		Expects(v::is<Permutation>(stack.back()));
+
+		const auto list = std::move(v::get<Permutation>(stack.back()));
+		stack.pop_back();
+
+		const auto wrapped = list | ranges::views::transform([](
+				const QVector<MTPTlsBlock> &elements) {
+			return MTP_vector<MTPTlsBlock>(elements);
+		}) | ranges::to<QVector<MTPVector<MTPTlsBlock>>>();
+
+		pushToBack(MTP_tlsBlockPermutation(
+			MTP_vector<MTPVector<MTPTlsBlock>>(wrapped)));
+	};
+	const auto StartPermutationElement = [&] {
+		Expects(stack.size() > 1);
+		Expects(v::is<Permutation>(stack.back()));
+
+		v::get<Permutation>(stack.back()).emplace_back();
+	};
+	const auto Finish = [&] {
+		Expects(stack.size() == 1);
+		Expects(v::is<Scope>(stack.back()));
+
+		return v::get<Scope>(stack.back());
+	};
+
+	stack.emplace_back(Scope());
+
+	// content type = 0x16(handshake), version TLS 1.0 (0x0301)
+	S("\x16\x03\x01"_q);
+	OpenScope(); // TLS length will be filled LATER
+	// handshake type = Client Hello
+	S("\x01\x00"_q);
+	OpenScope(); // CH length will be filled LATER
+	// version: TLS 1.2
+	S("\x03\x03"_q);
+	// 'random' field - to be filled LATER
+	Z(32);
+	// session ID: len
+	S("\x20"_q);
+	// session ID: random
+	R(32);
+	// cipher suites: len
+	S("\x00\x20"_q);
+	// cipher suites: data, 32 bytes
+	// added: Cipher Suite: TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA (0xc00a)
+	S(""
+		"\x13\x01\x13\x03\x13\x02\xc0\x2b\xc0\x2f\xcc\xa9\xcc\xa8\xc0\x2c"
+		"\xc0\x30\xc0\x0a\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35"
+		""_q);
+	// .. + 2 bytes compression methods
+	S("\x01\x00"_q);
+	// --- extensions
+	OpenScope(); // extensions length will be filled LATER
+	if(ext_permutation) { OpenPermutation(); }
+	{
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			S("\x00\x00"_q);
+			OpenScope();
+			OpenScope();
+			S("\x00"_q);
+			OpenScope();
+			D();
+			CloseScope();
+			CloseScope();
+			CloseScope();
+		}
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// extended master secret
+			S("\x00\x17\x00\x00"_q);
+		}
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// renegotiation info
+			S("\xff\x01\x00\x01\x00"_q);
+		}
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// supported groups
+			S("\x00\x0a\x00\x10\x00\x0e"_q);
+			// added (FF): 0019, 0100, 0101
+			S("\x11\xec\x00\x1d\x00\x17\x00\x18\x00\x19\x01\x00\x01\x01"_q);
+		}
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// EC point formats
+			S("\x00\x0b\x00\x02\x01\x00"_q);
+		}
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// session ticket
+			S("\x00\x23\x00\x00"_q);
+		}
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// APP layer proto negotiation
+			S(""
+				"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70"
+				"\x2f\x31\x2e\x31"_q);
+		}
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// status request
+			S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
+		}
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// added (FF): delegated credentials
+			S("\x00\x22\x00\x0a"_q);
+			S("\x00\x08"_q); // sign hash algo len
+			S("\x04\x03\x05\x03\x06\x03\x02\x03"_q);
+		}
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// signed cert timestamp
+			S("\x00\x12\x00\x00"_q);
+		}
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// key share
+			S("\x00\x33"_q);
+			OpenScope(); // S("\x04\xef"_q);
+			OpenScope(); // S("\x04\xed"_q);
+			S("\x11\xec\x04\xc0"_q); // 11ec - X25519MLKEM768, len = 04c0
+			M();
+			K();
+			S("\x00\x1d\x00\x20"_q); // 001d - x25519, len = 0020
+			K();
+			S("\x00\x17\x00\x41"_q); // 0017 - secp256r1, len = 0041, RANDOM !!!
+			R(65);
+			CloseScope();
+			CloseScope();
+		}
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// supported versions (TLS)
+			S("\x00\x2b\x00\x05\x04"_q);
+			S("\x03\x04\x03\x03"_q);
+		}
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// signature algo's
+			S("\x00\x0d\x00\x18\x00\x16"_q);
+			S(""
+				"\x04\x03\x05\x03\x06\x03\x08\x04\x08\x05\x08\x06\x04\x01"
+				"\x05\x01\x06\x01\x02\x03\x02\x01"_q);
+		}
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// PSK key exchange modes
+			S("\x00\x2d\x00\x02\x01\x01"_q);
+		}
+
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// added (FF): record size limit
+			S("\x00\x1c\x00\x02\x40\x01"_q);
+		}
+
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// compress cert
+			S("\x00\x1b\x00\x03\x02\x00\x02"_q);
+		}
+		if(ext_permutation) { StartPermutationElement(); }
+		{
+			// encrypted client hello
+			// length should be exactly 281 - FF
+			S("\xfe\x0d"_q);
+			OpenScope();
+			S("\x00\x00\x01\x00\x01"_q);
+			R(1);
+			S("\x00\x20"_q);
+			R(32);
+			OpenScope();
+			E();
+			CloseScope();
+			CloseScope();
+		}
+	}
+	if(ext_permutation) { ClosePermutation(); }
+	P();
+	CloseScope();
+	CloseScope();
+	CloseScope();
+
+	return MTP_tlsClientHello(MTP_vector<MTPTlsBlock>(Finish()));
+}
+
+[[nodiscard]] MTPTlsClientHello PrepareClientHelloRules_SafariMac() {
+	using Scope = QVector<MTPTlsBlock>;
+	using Permutation = std::vector<Scope>;
+	using StackElement = std::variant<Scope, Permutation>;
+	auto stack = std::vector<StackElement>();
+	const auto pushToBack = [&](MTPTlsBlock &&block) {
+		Expects(!stack.empty());
+
+		if (const auto scope = std::get_if<Scope>(&stack.back())) {
+			scope->push_back(std::move(block));
+		} else {
+			auto &permutation = v::get<Permutation>(stack.back());
+			Assert(!permutation.empty());
+			permutation.back().push_back(std::move(block));
+		}
+	};
+	const auto S = [&](QByteArray data) {
+		pushToBack(MTP_tlsBlockString(MTP_bytes(data)));
+	};
+	const auto Z = [&](int length) {
+		pushToBack(MTP_tlsBlockZero(MTP_int(length)));
+	};
+	const auto G = [&](int seed) {
+		pushToBack(MTP_tlsBlockGrease(MTP_int(seed)));
+	};
+	const auto R = [&](int length) {
+		pushToBack(MTP_tlsBlockRandom(MTP_int(length)));
+	};
+	const auto D = [&] {
+		pushToBack(MTP_tlsBlockDomain());
+	};
+	const auto K = [&] {
+		pushToBack(MTP_tlsBlockPublicKey());
+	};
+	const auto M = [&] {
+		pushToBack(MTP_tlsBlockM());
+	};
+	const auto OpenScope = [&] {
+		stack.emplace_back(Scope());
+	};
+	const auto CloseScope = [&] {
+		Expects(stack.size() > 1);
+		Expects(v::is<Scope>(stack.back()));
+
+		const auto blocks = std::move(v::get<Scope>(stack.back()));
+		stack.pop_back();
+		pushToBack(MTP_tlsBlockScope(MTP_vector<MTPTlsBlock>(blocks)));
+	};
+	const auto Finish = [&] {
+		Expects(stack.size() == 1);
+		Expects(v::is<Scope>(stack.back()));
+
+		return v::get<Scope>(stack.back());
+	};
+
+	stack.emplace_back(Scope());
+
+	S("\x16\x03\x01"_q);
+	OpenScope();
+	S("\x01\x00"_q);
+	OpenScope();
+	S("\x03\x03"_q);
+	Z(32);
+	S("\x20"_q);
+	R(32);
+	// cipher suites
+	S("\x00\x2a"_q);
+	G(0);
+	S(""
+		"\x13\x02\x13\x03\x13\x01\xc0\x2c\xc0\x2b\xcc\xa9\xc0\x30\xc0\x2f"
+		"\xcc\xa8\xc0\x0a\xc0\x09\xc0\x14\xc0\x13\x00\x9d\x00\x9c\x00\x35"
+		"\x00\x2f\xc0\x08\xc0\x12\x00\x0a"
+		""_q);
+	// compression methods
+	S("\x01\x00"_q);
+
+	// extensions
+	OpenScope();
+	G(2);
+	S("\x00\x00"_q);
+	// SNI
+	{
+		S("\x00\x00"_q);
+		OpenScope();
+		OpenScope();
+		S("\x00"_q);
+		OpenScope();
+		D();
+		CloseScope();
+		CloseScope();
+		CloseScope();
+	}
+	// extended master secret
+	S("\x00\x17\x00\x00"_q);
+	// renegotiation info
+	S("\xff\x01\x00\x01\x00"_q);
+	// supported groups
+	S("\x00\x0a\x00\x0e\x00\x0c"_q);
+	G(4);
+	S("\x11\xec\x00\x1d\x00\x17\x00\x18\x00\x19"_q);
+	// EC point formats
+	S("\x00\x0b\x00\x02\x01\x00"_q);
+	// APP layer proto negotiation
+	const auto h2 = (QRandomGenerator::global()->bounded(0, 2) == 0);
+	S(h2
+		? "\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70"
+			"\x2f\x31\x2e\x31"_q
+		: "\x00\x10\x00\x0b\x00\x09\x08\x68\x74\x74\x70\x2f\x31\x2e\x31"_q);
+
+	// status request
+	S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
+	// signature algo's
+	S(""
+		"\x00\x0d\x00\x16\x00\x14\x04\x03\x08\x04\x04\x01\x05\x03"
+		"\x08\x05\x08\x05\x05\x01\x08\x06\x06\x01\x02\x01"_q);
+	// signed cert timestamp
+	S("\x00\x12\x00\x00"_q);
+	// key_share
+	S("\x00\x33\x04\xef\x04\xed"_q);
+	G(4);
+	S("\x00\x01\x00\x11\xec\x04\xc0"_q);
+	M();
+	K();
+	S("\x00\x1d\x00\x20"_q);
+	K();
+	// PSK key exchange modes
+	S("\x00\x2d\x00\x02\x01\x01"_q);
+	// supported versions (TLS)
+	S("\x00\x2b\x00\x07\x06"_q);
+	G(6);
+	S("\x03\x04\x03\x03"_q);
+	// compress cert
+	S("\x00\x1b\x00\x03\x02\x00\x01"_q);
+
+	G(3);
+	S("\x00\x01\x00"_q);
+	CloseScope();
+	CloseScope();
+	CloseScope();
+
+	return MTP_tlsClientHello(MTP_vector<MTPTlsBlock>(Finish()));
+}
+
+[[nodiscard]] MTPTlsClientHello PrepareClientHelloRules_YandexGost() {
+	using Scope = QVector<MTPTlsBlock>;
+	using Permutation = std::vector<Scope>;
+	using StackElement = std::variant<Scope, Permutation>;
+	auto stack = std::vector<StackElement>();
+	const auto pushToBack = [&](MTPTlsBlock &&block) {
+		Expects(!stack.empty());
+
+		if (const auto scope = std::get_if<Scope>(&stack.back())) {
+			scope->push_back(std::move(block));
+		} else {
+			auto &permutation = v::get<Permutation>(stack.back());
+			Assert(!permutation.empty());
+			permutation.back().push_back(std::move(block));
+		}
+	};
+	const auto S = [&](QByteArray data) {
+		pushToBack(MTP_tlsBlockString(MTP_bytes(data)));
+	};
+	const auto Z = [&](int length) {
+		pushToBack(MTP_tlsBlockZero(MTP_int(length)));
+	};
+	const auto G = [&](int seed) {
+		pushToBack(MTP_tlsBlockGrease(MTP_int(seed)));
+	};
+	const auto R = [&](int length) {
+		pushToBack(MTP_tlsBlockRandom(MTP_int(length)));
+	};
+	const auto D = [&] {
+		pushToBack(MTP_tlsBlockDomain());
+	};
+	const auto K = [&] {
+		pushToBack(MTP_tlsBlockPublicKey());
+	};
+	const auto M = [&] {
+		pushToBack(MTP_tlsBlockM());
+	};
+	const auto E = [&] {
+		pushToBack(MTP_tlsBlockE());
+	};
+	const auto OpenScope = [&] {
+		stack.emplace_back(Scope());
+	};
+	const auto CloseScope = [&] {
+		Expects(stack.size() > 1);
+		Expects(v::is<Scope>(stack.back()));
+
+		const auto blocks = std::move(v::get<Scope>(stack.back()));
+		stack.pop_back();
+		pushToBack(MTP_tlsBlockScope(MTP_vector<MTPTlsBlock>(blocks)));
+	};
+	const auto OpenPermutation = [&] {
+		stack.emplace_back(Permutation());
+	};
+	const auto ClosePermutation = [&] {
+		Expects(stack.size() > 1);
+		Expects(v::is<Permutation>(stack.back()));
+
+		const auto list = std::move(v::get<Permutation>(stack.back()));
+		stack.pop_back();
+
+		const auto wrapped = list | ranges::views::transform([](
+				const QVector<MTPTlsBlock> &elements) {
+			return MTP_vector<MTPTlsBlock>(elements);
+		}) | ranges::to<QVector<MTPVector<MTPTlsBlock>>>();
+
+		pushToBack(MTP_tlsBlockPermutation(
+			MTP_vector<MTPVector<MTPTlsBlock>>(wrapped)));
+	};
+	const auto StartPermutationElement = [&] {
+		Expects(stack.size() > 1);
+		Expects(v::is<Permutation>(stack.back()));
+
+		v::get<Permutation>(stack.back()).emplace_back();
+	};
+	const auto Finish = [&] {
+		Expects(stack.size() == 1);
+		Expects(v::is<Scope>(stack.back()));
+
+		return v::get<Scope>(stack.back());
+	};
+
+	stack.emplace_back(Scope());
+
+	S("\x16\x03\x01"_q);
+	OpenScope();
+	S("\x01\x00"_q);
+	OpenScope();
+	S("\x03\x03"_q);
+	Z(32);
+	S("\x20"_q);
+	R(32);
+	// cipher suites
+	S("\x00\x32"_q);
+	G(0);
+	S(""
+		"\x13\x01\x13\x02\x13\x03\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xcc\xa9"
+		"\xcc\xa8\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35"
+		"\xc1\x00\xc1\x01\xc1\x02\xc1\x03\xc1\x04\xc1\x05\xc1\x06"
+		"\xff\x85\x00\x81"
+		""_q);
+	// compression methods
+	S("\x01\x00"_q);
+	// extensions...
+	OpenScope();
+	G(2);
+	S("\x00\x00"_q);
+	OpenPermutation(); {
+		StartPermutationElement(); {
+			// SNI
+			S("\x00\x00"_q);
+			OpenScope();
+			OpenScope();
+			S("\x00"_q);
+			OpenScope();
+			D();
+			CloseScope();
+			CloseScope();
+			CloseScope();
+		}
+		StartPermutationElement(); {
+			// status request
+			S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
+		}
+		StartPermutationElement(); {
+			// supported groups
+			S("\x00\x0a\x00\x0c\x00\x0a"_q);
+			G(4);
+			S("\x11\xec\x00\x1d\x00\x17\x00\x18"_q);
+		}
+		StartPermutationElement(); {
+			// EC point formats
+			S("\x00\x0b\x00\x02\x01\x00"_q);
+		}
+		StartPermutationElement(); {
+			// signature algo's
+			S(""
+				"\x00\x0d\x00\x12\x00\x10\x04\x03\x08\x04\x04\x01\x05\x03"
+				"\x08\x05\x05\x01\x08\x06\x06\x01"_q);
+		}
+		StartPermutationElement(); {
+			// APP layer proto negotiation
+			const auto h2 = (QRandomGenerator::global()->bounded(0, 2) == 0);
+			S(h2
+				? "\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70"
+					"\x2f\x31\x2e\x31"_q
+				: "\x00\x10\x00\x0b\x00\x09\x08\x68\x74\x74\x70\x2f\x31\x2e\x31"_q);
+		}
+		StartPermutationElement(); {
+			// signed cert timestamp
+			S("\x00\x12\x00\x00"_q);
+		}
+		StartPermutationElement(); {
+			// extended master secret
+			S("\x00\x17\x00\x00"_q);
+		}
+		StartPermutationElement(); {
+			// compress cert
+			S("\x00\x1b\x00\x03\x02\x00\x02"_q);
+		}
+		StartPermutationElement(); {
+			// session ticket
+			S("\x00\x23\x00\x00"_q);
+		}
+		StartPermutationElement(); {
+			// supported versions (TLS)
+			S("\x00\x2b\x00\x07\x06"_q);
+			G(6);
+			S("\x03\x04\x03\x03"_q);
+		}
+		StartPermutationElement(); {
+			// PSK key exchange modes
+			S("\x00\x2d\x00\x02\x01\x01"_q);
+		}
+		StartPermutationElement(); {
+			// key_share
+			S("\x00\x33\x04\xef\x04\xed"_q);
+			G(4);
+			S("\x00\x01\x00\x11\xec\x04\xc0"_q);
+			M();
+			K();
+			S("\x00\x1d\x00\x20"_q);
+			K();
+		}
+		if (QRandomGenerator::global()->bounded(0, 2) == 0) {
+			StartPermutationElement(); {
+				// unknown, but present in YB
+				S("\x44\xcd\x00\x05\x00\x03\x02\x68\x32"_q);
+			}
+		}
+		StartPermutationElement(); {
+			// encrypted client hello
+			S("\xfe\x0d"_q);
+			OpenScope();
+			S("\x00\x00\x01\x00\x01"_q);
+			R(1);
+			S("\x00\x20"_q);
+			R(32);
+			OpenScope();
+			E();
+			CloseScope();
+			CloseScope();
+		}
+		StartPermutationElement(); {
+			// renegotiation info
+			S("\xff\x01\x00\x01\x00"_q);
+		}
+	} ClosePermutation();
+	G(3);
+	S("\x00\x01\x00"_q);
+	// pre-shared key
+	S("\x00\x29\x00\x94"_q);
+	S("\x00\x6f"_q);
+	S("\x00\x69"_q);
+	R(105);
+	R(4);
+	S("\x00\x21"_q);
+	S("\x20"_q);
+	R(32);
+	CloseScope();
+	CloseScope();
+	CloseScope();
+
+	return MTP_tlsClientHello(MTP_vector<MTPTlsBlock>(Finish()));
+}
+
+[[nodiscard]] MTPTlsClientHello PrepareClientHelloRules()
+{
+	static MTPTlsClientHello chRules_chrome  = PrepareClientHelloRules_Chrome();
+	static MTPTlsClientHello chRules_firefox = PrepareClientHelloRules_Firefox();
+	static MTPTlsClientHello chRules_custom  = PrepareClientHelloRules_Firefox(true);
+	static MTPTlsClientHello chRules_safari  = PrepareClientHelloRules_SafariMac();
+	static MTPTlsClientHello chRules_yandex  = PrepareClientHelloRules_YandexGost();
+	auto ch_type = MTP::ProxyData::globalClienHelloRulesType();
+	if(ProxyData::CHelloType::RANDOM == ch_type) {
+		// qDebug("--- randomize ClientHello selection");
+		ch_type = Core::IntToProxyCHelloType(QRandomGenerator::global()->bounded(0, 5));
+	}
+	switch(ch_type) {
+		case ProxyData::CHelloType::Chrome:
+			// qDebug(">>> using Chrome ClientHello");
+			return chRules_chrome;
+		case ProxyData::CHelloType::Custom:
+			// qDebug(">>> using custom ClientHello");
+			return chRules_custom;
+		case ProxyData::CHelloType::SafariMac:
+			return chRules_safari;
+		case ProxyData::CHelloType::YandexGost:
+			return chRules_yandex;
+		case ProxyData::CHelloType::Firefox:
+		default:
+			// qDebug(">>> using FireFox ClientHello");
+			return chRules_firefox;
+	}
 }
 
 [[nodiscard]] bytes::vector PrepareGreases() {
@@ -652,7 +1306,7 @@ void TlsSocket::plainConnected() {
 		return;
 	}
 
-	static const auto kClientHelloRules = PrepareClientHelloRules();
+	const auto& kClientHelloRules = PrepareClientHelloRules();
 	const auto hello = PrepareClientHello(
 		kClientHelloRules,
 		domainFromSecret(),
@@ -838,6 +1492,43 @@ void TlsSocket::connectToHost(const QString &address, int port) {
 	Expects(_state == State::NotConnected);
 
 	_state = State::Connecting;
+	if(MTP::ProxyData::globalSlowMode()) {
+		namespace sc = std::chrono;
+		static auto mutex = QMutex();
+		static auto slots = std::map<QString, sc::steady_clock::time_point>{};
+		const auto delay  = MTP::ProxyData::globalSlowDelay();
+		const auto jitter = MTP::ProxyData::globalSlowJitter();
+
+		sc::milliseconds waitFor{0};
+		{
+			const QMutexLocker lock(&mutex);
+			const auto now = sc::steady_clock::now();
+			const auto extra = QRandomGenerator::global()->bounded(0, jitter);
+			const auto gap = delay + extra;
+			auto &slot = slots[address];
+			if (slot.time_since_epoch().count() != 0) {
+				if (now < slot) {
+					waitFor = sc::duration_cast<sc::milliseconds>(
+						slot - now);
+				} else {
+					slot = sc::steady_clock::time_point{};
+				}
+			}
+			if (slot.time_since_epoch().count() == 0) {
+				slot = now + sc::milliseconds(gap);
+			} else {
+				slot += sc::milliseconds(gap);
+			}
+		}
+		if (waitFor.count() > 0) {
+			const auto _address = address;
+			const auto _port    = port;
+			QTimer::singleShot(waitFor.count(), this, [=] {
+				_socket.connectToHost(_address, _port);
+			});
+			return;
+		}
+	}
 	_socket.connectToHost(address, port);
 }
 

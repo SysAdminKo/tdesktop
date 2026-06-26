@@ -9,6 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/mtp_instance.h"
 
+#include <range/v3/algorithm/shuffle.hpp>
+
 namespace MTP {
 namespace details {
 namespace {
@@ -26,6 +28,7 @@ ResolvingConnection::ResolvingConnection(
 , _instance(instance)
 , _timeoutTimer([=] { handleError(kErrorCodeOther); }) {
 	setChild(std::move(child));
+	ranges::shuffle(_proxy.resolvedIPs);
 	if (proxy.resolvedExpireAt < crl::now()) {
 		const auto host = proxy.host;
 		connect(
@@ -112,6 +115,7 @@ void ResolvingConnection::domainResolved(
 			emitError(kErrorCodeOther);
 		}
 	}
+	ranges::shuffle(_proxy.resolvedIPs);
 	if (_ipIndex < 0) {
 		refreshChild();
 	}

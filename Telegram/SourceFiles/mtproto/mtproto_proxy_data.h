@@ -29,6 +29,15 @@ struct ProxyData {
 		IncorrectSecret,
 		Invalid,
 	};
+	enum class CHelloType
+	{
+		Firefox, // JA3 & JA4 matches FF 151
+		Chrome, // Chrome, vanilla default
+		Custom,
+		SafariMac, // Safari macOS 26.4 (with grease/alpn randomization)
+		YandexGost, // Yandex Browser with GOST cipher suites
+		RANDOM
+	};
 
 	Type type = Type::None;
 	QString host;
@@ -51,6 +60,23 @@ struct ProxyData {
 	[[nodiscard]] static Status MtprotoPasswordStatus(
 		const QString &password);
 
+	static void setGlobalClienHelloRulesType(const ProxyData::CHelloType ch_type);
+	[[nodiscard]] static ProxyData::CHelloType globalClienHelloRulesType();
+
+	static void setGlobalSlowMode(bool value);
+	[[nodiscard]] static bool globalSlowMode();
+
+	static void setGlobalSlowDelay(int value);
+	[[nodiscard]] static int globalSlowDelay();
+
+	static void setGlobalSlowJitter(int value);
+	[[nodiscard]] static int globalSlowJitter();
+
+private:
+	static ProxyData::CHelloType global_ch_type;
+	static bool global_slow_mode;
+	static int global_slow_delay;
+	static int global_slow_jitter;
 };
 
 [[nodiscard]] ProxyData ToDirectIpProxy(
