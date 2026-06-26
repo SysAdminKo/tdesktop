@@ -16,7 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/session.h"
 #include "mtproto/mtproto_response.h"
 #include "mtproto/mtproto_dc_options.h"
-#include "mtproto/mtproto_wss_endpoint_cache.h"
+
 #include "mtproto/mtproto_wss_connect_gate.h"
 #include "mtproto/facade.h"
 #include "base/random.h"
@@ -63,6 +63,8 @@ constexpr auto kSendStateRequestWaiting = crl::time(1000);
 
 // How much time to wait for some more requests, when sending msg acks.
 constexpr auto kAckSendWaiting = 10 * crl::time(1000);
+
+constexpr auto kMinMuxMediaReceiveTimeout = crl::time(16000);
 
 constexpr auto kCutContainerOnSize = 16 * 1024;
 
@@ -195,6 +197,10 @@ SessionPrivate::SessionPrivate(
 , _pingSender(thread, [=] { sendPingByTimer(); })
 , _checkSentRequestsTimer(thread, [=] { checkSentRequests(); })
 , _clearOldContainersTimer(thread, [=] { clearOldContainers(); })
+, _rpcStallCheckTimer(thread, [=] {
+		checkRpcStalls();
+		checkAnswerResendStalls();
+	})
 , _sessionData(std::move(data)) {
 	Expects(_shiftedDcId != 0);
 
@@ -261,13 +267,28 @@ void SessionPrivate::appendTestConnection(
 			instance->syncHttpUnixtime();
 		});
 	});
+	connect(weak, &AbstractConnection::packetReassemblyStall, [=](
+			const QString &ip) {
+		DEBUG_LOG(("WSS reject endpoint ip=%1 dc=%2 shift=%3")
+			.arg(ip)
+			.arg(BareDcId(_shiftedDcId))
+			.arg(GetDcIdShift(_shiftedDcId)));
+		_wssRejectedEndpoints.insert(ip);
+	});
 
 	const auto protocolForFiles = isMediaClusterDcId(_shiftedDcId)
 		//|| isUploadDcId(_shiftedDcId)
 		|| (_realDcType == DcType::Cdn);
 	const auto protocolDcId = getProtocolDcId();
+	const auto connection = _testConnections.back().data.get();
+	if (isDownloadDcId(_shiftedDcId)
+		&& _options->proxy.type == ProxyData::Type::WebSocket) {
+		const auto index = (GetDcIdShift(_shiftedDcId) - kBaseDownloadDcShift)
+			+ BareDcId(_shiftedDcId) * kMaxMediaDcCount;
+		connection->setWssTunnelAffinity(index);
+	}
 	InvokeQueued(_testConnections.back().data, [=] {
-		weak->connectToServer(
+		connection->connectToServer(
 			ip,
 			port,
 			protocolSecret,
@@ -367,7 +388,6 @@ void SessionPrivate::destroyAllConnections() {
 	_waitForConnectedTimer.cancel();
 	_testConnections.clear();
 	_connection = nullptr;
-	_wssActiveEndpoint = std::nullopt;
 }
 
 void SessionPrivate::cdnConfigChanged() {
@@ -1082,18 +1102,17 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 	} else {
 		using Variants = DcOptions::Variants;
 		const auto special = (_currentDcType == DcType::Temporary);
+		const auto throughProxy = (_options->proxy.type != ProxyData::Type::None);
 		const auto variants = _instance->dcOptions().lookup(
 			bareDc,
 			_currentDcType,
-			_options->proxy.type != ProxyData::Type::None);
+			throughProxy);
 		const auto useIPv4 = special ? true : _options->useIPv4;
 		const auto useIPv6 = special ? false : _options->useIPv6;
 		const auto useTcp = special ? true : _options->useTcp;
 		const auto useHttp = special ? false : _options->useHttp;
 		const auto limitWebSocketTests = (_options->proxy.type
 			== ProxyData::Type::WebSocket);
-		const auto webSocketTestLimit = 1;
-		const auto wssScope = _instance->wssEndpointScope();
 		const auto isRejectedEndpoint = [&](
 				const QString &ip,
 				int port,
@@ -1102,57 +1121,11 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 			if (!limitWebSocketTests || ip.isEmpty() || !port) {
 				return false;
 			}
-			return WssEndpointCache::isRejected(
-				_shiftedDcId,
-				_currentDcType,
-				_options->proxy,
-				wssScope,
-				WssEndpointCache::Entry{
-					ip,
-					port,
-					secret,
-					protocol,
-				});
+			return _wssRejectedEndpoints.contains(ip);
 		};
-		const auto cachedEndpoint = limitWebSocketTests
-			? WssEndpointCache::lookup(
-				_shiftedDcId,
-				_currentDcType,
-				_options->proxy,
-				wssScope)
-			: std::nullopt;
-		const auto usableCachedEndpoint = cachedEndpoint
-			&& !isRejectedEndpoint(
-				cachedEndpoint->ip,
-				cachedEndpoint->port,
-				cachedEndpoint->secret,
-				cachedEndpoint->protocol)
-			? cachedEndpoint
-			: std::nullopt;
 		auto webSocketTestsAdded = 0;
-		const auto matchesCached = [&](
-				const QString &ip,
-				int port,
-				const bytes::vector &secret,
-				DcOptions::Variants::Protocol protocol) {
-			if (!usableCachedEndpoint) {
-				return false;
-			}
-			return (ip == usableCachedEndpoint->ip)
-				&& (port == usableCachedEndpoint->port)
-				&& (protocol == usableCachedEndpoint->protocol)
-				&& (secret == usableCachedEndpoint->secret);
-		};
-		if (usableCachedEndpoint) {
-			appendTestConnection(
-				usableCachedEndpoint->protocol,
-				usableCachedEndpoint->ip,
-				usableCachedEndpoint->port,
-				usableCachedEndpoint->secret);
-			++webSocketTestsAdded;
-		}
 		const auto skipVariantsLoop = limitWebSocketTests
-			&& usableCachedEndpoint;
+			&& webSocketTestsAdded;
 		const auto skipAddress = !useIPv4
 			? Variants::IPv4
 			: !useIPv6
@@ -1177,19 +1150,12 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 				}
 				for (const auto &endpoint : variants.data[address][protocol]) {
 					if (limitWebSocketTests) {
-						if (webSocketTestsAdded >= webSocketTestLimit) {
+						if (webSocketTestsAdded) {
 							break;
 						}
 					}
 					const auto ip = QString::fromStdString(endpoint.ip);
 					if (isRejectedEndpoint(
-							ip,
-							endpoint.port,
-							endpoint.secret,
-							static_cast<Variants::Protocol>(protocol))) {
-						continue;
-					}
-					if (matchesCached(
 							ip,
 							endpoint.port,
 							endpoint.secret,
@@ -1205,24 +1171,22 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 						endpoint.port,
 						endpoint.secret);
 				}
-				if (limitWebSocketTests
-					&& webSocketTestsAdded >= webSocketTestLimit) {
+				if (limitWebSocketTests && webSocketTestsAdded) {
 					break;
 				}
 			}
-			if (limitWebSocketTests
-				&& webSocketTestsAdded >= webSocketTestLimit) {
+			if (limitWebSocketTests && webSocketTestsAdded) {
 				break;
 			}
 		}
 		}
 		if (_testConnections.empty()
-			&& limitWebSocketTests
-			&& WssEndpointCache::clearRejected(
-				_shiftedDcId,
-				_currentDcType,
-				_options->proxy,
-				wssScope)) {
+			&& limitWebSocketTests) {
+			DEBUG_LOG(("WSS all endpoints rejected dc=%1 shift=%2 count=%3 — clearing and retry")
+				.arg(BareDcId(_shiftedDcId))
+				.arg(GetDcIdShift(_shiftedDcId))
+				.arg(_wssRejectedEndpoints.size()));
+			_wssRejectedEndpoints.clear();
 			return connectToServer(afterConfig);
 		}
 	}
@@ -1286,21 +1250,29 @@ void SessionPrivate::restart() {
 }
 
 void SessionPrivate::onSentSome(uint64 size) {
-	if (!_waitForReceivedTimer.isActive()) {
-		auto remain = static_cast<uint64>(_waitForReceived);
-		if (!_oldConnection) {
-			Assert(remain <= kMaxReceiveTimeout);
+	const auto muxMedia = _options->proxy.type == ProxyData::Type::WebSocket
+		&& isMediaClusterDcId(_shiftedDcId);
+	auto remain = static_cast<uint64>(_waitForReceived);
+	if (!_oldConnection) {
+		Assert(remain <= kMaxReceiveTimeout);
 
-			// 8kb / sec, so 512 kb give 64 sec
-			auto remainBySize = size * _waitForReceived / 8192;
+		const auto remainBySize = size * _waitForReceived / 8192;
+		if (muxMedia) {
+			remain = std::clamp(
+				remainBySize,
+				uint64(kMinMuxMediaReceiveTimeout),
+				uint64(kMaxReceiveTimeout));
+		} else {
 			remain = std::clamp(
 				remainBySize,
 				remain,
 				uint64(kMaxReceiveTimeout));
-			if (remain != _waitForReceived) {
-				DEBUG_LOG(("Checking connect for request with size %1 bytes, delay will be %2").arg(size).arg(remain));
-			}
 		}
+		if (remain != _waitForReceived) {
+			DEBUG_LOG(("Checking connect for request with size %1 bytes, delay will be %2").arg(size).arg(remain));
+		}
+	}
+	if (!_waitForReceivedTimer.isActive() || muxMedia) {
 		_waitForReceivedTimer.callOnce(remain);
 	}
 	if (!_firstSentAt) {
@@ -1415,6 +1387,8 @@ void SessionPrivate::connectingTimedOut() {
 }
 
 void SessionPrivate::doDisconnect() {
+	_rpcStallCheckTimer.cancel();
+	_rpcAwaitingResponse.clear();
 	destroyAllConnections();
 	setState(DisconnectedState);
 }
@@ -1948,6 +1922,11 @@ SessionPrivate::HandleResult SessionPrivate::handleOneReceived(
 			_ackRequestData.push_back(resMsgId);
 		} else {
 			DEBUG_LOG(("Message Info: answer message %1 was not received, requesting...").arg(resMsgId.v));
+			noteAnswerResendPending(
+				wasSent(data.vmsg_id().v),
+				data.vmsg_id().v,
+				resMsgId.v,
+				data.vbytes().v);
 			_resendRequestData.push_back(resMsgId);
 		}
 	} return HandleResult::Success;
@@ -1970,6 +1949,7 @@ SessionPrivate::HandleResult SessionPrivate::handleOneReceived(
 			_ackRequestData.push_back(resMsgId);
 		} else {
 			DEBUG_LOG(("Message Info: answer message %1 was not received, requesting...").arg(resMsgId.v));
+			noteAnswerResendPending(0, 0, resMsgId.v, data.vbytes().v);
 			_resendRequestData.push_back(resMsgId);
 		}
 	} return HandleResult::Success;
@@ -1987,6 +1967,8 @@ SessionPrivate::HandleResult SessionPrivate::handleOneReceived(
 		const auto requestMsgId = reqMsgId.v;
 
 		DEBUG_LOG(("RPC Info: response received for %1, queueing...").arg(requestMsgId));
+		clearRpcAwaitingResponse(requestMsgId);
+		clearAnswerResendForSentMsg(requestMsgId);
 
 		QVector<MTPlong> ids(1, reqMsgId);
 		if (info.badTime) {
@@ -2275,6 +2257,186 @@ void SessionPrivate::correctUnixtimeWithBadLocal(TimeId serverTime) {
 	base::unixtime::update(serverTime, true);
 }
 
+[[nodiscard]] bool SessionPrivate::diagRpcStalls() const {
+	return _options
+		&& (_options->proxy.type == ProxyData::Type::WebSocket)
+		&& isMediaClusterDcId(_shiftedDcId);
+}
+
+void SessionPrivate::noteRpcAwaitingResponse(
+		mtpRequestId requestId,
+		mtpMsgId msgId) {
+	if (!diagRpcStalls() || !requestId || !msgId) {
+		return;
+	} else if (_rpcAwaitingResponse.contains(msgId)) {
+		return;
+	}
+	_rpcAwaitingResponse.emplace(msgId, RpcAwaitingResponse{
+		.requestId = requestId,
+		.since = crl::now(),
+	});
+	if (!_rpcStallCheckTimer.isActive()) {
+		_rpcStallCheckTimer.callEach(1000);
+	}
+}
+
+void SessionPrivate::clearRpcAwaitingResponse(mtpMsgId msgId) {
+	if (!msgId) {
+		return;
+	}
+	_rpcAwaitingResponse.remove(msgId);
+	maybeStopRpcStallTimer();
+}
+
+void SessionPrivate::noteAnswerResendPending(
+		mtpRequestId requestId,
+		mtpMsgId sentMsgId,
+		mtpMsgId answerMsgId,
+		int32 bytes) {
+	if (!diagRpcStalls() || !answerMsgId) {
+		return;
+	} else if (_answerResendPending.contains(answerMsgId)) {
+		return;
+	}
+	_answerResendPending.emplace(answerMsgId, AnswerResendPending{
+		.requestId = requestId,
+		.sentMsgId = sentMsgId,
+		.bytes = bytes,
+		.since = crl::now(),
+	});
+	if (!_rpcStallCheckTimer.isActive()) {
+		_rpcStallCheckTimer.callEach(1000);
+	}
+}
+
+void SessionPrivate::clearAnswerResendPending(mtpMsgId answerMsgId) {
+	if (!answerMsgId) {
+		return;
+	}
+	_answerResendPending.remove(answerMsgId);
+	maybeStopRpcStallTimer();
+}
+
+void SessionPrivate::clearAnswerResendForSentMsg(mtpMsgId sentMsgId) {
+	if (!sentMsgId) {
+		return;
+	}
+	for (auto it = _answerResendPending.begin(); it != _answerResendPending.end(); ) {
+		if (it->second.sentMsgId == sentMsgId) {
+			it = _answerResendPending.erase(it);
+		} else {
+			++it;
+		}
+	}
+	maybeStopRpcStallTimer();
+}
+
+void SessionPrivate::clearAnswerResendForRequest(mtpRequestId requestId) {
+	if (!requestId) {
+		return;
+	}
+	for (auto it = _answerResendPending.begin(); it != _answerResendPending.end(); ) {
+		if (it->second.requestId == requestId) {
+			it = _answerResendPending.erase(it);
+		} else {
+			++it;
+		}
+	}
+	maybeStopRpcStallTimer();
+}
+
+void SessionPrivate::maybeStopRpcStallTimer() {
+	if (_rpcAwaitingResponse.empty() && _answerResendPending.empty()) {
+		_rpcStallCheckTimer.cancel();
+	}
+}
+
+void SessionPrivate::cancelRequestDiag(
+		mtpRequestId requestId,
+		mtpMsgId msgId) {
+	if (msgId) {
+		clearRpcAwaitingResponse(msgId);
+		clearAnswerResendForSentMsg(msgId);
+		for (auto it = _answerResendPending.begin(); it != _answerResendPending.end(); ) {
+			if (it->first == msgId) {
+				it = _answerResendPending.erase(it);
+			} else {
+				++it;
+			}
+		}
+		maybeStopRpcStallTimer();
+	}
+	if (requestId) {
+		for (auto it = _rpcAwaitingResponse.begin(); it != _rpcAwaitingResponse.end(); ) {
+			if (it->second.requestId == requestId) {
+				it = _rpcAwaitingResponse.erase(it);
+			} else {
+				++it;
+			}
+		}
+		clearAnswerResendForRequest(requestId);
+		maybeStopRpcStallTimer();
+	}
+}
+
+void SessionPrivate::checkRpcStalls() {
+	if (!diagRpcStalls() || _rpcAwaitingResponse.empty()) {
+		if (_answerResendPending.empty()) {
+			_rpcStallCheckTimer.cancel();
+		}
+		return;
+	}
+	const auto now = crl::now();
+	constexpr auto kThreshold = crl::time(5000);
+	const auto connectionTag = _connection ? _connection->tag() : QString();
+	for (auto &[msgId, entry] : _rpcAwaitingResponse) {
+		if (entry.stallLogged || (now - entry.since) < kThreshold) {
+			continue;
+		}
+		entry.stallLogged = true;
+		DEBUG_LOG(("RPC stall shiftedDc=%1 request=%2 msgId=%3 wait_ms=%4 conn=%5"
+			).arg(_shiftedDcId
+			).arg(entry.requestId
+			).arg(msgId
+			).arg(now - entry.since
+			).arg(connectionTag));
+	}
+}
+
+void SessionPrivate::checkAnswerResendStalls() {
+	if (!diagRpcStalls() || _answerResendPending.empty()) {
+		if (_rpcAwaitingResponse.empty()) {
+			_rpcStallCheckTimer.cancel();
+		}
+		return;
+	}
+	const auto now = crl::now();
+	constexpr auto kThreshold = crl::time(3000);
+	const auto connectionTag = _connection ? _connection->tag() : QString();
+	for (auto it = _answerResendPending.begin(); it != _answerResendPending.end(); ) {
+		const auto answerMsgId = it->first;
+		auto &entry = it->second;
+		if (_receivedMessageIds.lookup(answerMsgId)
+				!= ReceivedIdsManager::State::NotFound) {
+			it = _answerResendPending.erase(it);
+			continue;
+		}
+		if (!entry.stallLogged && (now - entry.since) >= kThreshold) {
+			entry.stallLogged = true;
+			DEBUG_LOG(("Answer resend stall shiftedDc=%1 request=%2 sentMsgId=%3 answerId=%4 bytes=%5 wait_ms=%6 conn=%7"
+				).arg(_shiftedDcId
+				).arg(entry.requestId
+				).arg(entry.sentMsgId
+				).arg(answerMsgId
+				).arg(entry.bytes
+				).arg(now - entry.since
+				).arg(connectionTag));
+		}
+		++it;
+	}
+	maybeStopRpcStallTimer();
+}
+
 void SessionPrivate::requestsAcked(const QVector<MTPlong> &ids, bool byResponse) {
 	DEBUG_LOG(("Message Info: requests acked, ids %1").arg(LogIdsVector(ids)));
 
@@ -2304,6 +2466,7 @@ void SessionPrivate::requestsAcked(const QVector<MTPlong> &ids, bool byResponse)
 
 				if (!byResponse && _instance->hasCallback(requestId)) {
 					DEBUG_LOG(("Message Info: ignoring ACK for msgId %1 because request %2 requires a response").arg(msgId).arg(requestId));
+					noteRpcAwaitingResponse(requestId, msgId);
 					continue;
 				}
 				haveSent.erase(i);
@@ -2317,6 +2480,7 @@ void SessionPrivate::requestsAcked(const QVector<MTPlong> &ids, bool byResponse)
 
 				if (!byResponse && _instance->hasCallback(requestId)) {
 					DEBUG_LOG(("Message Info: ignoring ACK for msgId %1 because request %2 requires a response").arg(msgId).arg(requestId));
+					noteRpcAwaitingResponse(requestId, msgId);
 					continue;
 				}
 				_resendingIds.erase(i);
@@ -2498,7 +2662,6 @@ void SessionPrivate::onConnected(
 	} else {
 		DEBUG_LOG(("MTP Info: connection through IPv4 succeed."));
 		_waitForBetterTimer.cancel();
-		storeWssEndpoint(*i);
 		_connection = std::move(i->data);
 		_testConnections.clear();
 		checkAuthKey();
@@ -2507,26 +2670,9 @@ void SessionPrivate::onConnected(
 
 void SessionPrivate::onDisconnected(
 		not_null<AbstractConnection*> connection) {
-	const auto i = ranges::find(
-		_testConnections,
-		connection.get(),
-		[](const TestConnection &test) { return test.data.get(); });
-	const auto failedIp = (i != end(_testConnections)) ? i->endpointIp : QString();
-	const auto failedPort = (i != end(_testConnections)) ? i->endpointPort : 0;
-	const auto failedSecret = (i != end(_testConnections))
-		? i->endpointSecret
-		: bytes::vector();
-	const auto failedProtocol = (i != end(_testConnections))
-		? i->protocol
-		: DcOptions::Variants::Tcp;
 	removeTestConnection(connection);
 
 	if (_testConnections.empty()) {
-		invalidateWssEndpointOnFailure(
-			failedIp,
-			failedPort,
-			failedSecret,
-			failedProtocol);
 		destroyAllConnections();
 		restart();
 	} else {
@@ -2540,7 +2686,7 @@ void SessionPrivate::confirmBestConnection() {
 	}
 	const auto i = ranges::max_element(
 		_testConnections,
-		std::less<>(),
+		ranges::less(),
 		[](const TestConnection &test) {
 			return test.data->isConnected() ? test.priority : -1;
 		});
@@ -2552,107 +2698,15 @@ void SessionPrivate::confirmBestConnection() {
 	DEBUG_LOG(("MTP Info: can't connect through better, using %1."
 		).arg(i->data->tag()));
 
-	storeWssEndpoint(*i);
 	_connection = std::move(i->data);
 	_testConnections.clear();
 
 	checkAuthKey();
 }
 
-void SessionPrivate::invalidateWssEndpointOnFailure(
-		const QString &ip,
-		int port,
-		const bytes::vector &secret,
-		DcOptions::Variants::Protocol protocol) {
-	if (_options->proxy.type != ProxyData::Type::WebSocket) {
-		return;
-	} else if (ip.isEmpty() || !port) {
-		return;
-	}
-	const auto scope = _instance->wssEndpointScope();
-	const auto entry = WssEndpointCache::Entry{
-		ip,
-		port,
-		secret,
-		protocol,
-	};
-	WssEndpointCache::markRejected(
-		_shiftedDcId,
-		_currentDcType,
-		_options->proxy,
-		scope,
-		entry);
-	const auto cached = WssEndpointCache::lookup(
-		_shiftedDcId,
-		_currentDcType,
-		_options->proxy,
-		scope);
-	if (!cached
-		|| ip != cached->ip
-		|| port != cached->port
-		|| protocol != cached->protocol
-		|| secret != cached->secret) {
-		return;
-	}
-	WssEndpointCache::clear(
-		_shiftedDcId,
-		_currentDcType,
-		_options->proxy,
-		scope);
-}
-
-void SessionPrivate::invalidateWssEndpointCache() {
-	if (_options->proxy.type != ProxyData::Type::WebSocket) {
-		return;
-	}
-	WssEndpointCache::clear(
-		_shiftedDcId,
-		_currentDcType,
-		_options->proxy,
-		_instance->wssEndpointScope());
-}
-
-void SessionPrivate::markActiveWssEndpointRejected() {
-	if (_options->proxy.type != ProxyData::Type::WebSocket
-		|| !_wssActiveEndpoint) {
-		return;
-	}
-	WssEndpointCache::markRejected(
-		_shiftedDcId,
-		_currentDcType,
-		_options->proxy,
-		_instance->wssEndpointScope(),
-		*_wssActiveEndpoint);
-}
-
 void SessionPrivate::restartWssWithNextEndpoint() {
-	markActiveWssEndpointRejected();
-	invalidateWssEndpointCache();
 	_sessionData->queueNeedToResumeAndSend();
 	restart();
-}
-
-void SessionPrivate::storeWssEndpoint(const TestConnection &test) {
-	if (_options->proxy.type != ProxyData::Type::WebSocket) {
-		return;
-	} else if (test.endpointIp.isEmpty() || !test.endpointPort) {
-		return;
-	}
-	_wssActiveEndpoint = WssEndpointCache::Entry{
-		test.endpointIp,
-		test.endpointPort,
-		test.endpointSecret,
-		test.protocol,
-	};
-	WssEndpointCache::store(
-		_shiftedDcId,
-		_currentDcType,
-		_options->proxy,
-		_instance->wssEndpointScope(),
-		test.endpointIp,
-		test.endpointPort,
-		test.endpointSecret,
-		test.protocol);
 }
 
 void SessionPrivate::removeTestConnection(

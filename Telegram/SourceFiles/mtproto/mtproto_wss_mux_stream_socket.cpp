@@ -5,7 +5,9 @@
 #include "mtproto/details/mtproto_wss_mux_framing.h"
 
 #include "base/bytes.h"
+#include "base/debug_log.h"
 #include "base/invoke_queued.h"
+#include "crl/crl.h"
 
 namespace MTP::details {
 namespace {
@@ -34,6 +36,13 @@ MuxStreamSocket::~MuxStreamSocket() {
 	}
 	closeServerStream(streamId);
 	_hub->UnregisterStream(streamId);
+	if (_bytesSent > 0 || _bytesReceived > 0) {
+		DEBUG_LOG(("WSS mux stream close stream=%1 tunnel=%2 sent=%3 recv=%4"
+			).arg(streamId
+			).arg(_tunnelIndex
+			).arg(_bytesSent
+			).arg(_bytesReceived));
+	}
 }
 
 void MuxStreamSocket::closeServerStream() {
@@ -57,31 +66,63 @@ uint32 MuxStreamSocket::streamId() const {
 	return _streamId;
 }
 
+void MuxStreamSocket::setTunnelAffinity(int affinity) {
+	_tunnelAffinity = affinity;
+}
+
+int MuxStreamSocket::tunnelAffinity() const {
+	return _tunnelAffinity;
+}
+
+int MuxStreamSocket::tunnelIndex() const {
+	return _tunnelIndex;
+}
+
+crl::time MuxStreamSocket::muxOpenDuration() const {
+	return _muxOpenDuration;
+}
+
 void MuxStreamSocket::invokeQueued(Fn<void()> &&fn) {
 	InvokeQueued(this, std::move(fn));
 }
 
 void MuxStreamSocket::connectToHost(const QString &address, int port) {
-	Expects(_state == State::NotConnected);
+	Expects(_state == State::NotConnected || _state == State::Error);
 
+	if (_openSent || _openOnServer) {
+		closeServerStream();
+	}
 	_host = address;
 	_port = port;
 	_state = State::Opening;
 	_openSent = true;
 	_openOnServer = false;
+	_tunnelIndex = -1;
+	_muxOpenDuration = 0;
+	_openStartedAt = crl::now();
 	_readBuffer.clear();
 	_readOffset = 0;
 	_openTimer.start(kOpenTimeout);
 	_hub->RequestOpen(_streamId, address, port);
 }
 
-void MuxStreamSocket::handleOpenOk() {
+void MuxStreamSocket::handleOpenOk(int tunnelIndex) {
 	if (!_streamId || _state != State::Opening) {
 		return;
 	}
 	_openTimer.stop();
+	_tunnelIndex = tunnelIndex;
+	_muxOpenDuration = _openStartedAt ? (crl::now() - _openStartedAt) : 0;
+	_openStartedAt = 0;
 	_state = State::Connected;
 	_openOnServer = true;
+	DEBUG_LOG(("WSS mux stream open stream=%1 tunnel=%2 affinity=%3 open_ms=%4 target %5:%6"
+		).arg(_streamId
+		).arg(_tunnelIndex
+		).arg(_tunnelAffinity
+		).arg(_muxOpenDuration
+		).arg(_host
+		).arg(_port));
 	_connected.fire({});
 }
 
@@ -94,6 +135,7 @@ void MuxStreamSocket::handleData(bytes::vector data) {
 	if (!_streamId || _state != State::Connected || data.empty()) {
 		return;
 	}
+	_bytesReceived += data.size();
 	const auto offset = _readBuffer.size();
 	_readBuffer.resize(offset + data.size());
 	bytes::copy(
@@ -222,6 +264,7 @@ void MuxStreamSocket::write(bytes::const_span prefix, bytes::const_span buffer) 
 		return;
 	}
 	const auto total = prefix.size() + buffer.size();
+	_bytesSent += total;
 	auto combined = bytes::vector(total);
 	if (!prefix.empty()) {
 		bytes::copy(bytes::make_span(combined), prefix);

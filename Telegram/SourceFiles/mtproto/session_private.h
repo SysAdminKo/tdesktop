@@ -12,7 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_auth_key.h"
 #include "mtproto/mtproto_dc_options.h"
 #include <optional>
-#include "mtproto/mtproto_wss_endpoint_cache.h"
+
 #include "mtproto/connection_abstract.h"
 #include "mtproto/facade.h"
 #include "base/timer.h"
@@ -52,6 +52,8 @@ public:
 	void sendPingForce();
 	void tryToSend();
 
+	void cancelRequestDiag(mtpRequestId requestId, mtpMsgId msgId);
+
 private:
 	static constexpr auto kUpdateStateAlways = 666;
 
@@ -67,6 +69,18 @@ private:
 	struct SentContainer {
 		crl::time sent = 0;
 		std::vector<mtpMsgId> messages;
+	};
+	struct RpcAwaitingResponse {
+		mtpRequestId requestId = 0;
+		crl::time since = 0;
+		bool stallLogged = false;
+	};
+	struct AnswerResendPending {
+		mtpRequestId requestId = 0;
+		mtpMsgId sentMsgId = 0;
+		int32 bytes = 0;
+		crl::time since = 0;
+		bool stallLogged = false;
 	};
 	enum class HandleResult {
 		Success,
@@ -151,14 +165,6 @@ private:
 		const QString &ip,
 		int port,
 		const bytes::vector &protocolSecret);
-	void storeWssEndpoint(const TestConnection &test);
-	void invalidateWssEndpointOnFailure(
-		const QString &ip,
-		int port,
-		const bytes::vector &secret,
-		DcOptions::Variants::Protocol protocol);
-	void invalidateWssEndpointCache();
-	void markActiveWssEndpointRejected();
 	void restartWssWithNextEndpoint();
 
 	// if badTime received - search for ids in sessionData->haveSent and sessionData->wereAcked and sync time/salt, return true if found
@@ -172,6 +178,21 @@ private:
 
 	// remove msgs with such ids from sessionData->haveSent, add to sessionData->wereAcked
 	void requestsAcked(const QVector<MTPlong> &ids, bool byResponse = false);
+
+	void noteRpcAwaitingResponse(mtpRequestId requestId, mtpMsgId msgId);
+	void clearRpcAwaitingResponse(mtpMsgId msgId);
+	void noteAnswerResendPending(
+		mtpRequestId requestId,
+		mtpMsgId sentMsgId,
+		mtpMsgId answerMsgId,
+		int32 bytes);
+	void clearAnswerResendPending(mtpMsgId answerMsgId);
+	void clearAnswerResendForSentMsg(mtpMsgId sentMsgId);
+	void clearAnswerResendForRequest(mtpRequestId requestId);
+	void checkRpcStalls();
+	void checkAnswerResendStalls();
+	void maybeStopRpcStallTimer();
+	[[nodiscard]] bool diagRpcStalls() const;
 
 	void resend(mtpMsgId msgId, crl::time msCanWait = 0);
 	void resendAll();
@@ -208,7 +229,7 @@ private:
 
 	ConnectionPointer _connection;
 	std::vector<TestConnection> _testConnections;
-	std::optional<WssEndpointCache::Entry> _wssActiveEndpoint;
+	QSet<QString> _wssRejectedEndpoints;
 	crl::time _startedConnectingAt = 0;
 
 	base::Timer _retryTimer; // exp retry timer
@@ -234,6 +255,7 @@ private:
 	base::Timer _pingSender;
 	base::Timer _checkSentRequestsTimer;
 	base::Timer _clearOldContainersTimer;
+	base::Timer _rpcStallCheckTimer;
 
 	std::shared_ptr<SessionData> _sessionData;
 	std::unique_ptr<SessionOptions> _options;
@@ -252,6 +274,8 @@ private:
 	base::flat_map<mtpMsgId, mtpRequestId> _ackedIds;
 	base::flat_map<mtpMsgId, SerializedRequest> _stateAndResendRequests;
 	base::flat_map<mtpMsgId, SentContainer> _sentContainers;
+	base::flat_map<mtpMsgId, RpcAwaitingResponse> _rpcAwaitingResponse;
+	base::flat_map<mtpMsgId, AnswerResendPending> _answerResendPending;
 
 	std::unique_ptr<BoundKeyCreator> _keyCreator;
 	mtpMsgId _bindMsgId = 0;

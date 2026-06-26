@@ -30,14 +30,23 @@ const (
 	muxOpenFailDial    = 1
 	muxOpenFailBad     = 2
 	muxOpenFailLimit   = 3
+
+	muxUpstreamReadStallMinBytes = 32 * 1024
+	muxUpstreamReadStallThreshold  = 3 * time.Second
+	muxUpstreamReadStallResetGap   = 100 * time.Millisecond
 )
 
 type muxStream struct {
-	id           uint32
-	tcp          net.Conn
-	done         chan struct{}
-	target       string
-	lastActivity atomic.Int64
+	id              uint32
+	tcp             net.Conn
+	done            chan struct{}
+	target          string
+	lastActivity    atomic.Int64
+	upstreamBytes   int64
+	lastReadAt      time.Time
+	readStallLogged bool
+	sentBytes       int64
+	recvBytes       int64
 }
 
 type muxConfig struct {
@@ -120,7 +129,9 @@ func parseOpenTarget(payload []byte) (string, error) {
 }
 
 func (s *muxSession) writeFrame(frameType byte, streamID uint32, payload []byte) error {
+	waitStart := time.Now()
 	s.writeMu.Lock()
+	relayStatistics.incMuxWriteWait(time.Since(waitStart))
 	defer s.writeMu.Unlock()
 	if s.closed {
 		return io.ErrClosedPipe
@@ -146,6 +157,14 @@ func (s *muxSession) removeStream(id uint32) {
 		close(stream.done)
 	}
 	_ = stream.tcp.Close()
+	log.Printf(
+		"mux stream close stream=%d client=%s target=%s sent=%d recv=%d",
+		id,
+		s.clientIP,
+		target,
+		stream.sentBytes,
+		stream.recvBytes,
+	)
 	relayStatistics.muxStreamClosed(s.clientIP, target)
 }
 
@@ -188,7 +207,23 @@ func (s *muxSession) handleOpen(streamID uint32, payload []byte) {
 		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailBad})
 		return
 	}
+	go s.openStreamAsync(streamID, target)
+}
+
+func (s *muxSession) openStreamAsync(streamID uint32, target string) {
+	dialStarted := time.Now()
 	tcp, err := dialUpstream(target)
+	dialMs := time.Since(dialStarted).Milliseconds()
+	relayStatistics.recordMuxOpenDial(dialMs)
+	if dialMs > 100 {
+		log.Printf(
+			"mux open slow stream=%d client=%s target=%s dial_ms=%d",
+			streamID,
+			s.clientIP,
+			target,
+			dialMs,
+		)
+	}
 	if err != nil {
 		log.Printf("mux open stream=%d dial %s failed: %v", streamID, target, err)
 		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailDial})
@@ -205,6 +240,20 @@ func (s *muxSession) handleOpen(streamID uint32, payload []byte) {
 	if s.closed {
 		s.mu.Unlock()
 		_ = tcp.Close()
+		return
+	}
+	if _, exists := s.streams[streamID]; exists {
+		s.mu.Unlock()
+		_ = tcp.Close()
+		relayStatistics.incMuxOpenBad()
+		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailBad})
+		return
+	}
+	if len(s.streams) >= s.config.maxStreams {
+		s.mu.Unlock()
+		_ = tcp.Close()
+		relayStatistics.incMuxOpenLimit()
+		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailLimit})
 		return
 	}
 	s.streams[streamID] = stream
@@ -227,12 +276,36 @@ func (s *muxSession) pumpUpstream(stream *muxStream) {
 			return
 		default:
 		}
+		if stream.upstreamBytes >= muxUpstreamReadStallMinBytes && !stream.lastReadAt.IsZero() {
+			gap := time.Since(stream.lastReadAt)
+			if gap >= muxUpstreamReadStallThreshold && !stream.readStallLogged {
+				stream.readStallLogged = true
+				log.Printf(
+					"mux upstream read stall stream=%d client=%s target=%s gap_ms=%d bytes=%d",
+					stream.id,
+					s.clientIP,
+					stream.target,
+					gap.Milliseconds(),
+					stream.upstreamBytes,
+				)
+				relayStatistics.incMuxUpstreamReadStall()
+			}
+		}
 		n, err := stream.tcp.Read(buffer)
 		if err != nil {
 			s.removeStream(stream.id)
 			_ = s.writeFrame(muxTypeClose, stream.id, nil)
 			return
 		}
+		now := time.Now()
+		if !stream.lastReadAt.IsZero() {
+			if now.Sub(stream.lastReadAt) < muxUpstreamReadStallResetGap {
+				stream.readStallLogged = false
+			}
+		}
+		stream.lastReadAt = now
+		stream.upstreamBytes += int64(n)
+		stream.sentBytes += int64(n)
 		stream.touchActivity()
 		if err := s.writeFrame(muxTypeData, stream.id, buffer[:n]); err != nil {
 			s.removeStream(stream.id)
@@ -317,6 +390,7 @@ func (s *muxSession) handleData(streamID uint32, payload []byte) {
 		_ = s.writeFrame(muxTypeClose, streamID, []byte{1})
 		return
 	}
+	stream.recvBytes += int64(len(payload))
 	stream.touchActivity()
 	if _, err := stream.tcp.Write(payload); err != nil {
 		s.removeStream(streamID)

@@ -6,6 +6,7 @@
 #include <memory>
 
 #include <QtCore/QObject>
+#include <vector>
 
 namespace MTP {
 struct ProxyData;
@@ -25,6 +26,9 @@ public:
 		const QString &host,
 		const std::vector<QString> &ips);
 	void EnsureStarted();
+	void Bootstrap(const ProxyData &proxy);
+	[[nodiscard]] bool HasConnectedTunnels() const;
+	[[nodiscard]] std::vector<int> TunnelStreamCounts() const;
 	void SetProxyActive(bool active);
 	void StopTunnels();
 	void Shutdown();
@@ -33,7 +37,8 @@ public:
 		not_null<QThread*> thread,
 		const QString &host,
 		int port,
-		bool protocolForFiles);
+		bool protocolForFiles,
+		int tunnelAffinity = -1);
 
 	void RegisterStream(
 		uint32 streamId,

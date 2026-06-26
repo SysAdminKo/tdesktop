@@ -1502,8 +1502,7 @@ PRIVATE
     mtproto/session.h
     mtproto/session_private.cpp
     mtproto/session_private.h
-    mtproto/mtproto_wss_endpoint_persist.cpp
-    mtproto/mtproto_wss_endpoint_persist.h
+
     mtproto/special_config_request.cpp
     mtproto/special_config_request.h
     mtproto/type_utils.h

@@ -7,16 +7,22 @@
 #include "mtproto/details/mtproto_wss_mux_framing.h"
 
 #include "base/invoke_queued.h"
+#include "base/qthelp_url.h"
+#include "base/debug_log.h"
 #include "crl/crl.h"
 
 #include <QtCore/QEventLoop>
+#include <QtNetwork/QHostInfo>
 #include <QtCore/QMetaObject>
 #include <QtCore/QMutex>
 #include <QtCore/QMutexLocker>
 #include <QtCore/QPointer>
+#include <QtCore/QRegularExpression>
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
+#include <QtNetwork/QAbstractSocket>
 
+#include <deque>
 #include <map>
 #include <vector>
 
@@ -29,9 +35,17 @@ namespace {
 Fn<void()> AuthRejectedHandler;
 
 constexpr auto kDefaultTunnelCount = 6;
+constexpr auto kDownloadTunnelSlots = 8;
 constexpr auto kReconnectDelay = crl::time(2000);
 constexpr auto kOpenRetryDelay = crl::time(250);
 constexpr auto kIpUpdateDebounce = crl::time(3000);
+constexpr auto kDeferResolveFallback = 10 * crl::time(1000);
+
+[[nodiscard]] bool HostNeedsResolve(const QString &host) {
+	static const auto RegExp = QRegularExpression(
+		QStringLiteral("^\\d+\\.\\d+\\.\\d+\\.\\d+$"));
+	return !qthelp::is_ipv6(host) && !RegExp.match(host).hasMatch();
+}
 
 [[nodiscard]] bool SameIpSet(
 		const std::vector<QString> &a,
@@ -51,6 +65,12 @@ constexpr auto kIpUpdateDebounce = crl::time(3000);
 		const QString &ip) {
 	return ranges::find(set, ip) != end(set);
 }
+
+struct PendingOpen {
+	uint32 streamId = 0;
+	QString host;
+	int port = 0;
+};
 
 struct HubConfig {
 	QString host;
@@ -124,11 +144,138 @@ struct WssMuxHub::Private : public QObject {
 	bool authRejected = false;
 	uint32 nextStreamId = 1;
 	QMutex streamsMutex;
+	QMutex countsCacheMutex;
 	std::map<uint32, details::MuxStreamSocket*> streams;
 	std::map<uint32, int> streamTunnel;
+	std::vector<int> cachedTunnelStreamCounts;
 	std::vector<std::unique_ptr<details::WssMuxTunnel>> tunnels;
 	std::vector<QString> pendingResolvedIPs;
 	bool ipUpdateScheduled = false;
+	bool deferTunnelStartUntilResolve = false;
+	bool tunnelStartFallbackScheduled = false;
+	bool freshResolveApplied = false;
+	bool systemResolveInFlight = false;
+	int nextPickTunnel = 0;
+	std::deque<PendingOpen> pendingOpens;
+
+	[[nodiscard]] bool shouldDeferTunnelStart() const {
+		if (!HostNeedsResolve(config.host)) {
+			return false;
+		} else if (config.resolvedIPs.size() > 1) {
+			return false;
+		}
+		return !freshResolveApplied;
+	}
+
+	void mergeResolvedIps(const std::vector<QString> &ips) {
+		if (ips.empty()) {
+			return;
+		} else if (config.resolvedIPs.empty()
+			|| ips.size() > config.resolvedIPs.size()) {
+			config.resolvedIPs = ips;
+		}
+		if (config.resolvedIPs.size() > 1) {
+			freshResolveApplied = true;
+		}
+	}
+
+	void tryStartAfterResolve() {
+		if (!started
+			&& deferTunnelStartUntilResolve
+			&& !shouldDeferTunnelStart()) {
+			startTunnelsAfterResolve();
+		}
+	}
+
+	void startSystemResolve() {
+		if (systemResolveInFlight
+			|| !HostNeedsResolve(config.host)
+			|| config.resolvedIPs.size() > 1) {
+			return;
+		}
+		systemResolveInFlight = true;
+		const auto host = config.host;
+		const auto weak = QPointer<Private>(this);
+		QHostInfo::lookupHost(host, this, [=](const QHostInfo &info) {
+			if (!weak) {
+				return;
+			}
+			weak->systemResolveInFlight = false;
+			if (info.error() != QHostInfo::NoError) {
+				return;
+			}
+			auto ips = std::vector<QString>();
+			for (const auto &address : info.addresses()) {
+				if (address.protocol() == QAbstractSocket::IPv4Protocol) {
+					ips.push_back(address.toString());
+				}
+			}
+			ranges::sort(ips);
+			ips.erase(ranges::unique(ips), end(ips));
+			if (ips.size() <= weak->config.resolvedIPs.size()) {
+				return;
+			}
+			weak->applyResolvedIpsUpdate(std::move(ips));
+		});
+	}
+
+	void removePendingOpen(uint32 streamId) {
+		const auto i = ranges::find(
+			pendingOpens,
+			streamId,
+			&PendingOpen::streamId);
+		if (i != end(pendingOpens)) {
+			pendingOpens.erase(i);
+		}
+	}
+
+	void queuePendingOpen(uint32 streamId, const QString &host, int port) {
+		removePendingOpen(streamId);
+		pendingOpens.push_back({ streamId, host, port });
+	}
+
+	void flushPendingOpens() {
+		if (connectedTunnelCount() == 0 || pendingOpens.empty()) {
+			return;
+		}
+		auto pending = std::move(pendingOpens);
+		pendingOpens.clear();
+		for (const auto &open : pending) {
+			{
+				QMutexLocker lock(&streamsMutex);
+				if (!streams.contains(open.streamId)) {
+					continue;
+				}
+			}
+			requestOpen(open.streamId, open.host, open.port);
+		}
+	}
+
+	void scheduleTunnelStartFallback() {
+		if (tunnelStartFallbackScheduled) {
+			return;
+		}
+		tunnelStartFallbackScheduled = true;
+		const auto weak = QPointer<Private>(this);
+		QTimer::singleShot(kDeferResolveFallback, this, [=] {
+			if (!weak || weak->shuttingDown || !weak->proxyActive) {
+				return;
+			}
+			weak->tunnelStartFallbackScheduled = false;
+			if (!weak->started && weak->deferTunnelStartUntilResolve) {
+				weak->freshResolveApplied = true;
+				weak->deferTunnelStartUntilResolve = false;
+				weak->startTunnels();
+			}
+		});
+	}
+
+	void startTunnelsAfterResolve() {
+		deferTunnelStartUntilResolve = false;
+		tunnelStartFallbackScheduled = false;
+		freshResolveApplied = true;
+		startTunnels();
+	}
 
 	void resetTunnels() {
 		for (auto i = 0; i != int(tunnels.size()); ++i) {
@@ -141,6 +288,11 @@ struct WssMuxHub::Private : public QObject {
 		}
 		tunnels.clear();
 		started = false;
+		deferTunnelStartUntilResolve = false;
+		tunnelStartFallbackScheduled = false;
+		systemResolveInFlight = false;
+		pendingOpens.clear();
+		refreshCachedTunnelStreamCounts();
 	}
 
 	void markAuthRejected() {
@@ -168,6 +320,7 @@ struct WssMuxHub::Private : public QObject {
 				}
 			}
 			weak->tunnels.clear();
+			weak->refreshCachedTunnelStreamCounts();
 		});
 	}
 
@@ -191,6 +344,7 @@ struct WssMuxHub::Private : public QObject {
 		});
 		raw->setStateHandler([=](bool connected) {
 			if (connected) {
+				flushPendingOpens();
 				return;
 			}
 			failStreamsOnTunnel(index);
@@ -255,11 +409,20 @@ struct WssMuxHub::Private : public QObject {
 	void applyResolvedIpsUpdate(std::vector<QString> ips) {
 		if (shuttingDown) {
 			return;
-		} else if (SameIpSet(config.resolvedIPs, ips)) {
+		}
+		if (ips.size() > 1) {
+			freshResolveApplied = true;
+		}
+		if (SameIpSet(config.resolvedIPs, ips)) {
 			config.resolvedIPs = std::move(ips);
+			tryStartAfterResolve();
 			return;
 		}
 		config.resolvedIPs = std::move(ips);
+		if (!started && deferTunnelStartUntilResolve) {
+			tryStartAfterResolve();
+			return;
+		}
 		syncTunnelsToResolvedIps();
 	}
 
@@ -296,25 +459,131 @@ struct WssMuxHub::Private : public QObject {
 		return result;
 	}
 
-	[[nodiscard]] details::WssMuxTunnel *pickTunnel() {
-		details::WssMuxTunnel *best = nullptr;
-		auto bestCount = int(streamTunnel.size()) + 1;
-		for (auto i = 0; i != int(tunnels.size()); ++i) {
-			if (!tunnels[i] || !tunnels[i]->isConnected()) {
-				continue;
-			}
-			auto count = 0;
+	void refreshCachedTunnelStreamCounts() {
+		auto counts = std::vector<int>();
+		{
+			QMutexLocker lock(&streamsMutex);
+			counts = std::vector<int>(tunnels.size(), 0);
 			for (const auto &[streamId, tunnel] : streamTunnel) {
-				if (tunnel == i) {
-					++count;
+				if (tunnel >= 0
+					&& tunnel < int(counts.size())
+					&& isLiveStream(streamId)) {
+					++counts[tunnel];
 				}
 			}
-			if (count < bestCount) {
-				bestCount = count;
-				best = tunnels[i].get();
+		}
+		QMutexLocker cacheLock(&countsCacheMutex);
+		cachedTunnelStreamCounts = std::move(counts);
+	}
+
+	[[nodiscard]] bool isLiveStream(uint32 streamId) const {
+		return streams.contains(streamId);
+	}
+
+	void eraseStreamTunnelEntry(uint32 streamId) {
+		auto removed = false;
+		{
+			QMutexLocker lock(&streamsMutex);
+			const auto i = streamTunnel.find(streamId);
+			if (i == end(streamTunnel)) {
+				return;
+			}
+			streamTunnel.erase(i);
+			removed = true;
+		}
+		if (removed) {
+			refreshCachedTunnelStreamCounts();
+		}
+	}
+
+	[[nodiscard]] int tunnelStreamCount(int tunnelIndex) const {
+		auto count = 0;
+		for (const auto &[streamId, tunnel] : streamTunnel) {
+			if (tunnel == tunnelIndex && isLiveStream(streamId)) {
+				++count;
 			}
 		}
-		return best;
+		return count;
+	}
+
+	[[nodiscard]] bool tunnelCarriesDownloadStreams(int tunnelIndex) const {
+		for (const auto &[streamId, tunnel] : streamTunnel) {
+			if (tunnel != tunnelIndex || !isLiveStream(streamId)) {
+				continue;
+			}
+			const auto i = streams.find(streamId);
+			if (i != end(streams)
+				&& i->second
+				&& i->second->tunnelAffinity() >= 0) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	[[nodiscard]] int pickLeastLoadedTunnelIndex(
+			int startIndex,
+			bool skipDownloadOccupied) {
+		auto bestCount = int(streamTunnel.size()) + 1;
+		auto tied = std::vector<int>();
+		for (auto i = startIndex; i != int(tunnels.size()); ++i) {
+			if (!tunnels[i] || !tunnels[i]->isConnected()) {
+				continue;
+			} else if (skipDownloadOccupied && tunnelCarriesDownloadStreams(i)) {
+				continue;
+			}
+			const auto count = tunnelStreamCount(i);
+			if (count < bestCount) {
+				bestCount = count;
+				tied.clear();
+				tied.push_back(i);
+			} else if (count == bestCount) {
+				tied.push_back(i);
+			}
+		}
+		if (tied.empty()) {
+			return -1;
+		}
+		const auto offset = (nextPickTunnel++) % int(tied.size());
+		return tied[offset];
+	}
+
+	[[nodiscard]] int pickTunnelIndex(int affinity = -1) {
+		if (affinity >= 0) {
+			if (tunnels.empty()) {
+				return -1;
+			}
+			const auto hint = affinity % int(tunnels.size());
+			if (hint >= 0
+				&& hint < int(tunnels.size())
+				&& tunnels[hint]
+				&& tunnels[hint]->isConnected()) {
+				return hint;
+			}
+			return -1;
+		}
+		const auto reservedEnd = (int(tunnels.size()) > kDownloadTunnelSlots)
+			? std::min(kDownloadTunnelSlots, int(tunnels.size()))
+			: 0;
+		if (reservedEnd > 0) {
+			const auto index = pickLeastLoadedTunnelIndex(reservedEnd, false);
+			if (index >= 0) {
+				return index;
+			}
+		}
+		const auto preferred = pickLeastLoadedTunnelIndex(0, true);
+		if (preferred >= 0) {
+			return preferred;
+		}
+		return pickLeastLoadedTunnelIndex(0, false);
+	}
+
+	[[nodiscard]] details::WssMuxTunnel *pickTunnel(int affinity = -1) {
+		const auto index = pickTunnelIndex(affinity);
+		if (index < 0 || index >= int(tunnels.size())) {
+			return nullptr;
+		}
+		return tunnels[index].get();
 	}
 
 	void scheduleReconnect(int index) {
@@ -359,6 +628,9 @@ struct WssMuxHub::Private : public QObject {
 				tunnelIndex = i->second;
 				streamTunnel.erase(i);
 			}
+		}
+		if (tunnelIndex >= 0) {
+			refreshCachedTunnelStreamCounts();
 		}
 		if (tunnelIndex < 0
 			|| tunnelIndex >= int(tunnels.size())
@@ -426,8 +698,8 @@ struct WssMuxHub::Private : public QObject {
 		const auto streamId = frame.streamId;
 		switch (frame.type) {
 		case details::MuxFrameType::OpenOk:
-			postStreamEvent(streamId, [](details::MuxStreamSocket *socket) {
-				socket->handleOpenOk();
+			postStreamEvent(streamId, [=](details::MuxStreamSocket *socket) {
+				socket->handleOpenOk(tunnelIndex);
 			});
 			break;
 		case details::MuxFrameType::OpenFail:
@@ -435,6 +707,7 @@ struct WssMuxHub::Private : public QObject {
 				QMutexLocker lock(&streamsMutex);
 				streamTunnel.erase(streamId);
 			}
+			refreshCachedTunnelStreamCounts();
 			postStreamEvent(streamId, [](details::MuxStreamSocket *socket) {
 				socket->handleOpenFail();
 			});
@@ -453,6 +726,7 @@ struct WssMuxHub::Private : public QObject {
 				QMutexLocker lock(&streamsMutex);
 				streamTunnel.erase(streamId);
 			}
+			refreshCachedTunnelStreamCounts();
 			postStreamEvent(streamId, [](details::MuxStreamSocket *socket) {
 				socket->handleRemoteClose();
 			});
@@ -485,7 +759,14 @@ struct WssMuxHub::Private : public QObject {
 	void startTunnels() {
 		if (started || shuttingDown || !proxyActive || authRejected) {
 			return;
+		} else if (shouldDeferTunnelStart()) {
+			deferTunnelStartUntilResolve = true;
+			scheduleTunnelStartFallback();
+			startSystemResolve();
+			return;
 		}
+		deferTunnelStartUntilResolve = false;
+		tunnelStartFallbackScheduled = false;
 		started = true;
 		auto ips = config.resolvedIPs;
 		if (ips.size() > 1) {
@@ -500,6 +781,7 @@ struct WssMuxHub::Private : public QObject {
 			tunnels.push_back(std::move(tunnel));
 			raw->connectTunnel();
 		}
+		refreshCachedTunnelStreamCounts();
 	}
 
 	void requestOpen(uint32 streamId, const QString &host, int port) {
@@ -516,8 +798,28 @@ struct WssMuxHub::Private : public QObject {
 			});
 			return;
 		}
-		const auto tunnel = pickTunnel();
+		auto affinity = -1;
+		{
+			QMutexLocker lock(&streamsMutex);
+			const auto i = streams.find(streamId);
+			if (i == end(streams)) {
+				return;
+			} else if (const auto socket = i->second) {
+				affinity = socket->tunnelAffinity();
+			}
+		}
+		const auto tunnel = pickTunnel(affinity);
 		if (!tunnel) {
+			{
+				QMutexLocker lock(&streamsMutex);
+				if (!streams.contains(streamId)) {
+					return;
+				}
+			}
+			if (!started || connectedTunnelCount() == 0) {
+				queuePendingOpen(streamId, host, port);
+				return;
+			}
 			const auto weak = QPointer<Private>(this);
 			QTimer::singleShot(kOpenRetryDelay, this, [=] {
 				if (!weak || weak->shuttingDown) {
@@ -539,12 +841,35 @@ struct WssMuxHub::Private : public QObject {
 			});
 			return;
 		}
+		auto previousTunnel = -1;
 		{
 			QMutexLocker lock(&streamsMutex);
 			if (!streams.contains(streamId)) {
 				return;
 			}
-			streamTunnel[streamId] = tunnel->index();
+			const auto tunnelIndex = tunnel->index();
+			const auto previous = streamTunnel.find(streamId);
+			previousTunnel = (previous != end(streamTunnel))
+				? previous->second
+				: -1;
+			streamTunnel[streamId] = tunnelIndex;
+			if (affinity < 0) {
+				DEBUG_LOG(("WSS mux main pick stream=%1 tunnel=%2 target %3:%4"
+					).arg(streamId
+					).arg(tunnelIndex
+					).arg(host
+					).arg(port));
+			}
+		}
+		refreshCachedTunnelStreamCounts();
+		if (previousTunnel >= 0
+			&& previousTunnel != tunnel->index()
+			&& previousTunnel < int(tunnels.size())
+			&& tunnels[previousTunnel]) {
+			const auto closeFrame = details::EncodeMuxFrame(
+				details::MuxFrameType::Close,
+				streamId);
+			tunnels[previousTunnel]->sendFrame(closeFrame);
 		}
 		const auto frame = details::EncodeMuxOpen(
 			streamId,
@@ -575,6 +900,7 @@ WssMuxHub::~WssMuxHub() {
 }
 
 void WssMuxHub::Configure(const ProxyData &proxy, int tunnelCount) {
+	WssConnectGate::SetLimit(std::clamp(tunnelCount, 1, 9));
 	const auto config = ConfigFromProxy(proxy, tunnelCount);
 	InvokeQueued(_private.get(), [=, config = config]() mutable {
 		if (!_private->proxyActive) {
@@ -582,25 +908,26 @@ void WssMuxHub::Configure(const ProxyData &proxy, int tunnelCount) {
 		}
 		_private->ensureHubThreadRunning();
 		const auto sameEndpoint = (_private->config == config);
-		if (!config.resolvedIPs.empty()) {
-			_private->config.resolvedIPs = config.resolvedIPs;
-		}
+		_private->mergeResolvedIps(config.resolvedIPs);
 		if (sameEndpoint) {
 			if (!_private->started) {
-				_private->config = config;
+				_private->tryStartAfterResolve();
 			}
 			return;
 		}
 		_private->authRejected = false;
+		_private->freshResolveApplied = !HostNeedsResolve(config.host)
+			|| (config.resolvedIPs.size() > 1);
 		_private->resetTunnels();
 		_private->config = config;
+		_private->mergeResolvedIps(config.resolvedIPs);
 	});
 }
 
 void WssMuxHub::ApplyResolvedIps(
 		const QString &host,
 		const std::vector<QString> &ips) {
-	if (ips.size() < 2) {
+	if (ips.empty()) {
 		return;
 	}
 	InvokeQueued(_private.get(), [=, ips = ips]() mutable {
@@ -612,9 +939,33 @@ void WssMuxHub::ApplyResolvedIps(
 		_private->ensureHubThreadRunning();
 		if (SameIpSet(_private->config.resolvedIPs, ips)) {
 			_private->config.resolvedIPs = std::move(ips);
+			if (ips.size() > 1) {
+				_private->freshResolveApplied = true;
+			}
+			_private->tryStartAfterResolve();
 			return;
 		}
 		_private->scheduleResolvedIpsUpdate(std::move(ips));
+	});
+}
+
+void WssMuxHub::Bootstrap(const ProxyData &proxy) {
+	WssConnectGate::SetLimit(std::clamp(proxy.wssMuxTunnels, 1, 9));
+	const auto config = ConfigFromProxy(proxy, proxy.wssMuxTunnels);
+	InvokeQueued(_private.get(), [=, config = config]() mutable {
+		if (!_private->proxyActive) {
+			return;
+		}
+		_private->ensureHubThreadRunning();
+		if (_private->config != config) {
+			_private->authRejected = false;
+			_private->freshResolveApplied = !HostNeedsResolve(config.host)
+				|| (config.resolvedIPs.size() > 1);
+			_private->resetTunnels();
+			_private->config = config;
+		}
+		_private->mergeResolvedIps(config.resolvedIPs);
+		_private->startTunnels();
 	});
 }
 
@@ -626,6 +977,28 @@ void WssMuxHub::EnsureStarted() {
 		_private->ensureHubThreadRunning();
 		_private->startTunnels();
 	});
+}
+
+std::vector<int> WssMuxHub::TunnelStreamCounts() const {
+	QMutexLocker lock(&_private->countsCacheMutex);
+	return _private->cachedTunnelStreamCounts;
+}
+
+bool WssMuxHub::HasConnectedTunnels() const {
+	if (!_private->hubThread.isRunning()) {
+		return false;
+	}
+	if (QThread::currentThread() == &_private->hubThread) {
+		return _private->connectedTunnelCount() > 0;
+	}
+	auto result = false;
+	QEventLoop loop;
+	InvokeQueued(_private.get(), [&] {
+		result = _private->connectedTunnelCount() > 0;
+		loop.quit();
+	});
+	loop.exec();
+	return result;
 }
 
 void WssMuxHub::SetProxyActive(bool active) {
@@ -698,13 +1071,15 @@ std::unique_ptr<details::AbstractSocket> WssMuxHub::AcquireStream(
 		not_null<QThread*> thread,
 		const QString &host,
 		int port,
-		bool protocolForFiles) {
+		bool protocolForFiles,
+		int tunnelAffinity) {
 	const auto streamId = [&] {
 		QMutexLocker lock(&_private->streamsMutex);
 		return _private->nextStreamId++;
 	}();
 	auto socket = std::make_unique<details::MuxStreamSocket>(thread, this);
 	socket->setStreamId(streamId);
+	socket->setTunnelAffinity(tunnelAffinity);
 	RegisterStream(streamId, socket.get());
 	EnsureStarted();
 	return socket;
@@ -718,8 +1093,14 @@ void WssMuxHub::RegisterStream(
 }
 
 void WssMuxHub::UnregisterStream(uint32 streamId) {
-	QMutexLocker lock(&_private->streamsMutex);
-	_private->streams.erase(streamId);
+	{
+		QMutexLocker lock(&_private->streamsMutex);
+		_private->streams.erase(streamId);
+	}
+	InvokeQueued(_private.get(), [=] {
+		_private->removePendingOpen(streamId);
+		_private->eraseStreamTunnelEntry(streamId);
+	});
 }
 
 void WssMuxHub::RequestOpen(
@@ -766,9 +1147,9 @@ void WssMuxHub::RequestClose(uint32 streamId) {
 		_private->requestCloseStream(streamId);
 		return;
 	}
-	QMetaObject::invokeMethod(_private.get(), [=] {
+	InvokeQueued(_private.get(), [=] {
 		_private->requestCloseStream(streamId);
-	}, Qt::BlockingQueuedConnection);
+	});
 }
 
 } // namespace MTP

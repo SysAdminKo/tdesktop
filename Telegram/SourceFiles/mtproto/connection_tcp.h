@@ -56,6 +56,10 @@ private:
 
 	void socketPacket(bytes::const_span bytes);
 
+	void beginPacketReassembly(int totalSize, int read);
+	void maybeLogPacketReassemblyStall(int pending, int total, int read);
+	void finishPacketReassembly();
+
 	void socketConnected();
 	void socketDisconnected();
 	void socketError();
@@ -77,6 +81,12 @@ private:
 	bytes::vector _smallBuffer;
 	bytes::vector _largeBuffer;
 	bool _usingLargeBuffer = false;
+	crl::time _partialPacketSince = 0;
+	int _partialPacketTotal = 0;
+	bool _partialPacketStallLogged = false;
+
+	crl::time _lastReadAt = 0;
+	int _readGapCount = 0;
 
 	uchar _sendKey[CTRState::KeySize];
 	CTRState _sendState;

@@ -107,6 +107,7 @@ private:
 		int sessionRemoveTimes = 0;
 		int timeouts = 0; // Since all sessions had successes >= required.
 		int totalRequested = 0;
+		int sessionPickRoundRobin = 0;
 	};
 
 	void checkSendNext();

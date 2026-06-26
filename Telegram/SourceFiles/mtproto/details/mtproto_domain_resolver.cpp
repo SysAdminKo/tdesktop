@@ -14,6 +14,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonObject>
+#include <QtNetwork/QHostInfo>
+#include <QtNetwork/QAbstractSocket>
 #include <range/v3/algorithm/shuffle.hpp>
 #include <range/v3/algorithm/reverse.hpp>
 #include <range/v3/algorithm/remove.hpp>
@@ -204,6 +206,8 @@ void DomainResolver::resolve(const AttemptKey &key) {
 		return;
 	}
 
+	trySystemResolve(key);
+
 	auto attempts = std::vector<Attempt>();
 	auto domains = DnsDomains();
 	std::random_device rd;
@@ -260,6 +264,11 @@ void DomainResolver::sendNextRequest(const AttemptKey &key) {
 	}
 	auto &attempts = i->second;
 	auto &list = attempts.list;
+	if (list.empty()) {
+		_attempts.erase(i);
+		trySystemResolve(key);
+		return;
+	}
 	const auto attempt = list.back();
 	list.pop_back();
 
@@ -320,6 +329,11 @@ void DomainResolver::requestFinished(
 	const auto result = finalizeRequest(key, reply);
 	const auto response = ParseDnsResponse(result);
 	if (response.empty()) {
+		const auto attemptsIt = _attempts.find(key);
+		if (attemptsIt != end(_attempts) && attemptsIt->second.list.empty()) {
+			_attempts.erase(attemptsIt);
+			trySystemResolve(key);
+		}
 		return;
 	}
 	_requests.erase(key);
@@ -338,6 +352,39 @@ void DomainResolver::requestFinished(
 	_cache[key] = std::move(entry);
 
 	checkExpireAndPushResult(key.domain);
+}
+
+void DomainResolver::trySystemResolve(const AttemptKey &key) {
+	if (key.ipv6) {
+		return;
+	}
+	const auto i = _cache.find(key);
+	if (i != end(_cache) && i->second.expireAt > crl::now()) {
+		checkExpireAndPushResult(key.domain);
+		return;
+	} else if (_systemResolveTried[key.domain]) {
+		return;
+	}
+	_systemResolveTried[key.domain] = true;
+	const auto domain = key.domain;
+	QHostInfo::lookupHost(domain, this, [=](const QHostInfo &info) {
+		if (info.error() != QHostInfo::NoError) {
+			return;
+		}
+		auto entry = CacheEntry();
+		for (const auto &address : info.addresses()) {
+			if (address.protocol() == QAbstractSocket::IPv4Protocol) {
+				entry.ips.push_back(address.toString());
+			}
+		}
+		if (entry.ips.isEmpty()) {
+			return;
+		}
+		_lastTimestamp = crl::now();
+		entry.expireAt = _lastTimestamp + kMinTimeToLive;
+		_cache[key] = std::move(entry);
+		checkExpireAndPushResult(domain);
+	});
 }
 
 QByteArray DomainResolver::finalizeRequest(

@@ -27,6 +27,7 @@ ResolvingConnection::ResolvingConnection(
 , _timeoutTimer([=] { handleError(kErrorCodeOther); }) {
 	setChild(std::move(child));
 	if (proxy.type == ProxyData::Type::WebSocket
+		&& proxy.wssMuxTunnels < 1
 		&& _proxy.resolvedIPs.size() > 1) {
 		_proxy.resolvedIPs.resize(1);
 	}
@@ -77,6 +78,7 @@ void ResolvingConnection::setChild(ConnectionPointer &&child) {
 		this,
 		&ResolvingConnection::handleDisconnected);
 	if (_protocolDcId) {
+		_child->setWssTunnelAffinity(wssTunnelAffinity());
 		_child->connectToServer(
 			_address,
 			_port,
@@ -117,6 +119,7 @@ void ResolvingConnection::domainResolved(
 		}
 	}
 	if (_proxy.type == ProxyData::Type::WebSocket
+		&& _proxy.wssMuxTunnels < 1
 		&& _proxy.resolvedIPs.size() > 1) {
 		_proxy.resolvedIPs.resize(1);
 	}
@@ -230,6 +233,7 @@ void ResolvingConnection::connectToServer(
 	_protocolSecret = protocolSecret;
 	_protocolDcId = protocolDcId;
 	_protocolForFiles = protocolForFiles;
+	_child->setWssTunnelAffinity(wssTunnelAffinity());
 	_child->connectToServer(
 		address,
 		port,

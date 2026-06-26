@@ -83,6 +83,7 @@ private:
 	void sendNextRequest(const AttemptKey &key);
 	void performRequest(const AttemptKey &key, const Attempt &attempt);
 	void checkExpireAndPushResult(const QString &domain);
+	void trySystemResolve(const AttemptKey &key);
 	void requestFinished(
 		const AttemptKey &key,
 		not_null<QNetworkReply*> reply);
@@ -99,6 +100,7 @@ private:
 	std::map<AttemptKey, Attempts> _attempts;
 	std::map<AttemptKey, std::vector<ServiceWebRequest>> _requests;
 	std::map<AttemptKey, CacheEntry> _cache;
+	std::map<QString, bool> _systemResolveTried;
 	crl::time _lastTimestamp = 0;
 
 };

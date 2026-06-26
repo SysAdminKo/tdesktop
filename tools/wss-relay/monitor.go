@@ -118,11 +118,13 @@ function render(data) {
     'updated ' + data.now + ' · uptime ' + Math.floor(data.uptime_sec) + 's';
   const cards = [
     ['Mux tunnels', data.mux_tunnels, 'total ' + data.mux_tunnels_total],
-    ['Mux streams', data.mux_streams, 'opened ' + data.mux_streams_opened + ', closed ' + data.mux_streams_closed + ' (graceful ' + data.mux_streams_closed_graceful + ', idle ' + data.mux_stream_idle_expired + ')'],
+    ['Mux streams', data.mux_streams, 'opened ' + data.mux_streams_opened + ' / closed ' + data.mux_streams_closed + ' (graceful ' + data.mux_streams_closed_graceful + ', idle ' + data.mux_stream_idle_expired + ')'],
     ['To Telegram', fmtBytes(data.bytes_to_upstream), 'from clients'],
     ['From Telegram', fmtBytes(data.bytes_from_upstream), 'to clients'],
-    ['Dial errors', data.upstream_dial_errors, 'blocked ' + data.upstream_blocked],
-    ['429 limits', data.tunnel_limit_rejected, 'open limit ' + data.mux_open_limit],
+    ['Dial', 'avg ' + data.mux_open_dial_ms_avg + 'ms / max ' + data.mux_open_dial_ms_max + 'ms', 'count ' + data.mux_open_count + ' / slow ' + data.mux_open_slow + ' / bad ' + data.mux_open_bad],
+    ['Write wait', 'avg ' + data.mux_write_wait_us_avg + 'µs / max ' + data.mux_write_wait_us_max + 'µs', ''],
+    ['Upstream errors', '' + data.upstream_dial_errors, 'blocked ' + data.upstream_blocked + ' / read stall ' + data.mux_upstream_read_stall],
+    ['429 limits', '' + data.tunnel_limit_rejected, 'open limit ' + data.mux_open_limit],
   ];
   document.getElementById('cards').innerHTML = cards.map(([label, value, sub]) =>
     '<div class="card"><div class="label">' + esc(label) + '</div><div class="value">' + esc(value) + '</div><div class="sub">' + esc(sub) + '</div></div>'

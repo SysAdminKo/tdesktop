@@ -445,7 +445,7 @@ void Instance::Private::applyDomainIps(
 	if (applyToProxy(selected) && _proxySettings.isEnabled()) {
 		_proxySettings.setSelected(selected);
 		if (selected.type == ProxyData::Type::WebSocket
-			&& selected.resolvedIPs.size() > 1) {
+			&& !selected.resolvedIPs.empty()) {
 			WssMuxHub::Instance().ApplyResolvedIps(
 				host,
 				selected.resolvedIPs);
@@ -482,6 +482,13 @@ void Instance::Private::setGoodProxyDomain(
 	auto selected = _proxySettings.selected();
 	if (applyToProxy(selected) && _proxySettings.isEnabled()) {
 		_proxySettings.setSelected(selected);
+		if (selected.type == ProxyData::Type::WebSocket
+			&& selected.wssMuxEnabled()
+			&& selected.resolvedIPs.size() > 1) {
+			WssMuxHub::Instance().ApplyResolvedIps(
+				host,
+				selected.resolvedIPs);
+		}
 		Core::App().refreshGlobalProxy();
 	}
 }

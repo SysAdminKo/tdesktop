@@ -51,3 +51,24 @@ func TestStatsPathEnabled(t *testing.T) {
 		t.Fatal("expected empty stats path to be disabled")
 	}
 }
+
+func TestRelayStatsMuxOpenDial(t *testing.T) {
+	stats := newRelayStats()
+	stats.recordMuxOpenDial(40)
+	stats.recordMuxOpenDial(150)
+	stats.recordMuxOpenDial(80)
+
+	snapshot := stats.snapshot()
+	if snapshot.MuxOpenCount != 3 {
+		t.Fatalf("unexpected open count: %d", snapshot.MuxOpenCount)
+	}
+	if snapshot.MuxOpenDialMsAvg != 90 {
+		t.Fatalf("unexpected avg: %d", snapshot.MuxOpenDialMsAvg)
+	}
+	if snapshot.MuxOpenDialMsMax != 150 {
+		t.Fatalf("unexpected max: %d", snapshot.MuxOpenDialMsMax)
+	}
+	if snapshot.MuxOpenSlow != 1 {
+		t.Fatalf("unexpected slow: %d", snapshot.MuxOpenSlow)
+	}
+}

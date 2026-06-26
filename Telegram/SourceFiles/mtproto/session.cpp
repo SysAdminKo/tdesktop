@@ -358,6 +358,12 @@ void Session::cancel(mtpRequestId requestId, mtpMsgId msgId) {
 		QWriteLocker locker(_data->haveSentMutex());
 		_data->haveSentMap().remove(msgId);
 	}
+	if (_private && (requestId || msgId)) {
+		const auto captured = _private;
+		InvokeQueued(captured, [=] {
+			captured->cancelRequestDiag(requestId, msgId);
+		});
+	}
 }
 
 void Session::ping() {

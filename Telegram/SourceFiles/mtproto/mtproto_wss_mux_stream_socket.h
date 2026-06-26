@@ -29,7 +29,7 @@ public:
 	int32 debugState() override;
 	QString debugPostfix() const override;
 
-	void handleOpenOk();
+	void handleOpenOk(int tunnelIndex = -1);
 	void handleOpenFail();
 	void handleData(bytes::vector data);
 	void handleRemoteClose();
@@ -37,6 +37,10 @@ public:
 
 	void setStreamId(uint32 streamId);
 	[[nodiscard]] uint32 streamId() const;
+	void setTunnelAffinity(int affinity);
+	[[nodiscard]] int tunnelAffinity() const;
+	[[nodiscard]] int tunnelIndex() const;
+	[[nodiscard]] crl::time muxOpenDuration() const override;
 	void invokeQueued(Fn<void()> &&fn);
 
 private:
@@ -54,6 +58,10 @@ private:
 
 	const not_null<WssMuxHub*> _hub;
 	uint32 _streamId = 0;
+	int _tunnelAffinity = -1;
+	int _tunnelIndex = -1;
+	crl::time _openStartedAt = 0;
+	crl::time _muxOpenDuration = 0;
 	State _state = State::NotConnected;
 	bool _openSent = false;
 	bool _openOnServer = false;
@@ -64,6 +72,9 @@ private:
 	bool _inRead = false;
 	bool _readyReadScheduled = false;
 	QTimer _openTimer;
+
+	int64 _bytesSent = 0;
+	int64 _bytesReceived = 0;
 
 };
 

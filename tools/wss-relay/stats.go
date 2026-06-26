@@ -28,6 +28,14 @@ type relayStats struct {
 	muxOpenBad          atomic.Int64
 	muxOpenLimit        atomic.Int64
 	muxStreamIdle       atomic.Int64
+	muxOpenCount        atomic.Int64
+	muxOpenDialMsTotal  atomic.Int64
+	muxOpenDialMsMax    atomic.Int64
+	muxOpenSlow              atomic.Int64
+	muxUpstreamReadStall     atomic.Int64
+	muxWriteWaitUsTotal      atomic.Int64
+	muxWriteWaitCount        atomic.Int64
+	maxMuxWriteWaitUs        atomic.Int64
 }
 
 type clientStats struct {
@@ -67,7 +75,14 @@ type statsSnapshot struct {
 	MuxOpenBad          int64              `json:"mux_open_bad"`
 	MuxOpenLimit        int64              `json:"mux_open_limit"`
 	MuxStreamIdle       int64              `json:"mux_stream_idle_expired"`
-	Clients             []clientSnapshot   `json:"clients"`
+	MuxOpenCount        int64              `json:"mux_open_count"`
+	MuxOpenDialMsAvg    int64              `json:"mux_open_dial_ms_avg"`
+	MuxOpenDialMsMax    int64              `json:"mux_open_dial_ms_max"`
+	MuxOpenSlow              int64              `json:"mux_open_slow"`
+	MuxUpstreamReadStall     int64              `json:"mux_upstream_read_stall"`
+	MuxWriteWaitUsAvg        int64              `json:"mux_write_wait_us_avg"`
+	MuxWriteWaitUsMax        int64              `json:"mux_write_wait_us_max"`
+	Clients                  []clientSnapshot   `json:"clients"`
 	Upstreams           []upstreamSnapshot `json:"upstreams"`
 }
 
@@ -199,6 +214,42 @@ func (s *relayStats) incMuxStreamIdle() {
 	s.muxStreamIdle.Add(1)
 }
 
+func (s *relayStats) incMuxUpstreamReadStall() {
+	s.muxUpstreamReadStall.Add(1)
+}
+
+func (s *relayStats) incMuxWriteWait(dur time.Duration) {
+	us := dur.Microseconds()
+	s.muxWriteWaitUsTotal.Add(us)
+	s.muxWriteWaitCount.Add(1)
+	for {
+		current := s.maxMuxWriteWaitUs.Load()
+		if us <= current {
+			break
+		}
+		if s.maxMuxWriteWaitUs.CompareAndSwap(current, us) {
+			break
+		}
+	}
+}
+
+func (s *relayStats) recordMuxOpenDial(dialMs int64) {
+	s.muxOpenCount.Add(1)
+	s.muxOpenDialMsTotal.Add(dialMs)
+	for {
+		current := s.muxOpenDialMsMax.Load()
+		if dialMs <= current {
+			break
+		}
+		if s.muxOpenDialMsMax.CompareAndSwap(current, dialMs) {
+			break
+		}
+	}
+	if dialMs > 100 {
+		s.muxOpenSlow.Add(1)
+	}
+}
+
 func (s *relayStats) snapshot() statsSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -221,6 +272,19 @@ func (s *relayStats) snapshot() statsSnapshot {
 		MuxStreamIdle:       s.muxStreamIdle.Load(),
 		Clients:             make([]clientSnapshot, 0, len(s.clients)),
 		Upstreams:           make([]upstreamSnapshot, 0, len(s.upstreams)),
+	}
+	openCount := s.muxOpenCount.Load()
+	result.MuxOpenCount = openCount
+	result.MuxOpenDialMsMax = s.muxOpenDialMsMax.Load()
+	result.MuxOpenSlow = s.muxOpenSlow.Load()
+	result.MuxUpstreamReadStall = s.muxUpstreamReadStall.Load()
+	waitCount := s.muxWriteWaitCount.Load()
+	if waitCount > 0 {
+		result.MuxWriteWaitUsAvg = s.muxWriteWaitUsTotal.Load() / waitCount
+		result.MuxWriteWaitUsMax = s.maxMuxWriteWaitUs.Load()
+	}
+	if openCount > 0 {
+		result.MuxOpenDialMsAvg = s.muxOpenDialMsTotal.Load() / openCount
 	}
 	closed := result.MuxStreamsClosed
 	idle := result.MuxStreamIdle

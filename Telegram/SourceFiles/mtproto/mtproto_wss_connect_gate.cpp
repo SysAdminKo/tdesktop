@@ -8,17 +8,23 @@
 namespace MTP {
 namespace {
 
-constexpr auto kMaxConcurrentWssConnects = 6;
+constexpr auto kDefaultMaxConcurrentWssConnects = 9;
 
 QMutex Mutex;
+int MaxConcurrent = kDefaultMaxConcurrentWssConnects;
 int Active = 0;
 std::deque<Fn<void()>> Waiting;
 
 } // namespace
 
+void WssConnectGate::SetLimit(int limit) {
+	QMutexLocker lock(&Mutex);
+	MaxConcurrent = std::max(1, limit);
+}
+
 bool WssConnectGate::tryAcquire(Fn<void()> &&whenAvailable) {
 	QMutexLocker lock(&Mutex);
-	if (Active < kMaxConcurrentWssConnects) {
+	if (Active < MaxConcurrent) {
 		++Active;
 		return true;
 	}

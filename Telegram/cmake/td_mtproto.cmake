@@ -62,8 +62,7 @@ PRIVATE
     mtproto/mtproto_wss_mux_tunnel.h
     mtproto/details/mtproto_wss_mux_framing.cpp
     mtproto/details/mtproto_wss_mux_framing.h
-    mtproto/mtproto_wss_endpoint_cache.cpp
-    mtproto/mtproto_wss_endpoint_cache.h
+
     mtproto/mtproto_response.cpp
     mtproto/mtproto_response.h
 )

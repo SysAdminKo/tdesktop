@@ -63,7 +63,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_dc_options.h"
 #include "mtproto/mtproto_config.h"
 #include "mtproto/mtproto_wss_mux_hub.h"
-#include "mtproto/mtproto_wss_endpoint_persist.h"
 #include "media/audio/media_audio_track.h"
 #include "media/player/media_player_instance.h"
 #include "media/player/media_player_float.h"
@@ -501,7 +500,7 @@ void Application::startSettingsAndBackground() {
 	checkSystemDarkMode();
 	Ui::SetScreenReaderModeDisabled(
 		settings().readPref<bool>(kScreenReaderModeDisabledKey));
-	MTP::RegisterWssEndpointCachePersistence();
+
 }
 
 void Application::checkSystemDarkMode() {
@@ -844,6 +843,7 @@ void Application::setCurrentProxy(
 	const auto now = current();
 	if (now.type == MTP::ProxyData::Type::WebSocket) {
 		MTP::WssMuxHub::Instance().SetProxyActive(true);
+		MTP::WssMuxHub::Instance().Bootstrap(now);
 	} else if (was.type == MTP::ProxyData::Type::WebSocket) {
 		MTP::WssMuxHub::Instance().StopTunnels();
 	}
@@ -1836,6 +1836,7 @@ void Application::refreshGlobalProxy() {
 	if (proxy.isEnabled()
 		&& proxy.selected().type == MTP::ProxyData::Type::WebSocket) {
 		MTP::WssMuxHub::Instance().SetProxyActive(true);
+		MTP::WssMuxHub::Instance().Bootstrap(proxy.selected());
 	}
 }
 

@@ -23,6 +23,8 @@ constexpr auto kFullConnectionTimeout = 8 * crl::time(1000);
 constexpr auto kSmallBufferSize = 256 * 1024;
 constexpr auto kMinPacketBuffer = 256;
 constexpr auto kConnectionStartPrefixSize = 64;
+constexpr auto kPacketReassemblyStall = crl::time(3000);
+constexpr auto kPacketReassemblyStallRejectThreshold = crl::time(8000);
 
 } // namespace
 
@@ -286,6 +288,45 @@ void TcpConnection::ensureAvailableInBuffer(int amount) {
 	_offsetBytes = 0;
 }
 
+void TcpConnection::beginPacketReassembly(int totalSize, int read) {
+	if (!_partialPacketSince) {
+		_partialPacketSince = crl::now();
+		_partialPacketTotal = totalSize;
+		_partialPacketStallLogged = false;
+	}
+}
+
+void TcpConnection::maybeLogPacketReassemblyStall(
+		int pending,
+		int total,
+		int read) {
+	if (_partialPacketStallLogged || !_partialPacketSince) {
+		return;
+	} else if (crl::now() - _partialPacketSince < kPacketReassemblyStall) {
+		return;
+	}
+	_partialPacketStallLogged = true;
+	CONNECTION_LOG_INFO(u"Packet reassembly stall pending=%1 total=%2 read=%3"_q
+		.arg(pending)
+		.arg(total)
+		.arg(read));
+}
+
+void TcpConnection::finishPacketReassembly() {
+	if (_partialPacketStallLogged && _partialPacketSince) {
+		const auto duration = crl::now() - _partialPacketSince;
+		CONNECTION_LOG_INFO(u"Packet reassembly done total=%1 ms=%2"_q
+			.arg(_partialPacketTotal)
+			.arg(duration));
+		if (duration >= kPacketReassemblyStallRejectThreshold) {
+			packetReassemblyStall(_address);
+		}
+	}
+	_partialPacketSince = 0;
+	_partialPacketTotal = 0;
+	_partialPacketStallLogged = false;
+}
+
 void TcpConnection::socketRead() {
 	Expects(_leftBytes > 0 || !_usingLargeBuffer);
 
@@ -311,6 +352,20 @@ void TcpConnection::socketRead() {
 		if (readCount > 0) {
 			const auto read = free.subspan(0, readCount);
 			aesCtrEncrypt(read, _receiveKey, &_receiveState);
+
+			if (_lastReadAt && _readGapCount < 20) {
+				const auto gap = crl::now() - _lastReadAt;
+				if (gap >= crl::time(500)) {
+					CONNECTION_LOG_INFO(
+						u"WSS read gap=%1ms ip=%2 read=%3"_q
+						.arg(gap)
+						.arg(_address)
+						.arg(readCount));
+					_readGapCount++;
+				}
+			}
+			_lastReadAt = crl::now();
+
 			CONNECTION_LOG_INFO(u"Read %1 bytes"_q.arg(readCount));
 
 			_readBytes += readCount;
@@ -318,6 +373,7 @@ void TcpConnection::socketRead() {
 				Assert(readCount <= _leftBytes);
 				_leftBytes -= readCount;
 				if (!_leftBytes) {
+					finishPacketReassembly();
 					socketPacket(full.subspan(0, _readBytes));
 					if (!_socket || !_socket->isConnected()) {
 						return;
@@ -327,6 +383,11 @@ void TcpConnection::socketRead() {
 					_largeBuffer.clear();
 					_offsetBytes = _readBytes = 0;
 				} else {
+					beginPacketReassembly(_readBytes + _leftBytes, _readBytes);
+					maybeLogPacketReassemblyStall(
+						_leftBytes,
+						_readBytes + _leftBytes,
+						_readBytes);
 					CONNECTION_LOG_INFO(
 						u"Not enough %1 for packet! read %2"_q
 						.arg(_leftBytes)
@@ -348,6 +409,7 @@ void TcpConnection::socketRead() {
 						error(kErrorCodeOther);
 						return;
 					} else if (available.size() >= packetSize) {
+						finishPacketReassembly();
 						socketPacket(available.subspan(0, packetSize));
 						if (!_socket || !_socket->isConnected()) {
 							return;
@@ -365,6 +427,11 @@ void TcpConnection::socketRead() {
 						// If the next packet won't fit in the buffer.
 						ensureAvailableInBuffer(packetSize);
 
+						beginPacketReassembly(packetSize, available.size());
+						maybeLogPacketReassemblyStall(
+							_leftBytes,
+							packetSize,
+							available.size());
 						CONNECTION_LOG_INFO(u"Not enough %1 for packet! "
 							"full size %2 read %3"_q
 							.arg(_leftBytes)
@@ -544,7 +611,8 @@ void TcpConnection::connectToServer(
 				thread(),
 				address,
 				port,
-				protocolForFiles);
+				protocolForFiles,
+				wssTunnelAffinity());
 		}()
 		: AbstractSocket::Create(
 			thread(),

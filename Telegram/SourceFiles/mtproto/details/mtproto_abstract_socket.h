@@ -63,6 +63,10 @@ public:
 	virtual void closeGracefully() {
 	}
 
+	[[nodiscard]] virtual crl::time muxOpenDuration() const {
+		return 0;
+	}
+
 	virtual int32 debugState() = 0;
 	[[nodiscard]] virtual QString debugPostfix() const = 0;
 

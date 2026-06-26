@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/facade.h"
 #include "mtproto/mtproto_auth_key.h"
 #include "mtproto/mtproto_response.h"
+#include "mtproto/mtproto_wss_mux_hub.h"
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "main/main_session.h"
@@ -35,9 +36,44 @@ constexpr auto kMaxTrackedSuccesses = kRetryAddSessionSuccesses
 constexpr auto kRemoveSessionAfterTimeouts = 4;
 constexpr auto kResetDownloadPrioritiesTimeout = crl::time(200);
 constexpr auto kBadRequestDurationThreshold = 8 * crl::time(1000);
+constexpr auto kWssBadRequestDurationThreshold = 20 * crl::time(1000);
 constexpr auto kWssInitialDownloadSessions = 3;
+constexpr auto kWssMaxWaitedAmount = 8 * kDownloadPartSize;
 constexpr auto kWssWarmUpMinReadySessions = 1;
 constexpr auto kWssWarmUpSettleDelay = crl::time(150);
+constexpr auto kWssSlowDownloadLogThreshold = 2 * crl::time(1000);
+constexpr auto kWssStallDownloadLogThreshold = 10 * crl::time(1000);
+
+[[nodiscard]] int sessionMaxWaitedAmount(
+		bool wssMux,
+		int maxWaitedAmount) {
+	if (wssMux) {
+		return std::min(maxWaitedAmount, kWssMaxWaitedAmount);
+	}
+	return maxWaitedAmount;
+}
+
+[[nodiscard]] crl::time badRequestDurationThreshold(bool wssMux) {
+	return wssMux
+		? kWssBadRequestDurationThreshold
+		: kBadRequestDurationThreshold;
+}
+
+[[nodiscard]] QString tunnelLoadsString(const std::vector<int> &loads) {
+	if (loads.empty()) {
+		return QStringLiteral("[]");
+	}
+	auto result = QString();
+	for (auto i = 0; i != int(loads.size()); ++i) {
+		if (i) {
+			result.append(QChar(','));
+		}
+		result.append(QString::number(i));
+		result.append(QChar(':'));
+		result.append(QString::number(loads[i]));
+	}
+	return result;
+}
 
 // Each (session remove by timeouts) we wait for time:
 // kRetryAddSessionTimeout * max(removesCount, kMaxTrackedSessionRemoves)
@@ -444,27 +480,62 @@ bool DownloadManagerMtproto::trySendNextPart(MTP::DcId dcId, Queue &queue) {
 	}
 	auto &balanceData = _balanceData[dcId];
 	const auto &sessions = balanceData.sessions;
+	const auto wssMux = useWssMux();
 	const auto bestIndex = [&] {
-		const auto proj = [](const DcSessionBalanceData &data) {
-			return (data.requested < data.maxWaitedAmount)
+		const auto proj = [&](int index) {
+			const auto &data = sessions[index];
+			const auto cap = sessionMaxWaitedAmount(
+				wssMux,
+				data.maxWaitedAmount);
+			return (data.requested < cap)
 				? data.requested
 				: kMaxWaitedInSession;
 		};
-		auto best = -1;
+		const auto canSend = [&](int index) {
+			const auto &data = sessions[index];
+			const auto cap = sessionMaxWaitedAmount(
+				wssMux,
+				data.maxWaitedAmount);
+			return data.requested + kDownloadPartSize <= cap;
+		};
 		auto bestLoad = kMaxWaitedInSession;
 		for (auto i = 0; i != int(sessions.size()); ++i) {
-			if (!isSessionWarmReady(dcId, i)) {
+			if (!isSessionWarmReady(dcId, i) || !canSend(i)) {
 				continue;
 			}
-			const auto &data = sessions[i];
-			const auto load = proj(data);
-			if (load < bestLoad
-				&& data.requested + kDownloadPartSize <= data.maxWaitedAmount) {
-				bestLoad = load;
-				best = i;
+			bestLoad = std::min(bestLoad, proj(i));
+		}
+		if (bestLoad == kMaxWaitedInSession) {
+			return -1;
+		}
+		if (!wssMux || int(sessions.size()) == 1) {
+			for (auto i = 0; i != int(sessions.size()); ++i) {
+				if (!isSessionWarmReady(dcId, i) || !canSend(i)) {
+					continue;
+				}
+				if (proj(i) == bestLoad) {
+					return i;
+				}
+			}
+			return -1;
+		}
+		auto candidates = std::vector<int>();
+		candidates.reserve(sessions.size());
+		for (auto i = 0; i != int(sessions.size()); ++i) {
+			if (!isSessionWarmReady(dcId, i) || !canSend(i)) {
+				continue;
+			}
+			if (proj(i) == bestLoad) {
+				candidates.push_back(i);
 			}
 		}
-		return best;
+		if (candidates.empty()) {
+			return -1;
+		}
+		auto &roundRobin = balanceData.sessionPickRoundRobin;
+		const auto picked = candidates[roundRobin % int(candidates.size())];
+		++roundRobin;
+		return picked;
 	}();
 	if (bestIndex < 0) {
 		return false;
@@ -609,22 +680,42 @@ void DownloadManagerMtproto::requestSucceeded(
 		).arg(duration
 		).arg(parts
 		).arg(overloaded ? " (overloaded)" : ""));
+	if (useWssMux() && duration >= kWssSlowDownloadLogThreshold) {
+		const auto loads = MTP::WssMuxHub::Instance().TunnelStreamCounts();
+		const auto shiftedDcId = MTP::downloadDcId(dcId, index);
+		const auto line = (duration >= kWssStallDownloadLogThreshold)
+			? QStringLiteral("Download stall (%1,%2) shiftedDc=%3 duration=%4 parts=%5 requested=%6 max=%7 dc_total=%8 tunnel_loads=[%9]")
+			: QStringLiteral("Download slow (%1,%2) shiftedDc=%3 duration=%4 parts=%5 requested=%6 max=%7 dc_total=%8 tunnel_loads=[%9]");
+		DEBUG_LOG((line
+			).arg(dcId
+			).arg(index
+			).arg(shiftedDcId
+			).arg(duration
+			).arg(parts
+			).arg(data.requested
+			).arg(data.maxWaitedAmount
+			).arg(dc.totalRequested
+			).arg(tunnelLoadsString(loads)));
+	}
 	if (overloaded) {
 		return;
 	}
 
-	if (duration >= kBadRequestDurationThreshold) {
+	if (duration >= badRequestDurationThreshold(useWssMux())) {
 		DEBUG_LOG(("Duration too large, signaling time out."));
 		crl::on_main(this, [=] {
 			sessionTimedOut(dcId, index);
 		});
 		return;
 	}
+	const auto maxWaitedCap = useWssMux()
+		? kWssMaxWaitedAmount
+		: kMaxWaitedInSession;
 	if (amountAtRequestStart == data.maxWaitedAmount
-		&& data.maxWaitedAmount < kMaxWaitedInSession) {
+		&& data.maxWaitedAmount < maxWaitedCap) {
 		data.maxWaitedAmount = std::min(
 			data.maxWaitedAmount + kDownloadPartSize,
-			kMaxWaitedInSession);
+			maxWaitedCap);
 		DEBUG_LOG(("Download (%1,%2) increased max waited amount %3."
 			).arg(dcId
 			).arg(index
@@ -747,8 +838,19 @@ void DownloadManagerMtproto::killSessions() {
 	auto left = killSessionTimeout();
 	for (auto i = begin(_killSessionsWhen); i != end(_killSessionsWhen); ) {
 		if (i->second <= now) {
-			killSessions(i->first);
-			i = _killSessionsWhen.erase(i);
+			const auto dcId = i->first;
+			const auto balanceIt = _balanceData.find(dcId);
+			if (balanceIt != end(_balanceData)
+				&& balanceIt->second.totalRequested > 0) {
+				i->second = now + killSessionTimeout();
+				if (i->second - now < left) {
+					left = i->second - now;
+				}
+				++i;
+			} else {
+				killSessions(dcId);
+				i = _killSessionsWhen.erase(i);
+			}
 		} else {
 			if (i->second - now < left) {
 				left = i->second - now;

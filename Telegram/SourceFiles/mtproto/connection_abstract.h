@@ -109,6 +109,13 @@ public:
 		return _sentEncryptedWithKeyId;
 	}
 
+	void setWssTunnelAffinity(int affinity) {
+		_wssTunnelAffinity = affinity;
+	}
+	[[nodiscard]] int wssTunnelAffinity() const {
+		return _wssTunnelAffinity;
+	}
+
 	using BuffersQueue = std::deque<mtpBuffer>;
 	[[nodiscard]] BuffersQueue &received() {
 		return _receivedQueue;
@@ -146,6 +153,7 @@ Q_SIGNALS:
 	void disconnected();
 
 	void syncTimeRequest();
+	void packetReassemblyStall(const QString &ip);
 
 protected:
 	BuffersQueue _receivedQueue; // list of received packets, not processed yet
@@ -164,6 +172,7 @@ private:
 	[[nodiscard]] uint32 extendedNotSecurePadding() const;
 
 	uint64 _sentEncryptedWithKeyId = 0;
+	int _wssTunnelAffinity = -1;
 
 };
 
