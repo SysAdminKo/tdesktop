@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - wss-mux
+      - ShultZ1400
     paths-ignore:
       - 'docs/**'
       - '**.md'
@@ -23,6 +24,7 @@ on:
   pull_request:
     branches:
       - wss-mux
+      - ShultZ1400
     paths-ignore:
       - 'docs/**'
       - '**.md'
