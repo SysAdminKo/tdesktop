@@ -1837,9 +1837,12 @@ ProxiesBoxController::ProxiesBoxController(not_null<Main::Account*> account)
 		}
 	}, _lifetime);
 
+	auto stagger = 0;
 	for (auto &item : _list) {
 		const auto id = item.id;
-		base::call_delayed(0, [=] {
+		const auto delay = stagger;
+		stagger += 100;
+		base::call_delayed(delay, [=] {
 			const auto i = ranges::find(
 				_list,
 				id,
@@ -2140,7 +2143,6 @@ auto ProxiesBoxController::proxySettingsValue() const
 }
 
 void ProxiesBoxController::refreshChecker(Item &item) {
-	MTP::EndProxyCheck(item.data);
 	item.state = ItemState::Checking;
 	item.checkFinished = false;
 	const auto id = item.id;

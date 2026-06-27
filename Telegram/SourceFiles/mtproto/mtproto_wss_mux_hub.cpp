@@ -1386,20 +1386,10 @@ void WssMuxHub::BeginProxyCheck(const ProxyData &proxy) {
 }
 
 void WssMuxHub::EndProxyCheck(const ProxyData &proxy) {
-	const auto stop = [=] {
+	InvokeQueued(_private.get(), [=] {
 		const auto key = CheckSessionKey(ConfigFromProxy(proxy, 1));
 		_private->stopCheckSession(key);
-	};
-	if (QThread::currentThread() == &_private->hubThread) {
-		stop();
-		return;
-	}
-	QEventLoop loop;
-	InvokeQueued(_private.get(), [&] {
-		stop();
-		loop.quit();
 	});
-	loop.exec();
 }
 
 std::unique_ptr<details::AbstractSocket> WssMuxHub::AcquireCheckStream(
@@ -1412,34 +1402,25 @@ std::unique_ptr<details::AbstractSocket> WssMuxHub::AcquireCheckStream(
 	Q_UNUSED(host);
 	Q_UNUSED(port);
 	Q_UNUSED(protocolForFiles);
-	uint32 streamId = 0;
-	if (QThread::currentThread() == &_private->hubThread) {
-		streamId = _private->acquireCheckStreamId(proxy);
-	} else {
-		QEventLoop loop;
-		InvokeQueued(_private.get(), [&] {
-			streamId = _private->acquireCheckStreamId(proxy);
-			loop.quit();
-		});
-		loop.exec();
-	}
 	auto socket = std::make_unique<details::MuxStreamSocket>(thread, this);
-	socket->setStreamId(streamId);
-	socket->setTunnelAffinity(tunnelAffinity);
 	const auto raw = socket.get();
-	const auto registerOnHub = [&] {
+	uint32 streamId = 0;
+	const auto setupOnHub = [&] {
+		streamId = _private->acquireCheckStreamId(proxy);
 		_private->registerCheckStream(proxy, streamId, raw);
 	};
 	if (QThread::currentThread() == &_private->hubThread) {
-		registerOnHub();
+		setupOnHub();
 	} else {
 		QEventLoop loop;
 		InvokeQueued(_private.get(), [&] {
-			registerOnHub();
+			setupOnHub();
 			loop.quit();
 		});
 		loop.exec();
 	}
+	socket->setStreamId(streamId);
+	socket->setTunnelAffinity(tunnelAffinity);
 	RegisterStream(streamId, raw);
 	return socket;
 }
