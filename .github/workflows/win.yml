@@ -75,8 +75,13 @@ jobs:
     steps:
       - name: Prepare directories.
         run: |
-          mkdir %userprofile%\TBuild\Libraries
-          mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
+          if exist D:\ (
+            mkdir D:\TBuild\Libraries 2>nul
+            mklink /d %GITHUB_WORKSPACE%\TBuild D:\TBuild
+          ) else (
+            mkdir %userprofile%\TBuild\Libraries
+            mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
+          )
           echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
           echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries${{ matrix.arch == 'x64' && '\win64' || '' }}>>%GITHUB_ENV%
 
@@ -218,6 +223,14 @@ jobs:
       - name: Free up some disk space.
         shell: bash
         run: find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' ')' -type f ')' -o -empty ')' -delete
+
+      - name: Patch Qt6 TLS backend for WSS.
+        if: env.ONLY_CACHE == 'false' && matrix.qt == 'qt6'
+        shell: bash
+        working-directory: ${{ env.TBUILD }}/${{ env.REPO_NAME }}
+        run: |
+          git apply --directory=cmake --check patches/cmake-qt6-win-openssl-tls.patch
+          git apply --directory=cmake patches/cmake-qt6-win-openssl-tls.patch
 
       - name: Telegram Desktop build.
         if: env.ONLY_CACHE == 'false'
