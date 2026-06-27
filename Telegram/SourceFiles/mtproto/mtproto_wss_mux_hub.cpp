@@ -133,6 +133,23 @@ struct HubConfig {
 	return ToDirectIpProxy(proxy, tunnelIndex % int(ips.size()));
 }
 
+[[nodiscard]] QString CheckSessionKey(const HubConfig &config) {
+	const auto endpoint = config.sniHost.isEmpty()
+		? config.host
+		: config.sniHost;
+	return endpoint
+		+ u':' + QString::number(config.port)
+		+ u':' + config.path
+		+ u':' + config.password;
+}
+
+struct ProxyCheckSession {
+	HubConfig config;
+	std::unique_ptr<details::WssMuxTunnel> tunnel;
+	std::map<uint32, details::MuxStreamSocket*> streams;
+	std::deque<PendingOpen> pendingOpens;
+};
+
 } // namespace
 
 struct WssMuxHub::Private : public QObject {
@@ -157,6 +174,279 @@ struct WssMuxHub::Private : public QObject {
 	bool systemResolveInFlight = false;
 	int nextPickTunnel = 0;
 	std::deque<PendingOpen> pendingOpens;
+
+	std::map<QString, ProxyCheckSession> checkSessions;
+	std::map<uint32, QString> checkStreamKeys;
+
+	[[nodiscard]] ProxyCheckSession *checkSessionByStream(uint32 streamId) {
+		const auto i = checkStreamKeys.find(streamId);
+		if (i == end(checkStreamKeys)) {
+			return nullptr;
+		}
+		const auto j = checkSessions.find(i->second);
+		return (j != end(checkSessions)) ? &j->second : nullptr;
+	}
+
+	[[nodiscard]] details::MuxStreamSocket *checkStreamSocket(uint32 streamId) const {
+		const auto i = checkStreamKeys.find(streamId);
+		if (i == end(checkStreamKeys)) {
+			return nullptr;
+		}
+		const auto j = checkSessions.find(i->second);
+		if (j == end(checkSessions)) {
+			return nullptr;
+		}
+		const auto k = j->second.streams.find(streamId);
+		return (k != end(j->second.streams)) ? k->second : nullptr;
+	}
+
+	void stopCheckSession(const QString &key) {
+		const auto i = checkSessions.find(key);
+		if (i == end(checkSessions)) {
+			return;
+		}
+		auto &session = i->second;
+		for (const auto &[streamId, socket] : session.streams) {
+			checkStreamKeys.erase(streamId);
+		}
+		session.streams.clear();
+		session.pendingOpens.clear();
+		if (session.tunnel) {
+			session.tunnel->prepareForDestroy();
+		}
+		session.tunnel.reset();
+		checkSessions.erase(i);
+	}
+
+	void cleanupCheckSessionIfEmpty(const QString &key) {
+		const auto i = checkSessions.find(key);
+		if (i != end(checkSessions) && i->second.streams.empty()) {
+			stopCheckSession(key);
+		}
+	}
+
+	void postCheckStreamEvent(
+			const QString &key,
+			uint32 streamId,
+			Fn<void(details::MuxStreamSocket*)> &&handler) {
+		Q_UNUSED(key);
+		const auto streamIdCopy = streamId;
+		auto handlerCopy = std::move(handler);
+		crl::on_main([=, handler = std::move(handlerCopy)]() mutable {
+			details::MuxStreamSocket *socket = nullptr;
+			{
+				QMutexLocker lock(&streamsMutex);
+				const auto i = streams.find(streamIdCopy);
+				if (i != end(streams)) {
+					socket = i->second;
+				}
+			}
+			if (!socket || socket->streamId() != streamIdCopy) {
+				return;
+			}
+			handler(socket);
+		});
+	}
+
+	void handleCheckTunnelFrame(
+			const QString &key,
+			details::MuxFrame &&frame) {
+		const auto streamId = frame.streamId;
+		switch (frame.type) {
+		case details::MuxFrameType::OpenOk:
+			postCheckStreamEvent(key, streamId, [=](
+					details::MuxStreamSocket *socket) {
+				socket->handleOpenOk(0);
+			});
+			break;
+		case details::MuxFrameType::OpenFail:
+			postCheckStreamEvent(key, streamId, [](
+					details::MuxStreamSocket *socket) {
+				socket->handleOpenFail();
+			});
+			break;
+		case details::MuxFrameType::Data: {
+			auto data = bytes::vector(
+				frame.payload.begin(),
+				frame.payload.end());
+			postCheckStreamEvent(key, streamId, [=, data = std::move(data)](
+					details::MuxStreamSocket *socket) mutable {
+				socket->handleData(std::move(data));
+			});
+		} break;
+		case details::MuxFrameType::Close:
+			postCheckStreamEvent(key, streamId, [](
+					details::MuxStreamSocket *socket) {
+				socket->handleRemoteClose();
+			});
+			break;
+		case details::MuxFrameType::Ping:
+			if (const auto i = checkSessions.find(key); i != end(checkSessions)) {
+				if (const auto &tunnel = i->second.tunnel) {
+					const auto pong = details::EncodeMuxFrame(
+						details::MuxFrameType::Pong,
+						streamId);
+					tunnel->sendFrame(pong);
+				}
+			}
+			break;
+		}
+	}
+
+	void ensureCheckTunnel(const QString &key) {
+		auto &session = checkSessions[key];
+		if (session.tunnel && session.tunnel->isConnected()) {
+			return;
+		} else if (session.tunnel) {
+			session.tunnel->prepareForDestroy();
+			session.tunnel.reset();
+		}
+		auto ips = session.config.resolvedIPs;
+		const auto tunnelProxy = ProxyForTunnel(session.config, ips, 0);
+		auto tunnel = std::make_unique<details::WssMuxTunnel>(
+			&hubThread,
+			tunnelProxy,
+			0);
+		const auto raw = tunnel.get();
+		raw->setFrameHandler([=, key = key](details::MuxFrame &&frame) {
+			handleCheckTunnelFrame(key, std::move(frame));
+		});
+		raw->setStateHandler([=, key = key](bool connected) {
+			if (!connected) {
+				return;
+			}
+			flushCheckPendingOpens(key);
+		});
+		session.tunnel = std::move(tunnel);
+		raw->connectTunnel();
+	}
+
+	void flushCheckPendingOpens(const QString &key) {
+		const auto i = checkSessions.find(key);
+		if (i == end(checkSessions)) {
+			return;
+		}
+		auto pending = base::take(i->second.pendingOpens);
+		for (const auto &open : pending) {
+			checkRequestOpen(key, open.streamId, open.host, open.port);
+		}
+	}
+
+	void beginProxyCheck(const ProxyData &proxy) {
+		ensureHubThreadRunning();
+		const auto config = ConfigFromProxy(proxy, 1);
+		const auto key = CheckSessionKey(config);
+		const auto i = checkSessions.find(key);
+		if (i != end(checkSessions)) {
+			if (i->second.config != config && i->second.tunnel) {
+				stopCheckSession(key);
+			} else if (i->second.tunnel && i->second.tunnel->isConnected()) {
+				return;
+			}
+		}
+		auto &session = checkSessions[key];
+		session.config = config;
+		ensureCheckTunnel(key);
+	}
+
+	uint32 acquireCheckStreamId(const ProxyData &proxy) {
+		beginProxyCheck(proxy);
+		QMutexLocker lock(&streamsMutex);
+		return nextStreamId++;
+	}
+
+	void registerCheckStream(
+			const ProxyData &proxy,
+			uint32 streamId,
+			not_null<details::MuxStreamSocket*> socket) {
+		const auto key = CheckSessionKey(ConfigFromProxy(proxy, 1));
+		auto &session = checkSessions[key];
+		session.streams[streamId] = socket.get();
+		checkStreamKeys[streamId] = key;
+	}
+
+	void unregisterCheckStream(uint32 streamId) {
+		const auto i = checkStreamKeys.find(streamId);
+		if (i == end(checkStreamKeys)) {
+			return;
+		}
+		const auto key = i->second;
+		checkStreamKeys.erase(i);
+		if (const auto j = checkSessions.find(key); j != end(checkSessions)) {
+			j->second.streams.erase(streamId);
+			cleanupCheckSessionIfEmpty(key);
+		}
+	}
+
+	void checkRequestOpen(
+			const QString &key,
+			uint32 streamId,
+			const QString &host,
+			int port) {
+		const auto i = checkSessions.find(key);
+		if (i == end(checkSessions)) {
+			postCheckStreamEvent(key, streamId, [](
+					details::MuxStreamSocket *socket) {
+				socket->handleOpenFail();
+			});
+			return;
+		}
+		auto &session = i->second;
+		if (!session.streams.contains(streamId)) {
+			return;
+		} else if (!session.tunnel || !session.tunnel->isConnected()) {
+			session.pendingOpens.push_back({ streamId, host, port });
+			const auto weak = QPointer<Private>(this);
+			QTimer::singleShot(kOpenRetryDelay, this, [=] {
+				if (!weak) {
+					return;
+				}
+				weak->checkRequestOpen(key, streamId, host, port);
+			});
+			return;
+		}
+		const auto frame = details::EncodeMuxOpen(streamId, host, uint16(port));
+		session.tunnel->sendFrame(frame);
+	}
+
+	void checkSendData(
+			const QString &key,
+			uint32 streamId,
+			bytes::const_span data) {
+		const auto i = checkSessions.find(key);
+		if (i == end(checkSessions)
+			|| !i->second.tunnel
+			|| !i->second.streams.contains(streamId)) {
+			return;
+		}
+		const auto frame = details::EncodeMuxFrame(
+			details::MuxFrameType::Data,
+			streamId,
+			data);
+		i->second.tunnel->sendFrame(frame);
+	}
+
+	void checkRequestCloseStream(const QString &key, uint32 streamId) {
+		const auto i = checkSessions.find(key);
+		if (i == end(checkSessions) || !i->second.tunnel) {
+			return;
+		}
+		const auto frame = details::EncodeMuxFrame(
+			details::MuxFrameType::Close,
+			streamId);
+		i->second.tunnel->sendFrame(frame);
+	}
+
+	void stopAllCheckSessions() {
+		auto keys = std::vector<QString>();
+		keys.reserve(checkSessions.size());
+		for (const auto &[key, _] : checkSessions) {
+			keys.push_back(key);
+		}
+		for (const auto &key : keys) {
+			stopCheckSession(key);
+		}
+	}
 
 	[[nodiscard]] bool shouldDeferTunnelStart() const {
 		if (!HostNeedsResolve(config.host)) {
@@ -1049,6 +1339,7 @@ void WssMuxHub::Shutdown() {
 	}
 	const auto cleanup = [=] {
 		_private->shuttingDown = true;
+		_private->stopAllCheckSessions();
 		_private->resetTunnels();
 		_private->started = false;
 	};
@@ -1073,6 +1364,9 @@ std::unique_ptr<details::AbstractSocket> WssMuxHub::AcquireStream(
 		int port,
 		bool protocolForFiles,
 		int tunnelAffinity) {
+	Q_UNUSED(host);
+	Q_UNUSED(port);
+	Q_UNUSED(protocolForFiles);
 	const auto streamId = [&] {
 		QMutexLocker lock(&_private->streamsMutex);
 		return _private->nextStreamId++;
@@ -1082,6 +1376,71 @@ std::unique_ptr<details::AbstractSocket> WssMuxHub::AcquireStream(
 	socket->setTunnelAffinity(tunnelAffinity);
 	RegisterStream(streamId, socket.get());
 	EnsureStarted();
+	return socket;
+}
+
+void WssMuxHub::BeginProxyCheck(const ProxyData &proxy) {
+	InvokeQueued(_private.get(), [=] {
+		_private->beginProxyCheck(proxy);
+	});
+}
+
+void WssMuxHub::EndProxyCheck(const ProxyData &proxy) {
+	const auto stop = [=] {
+		const auto key = CheckSessionKey(ConfigFromProxy(proxy, 1));
+		_private->stopCheckSession(key);
+	};
+	if (QThread::currentThread() == &_private->hubThread) {
+		stop();
+		return;
+	}
+	QEventLoop loop;
+	InvokeQueued(_private.get(), [&] {
+		stop();
+		loop.quit();
+	});
+	loop.exec();
+}
+
+std::unique_ptr<details::AbstractSocket> WssMuxHub::AcquireCheckStream(
+		not_null<QThread*> thread,
+		const ProxyData &proxy,
+		const QString &host,
+		int port,
+		bool protocolForFiles,
+		int tunnelAffinity) {
+	Q_UNUSED(host);
+	Q_UNUSED(port);
+	Q_UNUSED(protocolForFiles);
+	uint32 streamId = 0;
+	if (QThread::currentThread() == &_private->hubThread) {
+		streamId = _private->acquireCheckStreamId(proxy);
+	} else {
+		QEventLoop loop;
+		InvokeQueued(_private.get(), [&] {
+			streamId = _private->acquireCheckStreamId(proxy);
+			loop.quit();
+		});
+		loop.exec();
+	}
+	auto socket = std::make_unique<details::MuxStreamSocket>(thread, this);
+	socket->setStreamId(streamId);
+	socket->setTunnelAffinity(tunnelAffinity);
+	const auto raw = socket.get();
+	const auto registerOnHub = [&] {
+		_private->registerCheckStream(proxy, streamId, raw);
+	};
+	if (QThread::currentThread() == &_private->hubThread) {
+		registerOnHub();
+	} else {
+		QEventLoop loop;
+		InvokeQueued(_private.get(), [&] {
+			registerOnHub();
+			loop.quit();
+		});
+		loop.exec();
+	}
+	RegisterStream(streamId, raw);
 	return socket;
 }
 
@@ -1097,10 +1456,27 @@ void WssMuxHub::UnregisterStream(uint32 streamId) {
 		QMutexLocker lock(&_private->streamsMutex);
 		_private->streams.erase(streamId);
 	}
-	InvokeQueued(_private.get(), [=] {
-		_private->removePendingOpen(streamId);
-		_private->eraseStreamTunnelEntry(streamId);
+	if (!_private->hubThread.isRunning()) {
+		return;
+	}
+	const auto cleanup = [=] {
+		if (_private->checkStreamKeys.contains(streamId)) {
+			_private->unregisterCheckStream(streamId);
+		} else {
+			_private->removePendingOpen(streamId);
+			_private->eraseStreamTunnelEntry(streamId);
+		}
+	};
+	if (QThread::currentThread() == &_private->hubThread) {
+		cleanup();
+		return;
+	}
+	QEventLoop loop;
+	InvokeQueued(_private.get(), [&] {
+		cleanup();
+		loop.quit();
 	});
+	loop.exec();
 }
 
 void WssMuxHub::RequestOpen(
@@ -1108,6 +1484,11 @@ void WssMuxHub::RequestOpen(
 		const QString &host,
 		int port) {
 	InvokeQueued(_private.get(), [=] {
+		const auto i = _private->checkStreamKeys.find(streamId);
+		if (i != end(_private->checkStreamKeys)) {
+			_private->checkRequestOpen(i->second, streamId, host, port);
+			return;
+		}
 		_private->requestOpen(streamId, host, port);
 	});
 }
@@ -1115,6 +1496,11 @@ void WssMuxHub::RequestOpen(
 void WssMuxHub::SendData(uint32 streamId, bytes::const_span data) {
 	auto copy = bytes::vector(data.begin(), data.end());
 	InvokeQueued(_private.get(), [=, data = std::move(copy)]() mutable {
+		const auto i = _private->checkStreamKeys.find(streamId);
+		if (i != end(_private->checkStreamKeys)) {
+			_private->checkSendData(i->second, streamId, data);
+			return;
+		}
 		if (_private->shuttingDown || !_private->proxyActive) {
 			return;
 		}
@@ -1143,13 +1529,20 @@ void WssMuxHub::SendData(uint32 streamId, bytes::const_span data) {
 void WssMuxHub::RequestClose(uint32 streamId) {
 	if (!_private->hubThread.isRunning()) {
 		return;
-	} else if (QThread::currentThread() == &_private->hubThread) {
+	}
+	const auto close = [=] {
+		const auto i = _private->checkStreamKeys.find(streamId);
+		if (i != end(_private->checkStreamKeys)) {
+			_private->checkRequestCloseStream(i->second, streamId);
+			return;
+		}
 		_private->requestCloseStream(streamId);
+	};
+	if (QThread::currentThread() == &_private->hubThread) {
+		close();
 		return;
 	}
-	InvokeQueued(_private.get(), [=] {
-		_private->requestCloseStream(streamId);
-	});
+	InvokeQueued(_private.get(), close);
 }
 
 } // namespace MTP

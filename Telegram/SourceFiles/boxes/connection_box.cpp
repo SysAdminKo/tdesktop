@@ -1838,7 +1838,16 @@ ProxiesBoxController::ProxiesBoxController(not_null<Main::Account*> account)
 	}, _lifetime);
 
 	for (auto &item : _list) {
-		refreshChecker(item);
+		const auto id = item.id;
+		base::call_delayed(0, [=] {
+			const auto i = ranges::find(
+				_list,
+				id,
+				[](const Item &item) { return item.id; });
+			if (i != end(_list)) {
+				refreshChecker(*i);
+			}
+		});
 	}
 }
 
@@ -2131,7 +2140,9 @@ auto ProxiesBoxController::proxySettingsValue() const
 }
 
 void ProxiesBoxController::refreshChecker(Item &item) {
+	MTP::EndProxyCheck(item.data);
 	item.state = ItemState::Checking;
+	item.checkFinished = false;
 	const auto id = item.id;
 	MTP::StartProxyCheck(
 		&_account->mtp(),
@@ -2144,33 +2155,35 @@ void ProxiesBoxController::refreshChecker(Item &item) {
 				_list,
 				id,
 				[](const Item &item) { return item.id; });
-			if (item == end(_list)) {
+			if (item == end(_list) || item->checkFinished) {
 				return;
 			}
 			MTP::DropProxyChecker(item->checker, item->checkerv6, raw);
+			item->checkFinished = true;
+			item->state = ItemState::Available;
+			item->ping = pingTime;
 			MTP::ResetProxyCheckers(item->checker, item->checkerv6);
-			if (item->state == ItemState::Checking) {
-				item->state = ItemState::Available;
-				item->ping = pingTime;
-				updateView(*item);
-			}
+			MTP::EndProxyCheck(item->data);
+			updateView(*item);
 		},
 		[=](Connection *raw) {
 			const auto item = ranges::find(
 				_list,
 				id,
 				[](const Item &item) { return item.id; });
-			if (item == end(_list)) {
+			if (item == end(_list) || item->checkFinished) {
 				return;
 			}
 			MTP::DropProxyChecker(item->checker, item->checkerv6, raw);
-			if (!MTP::HasProxyCheckers(item->checker, item->checkerv6)
-				&& item->state == ItemState::Checking) {
+			if (!MTP::HasProxyCheckers(item->checker, item->checkerv6)) {
+				item->checkFinished = true;
 				item->state = ItemState::Unavailable;
+				MTP::EndProxyCheck(item->data);
 				updateView(*item);
 			}
 		});
 	if (!MTP::HasProxyCheckers(item.checker, item.checkerv6)) {
+		item.checkFinished = true;
 		item.state = ItemState::Unavailable;
 	}
 }

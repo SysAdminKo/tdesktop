@@ -173,18 +173,20 @@ ConnectionPointer AbstractConnection::Create(
 		DcOptions::Variants::Protocol protocol,
 		QThread *thread,
 		const bytes::vector &secret,
-		const ProxyData &proxy) {
+		const ProxyData &proxy,
+		bool forProxyCheck) {
 	auto result = [&] {
 		if (protocol == DcOptions::Variants::Tcp) {
 			return ConnectionPointer::New<TcpConnection>(
 				instance,
 				thread,
-				proxy);
+				proxy,
+				forProxyCheck);
 		} else {
 			return ConnectionPointer::New<HttpConnection>(thread, proxy);
 		}
 	}();
-	if (proxy.tryCustomResolve()) {
+	if (proxy.tryCustomResolve() && !forProxyCheck) {
 		return ConnectionPointer::New<ResolvingConnection>(
 			instance,
 			thread,

@@ -77,6 +77,11 @@ void ResolvingConnection::setChild(ConnectionPointer &&child) {
 		&AbstractConnection::disconnected,
 		this,
 		&ResolvingConnection::handleDisconnected);
+	connect(
+		_child,
+		&AbstractConnection::packetReassemblyStall,
+		this,
+		&AbstractConnection::packetReassemblyStall);
 	if (_protocolDcId) {
 		_child->setWssTunnelAffinity(wssTunnelAffinity());
 		_child->connectToServer(

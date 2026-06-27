@@ -65,6 +65,7 @@ constexpr auto kSendStateRequestWaiting = crl::time(1000);
 constexpr auto kAckSendWaiting = 10 * crl::time(1000);
 
 constexpr auto kMinMuxMediaReceiveTimeout = crl::time(16000);
+constexpr auto kWssCumulativeStallRotateThreshold = crl::time(25000);
 
 constexpr auto kCutContainerOnSize = 16 * 1024;
 
@@ -267,13 +268,31 @@ void SessionPrivate::appendTestConnection(
 			instance->syncHttpUnixtime();
 		});
 	});
+	const auto endpointIp = ip;
 	connect(weak, &AbstractConnection::packetReassemblyStall, [=](
-			const QString &ip) {
-		DEBUG_LOG(("WSS reject endpoint ip=%1 dc=%2 shift=%3")
-			.arg(ip)
-			.arg(BareDcId(_shiftedDcId))
-			.arg(GetDcIdShift(_shiftedDcId)));
-		_wssRejectedEndpoints.insert(ip);
+			const QString &stallIp,
+			crl::time duration) {
+		if (_options->proxy.type != ProxyData::Type::WebSocket
+			|| stallIp != endpointIp) {
+			return;
+		}
+		_wssReassemblyStallMs += duration;
+		if (_wssReassemblyStallMs < kWssCumulativeStallRotateThreshold) {
+			return;
+		}
+		_wssReassemblyStallMs = 0;
+		if (!shouldRotateWssOnReassemblyStall()) {
+			return;
+		}
+		DEBUG_LOG(("WSS rotate endpoint ip=%1 dc=%2 shift=%3 offset=%4"
+			).arg(stallIp
+			).arg(BareDcId(_shiftedDcId)
+			).arg(GetDcIdShift(_shiftedDcId)
+			).arg(_wssPickOffset + 1));
+		++_wssPickOffset;
+		InvokeQueued(this, [=] {
+			restart();
+		});
 	});
 
 	const auto protocolForFiles = isMediaClusterDcId(_shiftedDcId)
@@ -1113,19 +1132,6 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 		const auto useHttp = special ? false : _options->useHttp;
 		const auto limitWebSocketTests = (_options->proxy.type
 			== ProxyData::Type::WebSocket);
-		const auto isRejectedEndpoint = [&](
-				const QString &ip,
-				int port,
-				const bytes::vector &secret,
-				DcOptions::Variants::Protocol protocol) {
-			if (!limitWebSocketTests || ip.isEmpty() || !port) {
-				return false;
-			}
-			return _wssRejectedEndpoints.contains(ip);
-		};
-		auto webSocketTestsAdded = 0;
-		const auto skipVariantsLoop = limitWebSocketTests
-			&& webSocketTestsAdded;
 		const auto skipAddress = !useIPv4
 			? Variants::IPv4
 			: !useIPv6
@@ -1136,7 +1142,61 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 			: !useHttp
 			? Variants::Http
 			: Variants::ProtocolCount;
-		if (!skipVariantsLoop) {
+		if (limitWebSocketTests) {
+			struct WssEndpointCandidate {
+				Variants::Protocol protocol;
+				QString ip;
+				int port;
+				bytes::vector secret;
+			};
+			const auto shift = GetDcIdShift(_shiftedDcId);
+			auto candidates = std::vector<WssEndpointCandidate>();
+			for (auto address = 0; address != Variants::AddressTypeCount; ++address) {
+				if (address == skipAddress) {
+					continue;
+				}
+				for (auto protocol = 0; protocol != Variants::ProtocolCount; ++protocol) {
+					if (protocol == skipProtocol
+						|| protocol != Variants::Tcp) {
+						continue;
+					}
+					for (const auto &endpoint : variants.data[address][protocol]) {
+						const auto ip = QString::fromStdString(endpoint.ip);
+						const auto exists = ranges::any_of(
+							candidates,
+							[&](const WssEndpointCandidate &existing) {
+								return existing.ip == ip;
+							});
+						if (exists) {
+							continue;
+						}
+						candidates.push_back({
+							static_cast<Variants::Protocol>(protocol),
+							ip,
+							endpoint.port,
+							endpoint.secret,
+						});
+					}
+				}
+			}
+			if (!candidates.empty()) {
+				const auto index = (shift + _wssPickOffset)
+					% candidates.size();
+				const auto &chosen = candidates[index];
+				DEBUG_LOG(("WSS pick dc=%1 shift=%2 type=%3 ip=%4 candidates=%5 offset=%6"
+					).arg(bareDc
+					).arg(shift
+					).arg(int(_currentDcType)
+					).arg(chosen.ip
+					).arg(candidates.size()
+					).arg(_wssPickOffset));
+				appendTestConnection(
+					chosen.protocol,
+					chosen.ip,
+					chosen.port,
+					chosen.secret);
+			}
+		} else {
 		for (auto address = 0; address != Variants::AddressTypeCount; ++address) {
 			if (address == skipAddress) {
 				continue;
@@ -1144,50 +1204,17 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 			for (auto protocol = 0; protocol != Variants::ProtocolCount; ++protocol) {
 				if (protocol == skipProtocol) {
 					continue;
-				} else if (limitWebSocketTests
-					&& protocol != Variants::Tcp) {
-					continue;
 				}
 				for (const auto &endpoint : variants.data[address][protocol]) {
-					if (limitWebSocketTests) {
-						if (webSocketTestsAdded) {
-							break;
-						}
-					}
 					const auto ip = QString::fromStdString(endpoint.ip);
-					if (isRejectedEndpoint(
-							ip,
-							endpoint.port,
-							endpoint.secret,
-							static_cast<Variants::Protocol>(protocol))) {
-						continue;
-					}
-					if (limitWebSocketTests) {
-						++webSocketTestsAdded;
-					}
 					appendTestConnection(
 						static_cast<Variants::Protocol>(protocol),
 						ip,
 						endpoint.port,
 						endpoint.secret);
 				}
-				if (limitWebSocketTests && webSocketTestsAdded) {
-					break;
-				}
-			}
-			if (limitWebSocketTests && webSocketTestsAdded) {
-				break;
 			}
 		}
-		}
-		if (_testConnections.empty()
-			&& limitWebSocketTests) {
-			DEBUG_LOG(("WSS all endpoints rejected dc=%1 shift=%2 count=%3 — clearing and retry")
-				.arg(BareDcId(_shiftedDcId))
-				.arg(GetDcIdShift(_shiftedDcId))
-				.arg(_wssRejectedEndpoints.size()));
-			_wssRejectedEndpoints.clear();
-			return connectToServer(afterConfig);
 		}
 	}
 	if (_testConnections.empty()) {
@@ -2663,6 +2690,7 @@ void SessionPrivate::onConnected(
 		DEBUG_LOG(("MTP Info: connection through IPv4 succeed."));
 		_waitForBetterTimer.cancel();
 		_connection = std::move(i->data);
+		_wssReassemblyStallMs = 0;
 		_testConnections.clear();
 		checkAuthKey();
 	}
@@ -2699,12 +2727,60 @@ void SessionPrivate::confirmBestConnection() {
 		).arg(i->data->tag()));
 
 	_connection = std::move(i->data);
+	_wssReassemblyStallMs = 0;
 	_testConnections.clear();
 
 	checkAuthKey();
 }
 
+bool SessionPrivate::shouldRotateWssOnReassemblyStall() const {
+	if (isDownloadDcId(_shiftedDcId) || isUploadDcId(_shiftedDcId)) {
+		return false;
+	} else if (_options->proxy.type != ProxyData::Type::WebSocket) {
+		return false;
+	}
+	using Variants = DcOptions::Variants;
+	const auto bareDc = BareDcId(_shiftedDcId);
+	const auto throughProxy = (_options->proxy.type != ProxyData::Type::None);
+	const auto variants = _instance->dcOptions().lookup(
+		bareDc,
+		_currentDcType,
+		throughProxy);
+	const auto special = (_currentDcType == DcType::Temporary);
+	const auto useIPv4 = special ? true : _options->useIPv4;
+	const auto useIPv6 = special ? false : _options->useIPv6;
+	const auto useTcp = special ? true : _options->useTcp;
+	const auto useHttp = special ? false : _options->useHttp;
+	const auto skipAddress = !useIPv4
+		? Variants::IPv4
+		: !useIPv6
+		? Variants::IPv6
+		: Variants::AddressTypeCount;
+	const auto skipProtocol = !useTcp
+		? Variants::Tcp
+		: !useHttp
+		? Variants::Http
+		: Variants::ProtocolCount;
+	auto seen = base::flat_set<QString>();
+	for (auto address = 0; address != Variants::AddressTypeCount; ++address) {
+		if (address == skipAddress) {
+			continue;
+		}
+		for (auto protocol = 0; protocol != Variants::ProtocolCount; ++protocol) {
+			if (protocol == skipProtocol || protocol != Variants::Tcp) {
+				continue;
+			}
+			for (const auto &endpoint : variants.data[address][protocol]) {
+				seen.emplace(QString::fromStdString(endpoint.ip));
+			}
+		}
+	}
+	return seen.size() > 1;
+}
+
 void SessionPrivate::restartWssWithNextEndpoint() {
+	++_wssPickOffset;
+	_wssReassemblyStallMs = 0;
 	_sessionData->queueNeedToResumeAndSend();
 	restart();
 }

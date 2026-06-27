@@ -109,6 +109,7 @@ private:
 		Checker checkerv6;
 		ItemState state = ItemState::Checking;
 		int ping = 0;
+		bool checkFinished = false;
 
 	};
 

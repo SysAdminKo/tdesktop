@@ -291,8 +291,12 @@ func (s *muxSession) pumpUpstream(stream *muxStream) {
 				relayStatistics.incMuxUpstreamReadStall()
 			}
 		}
+		_ = stream.tcp.SetReadDeadline(time.Now().Add(muxUpstreamReadStallThreshold))
 		n, err := stream.tcp.Read(buffer)
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
 			s.removeStream(stream.id)
 			_ = s.writeFrame(muxTypeClose, stream.id, nil)
 			return

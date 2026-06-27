@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/facade.h"
 #include "mtproto/mtproto_dc_options.h"
+#include "mtproto/mtproto_wss_mux_hub.h"
 
 namespace MTP {
 
@@ -59,7 +60,8 @@ void StartProxyCheck(
 			connType,
 			QThread::currentThread(),
 			secret,
-			proxy);
+			proxy,
+			proxy.type == ProxyData::Type::WebSocket);
 		const auto raw = checker.get();
 		raw->connect(raw, &Connection::connected, [=] {
 			if (done) {
@@ -89,9 +91,11 @@ void StartProxyCheck(
 		dcId,
 		DcType::Regular,
 		true);
+	const auto checkIPv6 = tryIPv6
+		&& (proxy.type != ProxyData::Type::WebSocket);
 	const auto tryConnect = [&](ProxyCheckConnection &checker, Variants::Address address) {
 		const auto &list = options.data[address][connType];
-		if (list.empty() || ((address == Variants::IPv6) && !tryIPv6)) {
+		if (list.empty() || ((address == Variants::IPv6) && !checkIPv6)) {
 			checker = nullptr;
 			return;
 		}
@@ -106,6 +110,13 @@ void StartProxyCheck(
 	};
 	tryConnect(v4, Variants::IPv4);
 	tryConnect(v6, Variants::IPv6);
+}
+
+void EndProxyCheck(const ProxyData &proxy) {
+	if (proxy.type != ProxyData::Type::WebSocket) {
+		return;
+	}
+	WssMuxHub::Instance().EndProxyCheck(proxy);
 }
 
 } // namespace MTP

@@ -76,3 +76,5 @@ Then browse `http://127.0.0.1:8283/stats`.
 ```
 tdesktop --TLS+WS+mux--> edge:443 --WS--> wss-relay:8283 --TCP--> Telegram DC
 ```
+
+Подробная спецификация протокола и реализации: [WSS-MUX.MD](WSS-MUX.MD).

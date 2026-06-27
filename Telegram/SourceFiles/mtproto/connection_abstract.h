@@ -73,7 +73,8 @@ public:
 		DcOptions::Variants::Protocol protocol,
 		QThread *thread,
 		const bytes::vector &secret,
-		const ProxyData &proxy);
+		const ProxyData &proxy,
+		bool forProxyCheck = false);
 
 	[[nodiscard]] virtual ConnectionPointer clone(const ProxyData &proxy) = 0;
 
@@ -153,7 +154,7 @@ Q_SIGNALS:
 	void disconnected();
 
 	void syncTimeRequest();
-	void packetReassemblyStall(const QString &ip);
+	void packetReassemblyStall(const QString &ip, crl::time duration);
 
 protected:
 	BuffersQueue _receivedQueue; // list of received packets, not processed yet

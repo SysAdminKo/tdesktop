@@ -367,10 +367,17 @@ void WebSocketSocket::tlsConnected() {
 	if (_state != State::TlsConnecting) {
 		return;
 	}
-	DEBUG_LOG(("Connection %1 WSS TLS handshake ok sni %2 protocol %3"
+	const auto sslInfo =
+#if QT_VERSION >= QT_VERSION_CHECK(6, 1, 0)
+		_socket.activeBackend() + u" "_q + QSslSocket::sslLibraryVersionString();
+#else
+		QSslSocket::sslLibraryVersionString();
+#endif
+	DEBUG_LOG(("Connection %1 WSS TLS handshake ok sni %2 protocol %3 ssl %4"
 		).arg(_debugId
 		).arg(tlsHostName()
-		).arg(int(_socket.sslConfiguration().protocol())));
+		).arg(int(_socket.sslConfiguration().protocol())
+		).arg(sslInfo));
 	_state = State::HttpUpgrading;
 	_webSocketKey = RandomWebSocketKey();
 	_socket.write(buildUpgradeRequest());

@@ -36,7 +36,7 @@ constexpr auto kMaxTrackedSuccesses = kRetryAddSessionSuccesses
 constexpr auto kRemoveSessionAfterTimeouts = 4;
 constexpr auto kResetDownloadPrioritiesTimeout = crl::time(200);
 constexpr auto kBadRequestDurationThreshold = 8 * crl::time(1000);
-constexpr auto kWssBadRequestDurationThreshold = 20 * crl::time(1000);
+constexpr auto kWssBadRequestDurationThreshold = 45 * crl::time(1000);
 constexpr auto kWssInitialDownloadSessions = 3;
 constexpr auto kWssMaxWaitedAmount = 8 * kDownloadPartSize;
 constexpr auto kWssWarmUpMinReadySessions = 1;
@@ -702,6 +702,9 @@ void DownloadManagerMtproto::requestSucceeded(
 	}
 
 	if (duration >= badRequestDurationThreshold(useWssMux())) {
+		if (useWssMux() && dc.totalRequested > 0) {
+			return;
+		}
 		DEBUG_LOG(("Duration too large, signaling time out."));
 		crl::on_main(this, [=] {
 			sessionTimedOut(dcId, index);

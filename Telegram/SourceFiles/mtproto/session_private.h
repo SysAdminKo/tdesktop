@@ -166,6 +166,7 @@ private:
 		int port,
 		const bytes::vector &protocolSecret);
 	void restartWssWithNextEndpoint();
+	[[nodiscard]] bool shouldRotateWssOnReassemblyStall() const;
 
 	// if badTime received - search for ids in sessionData->haveSent and sessionData->wereAcked and sync time/salt, return true if found
 	bool requestsFixTimeSalt(const QVector<MTPlong> &ids, const OuterInfo &info);
@@ -229,7 +230,6 @@ private:
 
 	ConnectionPointer _connection;
 	std::vector<TestConnection> _testConnections;
-	QSet<QString> _wssRejectedEndpoints;
 	crl::time _startedConnectingAt = 0;
 
 	base::Timer _retryTimer; // exp retry timer
@@ -244,6 +244,8 @@ private:
 	base::Timer _waitForBetterTimer;
 	base::Timer _wssDeferTimer;
 	crl::time _wssDeferStartedAt = 0;
+	int _wssPickOffset = 0;
+	crl::time _wssReassemblyStallMs = 0;
 	crl::time _waitForReceived = 0;
 	crl::time _waitForConnected = 0;
 	crl::time _firstSentAt = -1;

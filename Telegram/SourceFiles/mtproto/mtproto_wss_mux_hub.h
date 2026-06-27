@@ -40,6 +40,16 @@ public:
 		bool protocolForFiles,
 		int tunnelAffinity = -1);
 
+	void BeginProxyCheck(const ProxyData &proxy);
+	void EndProxyCheck(const ProxyData &proxy);
+	[[nodiscard]] std::unique_ptr<details::AbstractSocket> AcquireCheckStream(
+		not_null<QThread*> thread,
+		const ProxyData &proxy,
+		const QString &host,
+		int port,
+		bool protocolForFiles,
+		int tunnelAffinity = -1);
+
 	void RegisterStream(
 		uint32 streamId,
 		not_null<details::MuxStreamSocket*> socket);

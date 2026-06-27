@@ -20,7 +20,8 @@ public:
 	TcpConnection(
 		not_null<Instance*> instance,
 		QThread *thread,
-		const ProxyData &proxy);
+		const ProxyData &proxy,
+		bool forProxyCheck = false);
 
 	ConnectionPointer clone(const ProxyData &proxy) override;
 
@@ -72,6 +73,7 @@ private:
 	}
 
 	const not_null<Instance*> _instance;
+	const bool _forProxyCheck = false;
 	std::unique_ptr<AbstractSocket> _socket;
 	bool _connectionStarted = false;
 

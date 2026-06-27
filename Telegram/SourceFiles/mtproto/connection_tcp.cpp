@@ -24,7 +24,6 @@ constexpr auto kSmallBufferSize = 256 * 1024;
 constexpr auto kMinPacketBuffer = 256;
 constexpr auto kConnectionStartPrefixSize = 64;
 constexpr auto kPacketReassemblyStall = crl::time(3000);
-constexpr auto kPacketReassemblyStallRejectThreshold = crl::time(8000);
 
 } // namespace
 
@@ -250,14 +249,20 @@ auto TcpConnection::Protocol::Create(bytes::const_span secret)
 TcpConnection::TcpConnection(
 	not_null<Instance*> instance,
 	QThread *thread,
-	const ProxyData &proxy)
+	const ProxyData &proxy,
+	bool forProxyCheck)
 : AbstractConnection(thread, proxy)
 , _instance(instance)
+, _forProxyCheck(forProxyCheck)
 , _checkNonce(base::RandomValue<MTPint128>()) {
 }
 
 ConnectionPointer TcpConnection::clone(const ProxyData &proxy) {
-	return ConnectionPointer::New<TcpConnection>(_instance, thread(), proxy);
+	return ConnectionPointer::New<TcpConnection>(
+		_instance,
+		thread(),
+		proxy,
+		_forProxyCheck);
 }
 
 void TcpConnection::ensureAvailableInBuffer(int amount) {
@@ -318,9 +323,7 @@ void TcpConnection::finishPacketReassembly() {
 		CONNECTION_LOG_INFO(u"Packet reassembly done total=%1 ms=%2"_q
 			.arg(_partialPacketTotal)
 			.arg(duration));
-		if (duration >= kPacketReassemblyStallRejectThreshold) {
-			packetReassemblyStall(_address);
-		}
+		packetReassemblyStall(_address, duration);
 	}
 	_partialPacketSince = 0;
 	_partialPacketTotal = 0;
@@ -374,6 +377,9 @@ void TcpConnection::socketRead() {
 				_leftBytes -= readCount;
 				if (!_leftBytes) {
 					finishPacketReassembly();
+					if (!_socket || !_socket->isConnected()) {
+						return;
+					}
 					socketPacket(full.subspan(0, _readBytes));
 					if (!_socket || !_socket->isConnected()) {
 						return;
@@ -410,6 +416,9 @@ void TcpConnection::socketRead() {
 						return;
 					} else if (available.size() >= packetSize) {
 						finishPacketReassembly();
+						if (!_socket || !_socket->isConnected()) {
+							return;
+						}
 						socketPacket(available.subspan(0, packetSize));
 						if (!_socket || !_socket->isConnected()) {
 							return;
@@ -602,7 +611,15 @@ void TcpConnection::connectToServer(
 		_protocol = Protocol::Create(secret);
 	}
 	_socket = (_proxy.type == ProxyData::Type::WebSocket)
-		? [&] {
+		? (_forProxyCheck
+			? WssMuxHub::Instance().AcquireCheckStream(
+				thread(),
+				_proxy,
+				address,
+				port,
+				protocolForFiles,
+				wssTunnelAffinity())
+			: [&] {
 			WssMuxHub::Instance().Configure(
 				_proxy,
 				_proxy.wssMuxTunnels);
@@ -613,7 +630,7 @@ void TcpConnection::connectToServer(
 				port,
 				protocolForFiles,
 				wssTunnelAffinity());
-		}()
+		}())
 		: AbstractSocket::Create(
 			thread(),
 			secret,
@@ -628,7 +645,8 @@ void TcpConnection::connectToServer(
 		.arg(
 			ProtocolDcDebugId(_protocolDcId),
 			(_proxy.type == ProxyData::Type::Mtproto) ? "mtproxy "
-			: (_proxy.type == ProxyData::Type::WebSocket) ? "wssmux "
+			: (_proxy.type == ProxyData::Type::WebSocket)
+			? (_forProxyCheck ? "wssmuxcheck " : "wssmux ")
 			: "",
 			_address)
 		.arg(_port)
@@ -674,7 +692,9 @@ crl::time TcpConnection::fullConnectTimeout() const {
 }
 
 void TcpConnection::socketPacket(bytes::const_span bytes) {
-	Expects(_socket != nullptr);
+	if (!_socket) {
+		return;
+	}
 
 	// old quickack?..
 	const auto data = parsePacket(bytes);

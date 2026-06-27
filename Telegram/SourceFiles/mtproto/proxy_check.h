@@ -31,5 +31,6 @@ void StartProxyCheck(
 	ProxyCheckConnection &v6,
 	Fn<void(details::AbstractConnection *raw, int ping)> done,
 	Fn<void(details::AbstractConnection *raw)> fail);
+void EndProxyCheck(const ProxyData &proxy);
 
 } // namespace MTP

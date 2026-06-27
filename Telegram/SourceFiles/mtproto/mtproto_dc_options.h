@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/bytes.h"
 
 #include <QtCore/QReadWriteLock>
+#include <optional>
 #include <string>
 #include <vector>
 #include <map>
