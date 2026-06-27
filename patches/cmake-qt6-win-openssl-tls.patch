@@ -1,0 +1,21 @@
+diff --git a/external/qt/CMakeLists.txt b/external/qt/CMakeLists.txt
+index 9845f55..6bbf570 100644
+--- a/external/qt/CMakeLists.txt
++++ b/external/qt/CMakeLists.txt
+@@ -176,14 +176,14 @@ if (WIN32)
+     )
+     if (QT_VERSION GREATER 6)
+         list(APPEND qt_libs
+-            plugins/tls/${qt_lib_prefix}qschannelbackend
++            plugins/tls/${qt_lib_prefix}qopensslbackend
+             plugins/networkinformation/${qt_lib_prefix}qnetworklistmanager
+             lib/${qt_lib_prefix}Qt${QT_VERSION_MAJOR}BundledFreetype
+             lib/${qt_lib_prefix}Qt${QT_VERSION_MAJOR}EntryPoint
+         )
+         list(APPEND qt_libs_list
+             $<TARGET_OBJECTS:Qt${QT_VERSION_MAJOR}::QWindowsIntegrationPlugin_init>
+-            $<TARGET_OBJECTS:Qt${QT_VERSION_MAJOR}::QSchannelBackendPlugin_init>
++            $<TARGET_OBJECTS:Qt${QT_VERSION_MAJOR}::QTlsBackendOpenSSLPlugin_init>
+             $<TARGET_OBJECTS:Qt${QT_VERSION_MAJOR}::QNLMNIPlugin_init>
+             $<TARGET_OBJECTS:Qt${QT_VERSION_MAJOR}::QWindowsIntegrationPlugin_resources_1>
+         )
