@@ -1,5 +1,128 @@
+diff --git a/.github/workflows/win.yml b/.github/workflows/win.yml
+index db08dd9bc0..0ccafa636e 100644
+--- a/.github/workflows/win.yml
++++ b/.github/workflows/win.yml
+@@ -75,8 +75,13 @@ jobs:
+     steps:
+       - name: Prepare directories.
+         run: |
+-          mkdir %userprofile%\TBuild\Libraries
+-          mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
++          if exist D:\ (
++            mkdir D:\TBuild\Libraries 2>nul
++            mklink /d %GITHUB_WORKSPACE%\TBuild D:\TBuild
++          ) else (
++            mkdir %userprofile%\TBuild\Libraries
++            mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
++          )
+           echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
+           echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries${{ matrix.arch == 'x64' && '\win64' || '' }}>>%GITHUB_ENV%
+ 
+@@ -219,6 +224,14 @@ jobs:
+         shell: bash
+         run: find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' ')' -type f ')' -o -empty ')' -delete
+ 
++      - name: Patch Qt6 TLS backend for WSS.
++        if: env.ONLY_CACHE == 'false' && matrix.qt == 'qt6'
++        shell: bash
++        working-directory: ${{ env.TBUILD }}/${{ env.REPO_NAME }}
++        run: |
++          git apply --directory=cmake --check patches/cmake-qt6-win-openssl-tls.patch
++          git apply --directory=cmake patches/cmake-qt6-win-openssl-tls.patch
++
+       - name: Telegram Desktop build.
+         if: env.ONLY_CACHE == 'false'
+         run: |
+diff --git a/Telegram/CMakeLists.txt b/Telegram/CMakeLists.txt
+index 42d1f0bd39..dff2fdd159 100644
+--- a/Telegram/CMakeLists.txt
++++ b/Telegram/CMakeLists.txt
+@@ -1144,8 +1144,6 @@ PRIVATE
+     info/media/info_media_common.h
+     info/media/info_media_empty_widget.cpp
+     info/media/info_media_empty_widget.h
+-    info/media/info_media_grid_zoom.cpp
+-    info/media/info_media_grid_zoom.h
+     info/media/info_media_inner_widget.cpp
+     info/media/info_media_inner_widget.h
+     info/media/info_media_list_section.cpp
+diff --git a/Telegram/Resources/animations/toast/chats_archived.tgs b/Telegram/Resources/animations/toast/chats_archived.tgs
+deleted file mode 100644
+index 7fc3e57802..0000000000
+Binary files a/Telegram/Resources/animations/toast/chats_archived.tgs and /dev/null differ
+diff --git a/Telegram/Resources/animations/toast/contact_check.tgs b/Telegram/Resources/animations/toast/contact_check.tgs
+deleted file mode 100644
+index c8f62a39a3..0000000000
+Binary files a/Telegram/Resources/animations/toast/contact_check.tgs and /dev/null differ
+diff --git a/Telegram/Resources/animations/toast/copy.tgs b/Telegram/Resources/animations/toast/copy.tgs
+deleted file mode 100644
+index 152af85f79..0000000000
+Binary files a/Telegram/Resources/animations/toast/copy.tgs and /dev/null differ
+diff --git a/Telegram/Resources/animations/toast/delete.tgs b/Telegram/Resources/animations/toast/delete.tgs
+deleted file mode 100644
+index 7925f503f0..0000000000
+Binary files a/Telegram/Resources/animations/toast/delete.tgs and /dev/null differ
+diff --git a/Telegram/Resources/animations/toast/mute.tgs b/Telegram/Resources/animations/toast/mute.tgs
+deleted file mode 100644
+index 1dd6ccf0fa..0000000000
+Binary files a/Telegram/Resources/animations/toast/mute.tgs and /dev/null differ
+diff --git a/Telegram/Resources/animations/toast/pin.tgs b/Telegram/Resources/animations/toast/pin.tgs
+deleted file mode 100644
+index 9e12da9a10..0000000000
+Binary files a/Telegram/Resources/animations/toast/pin.tgs and /dev/null differ
+diff --git a/Telegram/Resources/animations/toast/save_to_gallery.tgs b/Telegram/Resources/animations/toast/save_to_gallery.tgs
+deleted file mode 100644
+index bd9de4b919..0000000000
+Binary files a/Telegram/Resources/animations/toast/save_to_gallery.tgs and /dev/null differ
+diff --git a/Telegram/Resources/animations/toast/save_to_music.tgs b/Telegram/Resources/animations/toast/save_to_music.tgs
+deleted file mode 100644
+index 6c7a66aaa8..0000000000
+Binary files a/Telegram/Resources/animations/toast/save_to_music.tgs and /dev/null differ
+diff --git a/Telegram/Resources/animations/toast/star_premium_2.tgs b/Telegram/Resources/animations/toast/star_premium_2.tgs
+deleted file mode 100644
+index 141a1a68cc..0000000000
+Binary files a/Telegram/Resources/animations/toast/star_premium_2.tgs and /dev/null differ
+diff --git a/Telegram/Resources/animations/toast/unmute.tgs b/Telegram/Resources/animations/toast/unmute.tgs
+deleted file mode 100644
+index 7685f107cc..0000000000
+Binary files a/Telegram/Resources/animations/toast/unmute.tgs and /dev/null differ
+diff --git a/Telegram/Resources/animations/toast/unpin.tgs b/Telegram/Resources/animations/toast/unpin.tgs
+deleted file mode 100644
+index b35563a2b1..0000000000
+Binary files a/Telegram/Resources/animations/toast/unpin.tgs and /dev/null differ
+diff --git a/Telegram/Resources/animations/toast/voip_invite.tgs b/Telegram/Resources/animations/toast/voip_invite.tgs
+deleted file mode 100644
+index 0a552e9ff7..0000000000
+Binary files a/Telegram/Resources/animations/toast/voip_invite.tgs and /dev/null differ
+diff --git a/Telegram/Resources/icons/menu/zoom_in.svg b/Telegram/Resources/icons/menu/zoom_in.svg
+deleted file mode 100644
+index ca234f9fba..0000000000
+--- a/Telegram/Resources/icons/menu/zoom_in.svg
++++ /dev/null
+@@ -1,8 +0,0 @@
+-<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+-    <g fill="none" stroke="#FFFFFF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+-        <circle cx="10.7" cy="10.7" r="5.1"/>
+-        <line x1="14.5" y1="14.5" x2="18.8" y2="18.8"/>
+-        <line x1="8.2" y1="10.7" x2="13.2" y2="10.7"/>
+-        <line x1="10.7" y1="8.2" x2="10.7" y2="13.2"/>
+-    </g>
+-</svg>
+diff --git a/Telegram/Resources/icons/menu/zoom_out.svg b/Telegram/Resources/icons/menu/zoom_out.svg
+deleted file mode 100644
+index 16d99d24c5..0000000000
+--- a/Telegram/Resources/icons/menu/zoom_out.svg
++++ /dev/null
+@@ -1,7 +0,0 @@
+-<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+-    <g fill="none" stroke="#FFFFFF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+-        <circle cx="10.7" cy="10.7" r="5.1"/>
+-        <line x1="14.5" y1="14.5" x2="18.8" y2="18.8"/>
+-        <line x1="8.2" y1="10.7" x2="13.2" y2="10.7"/>
+-    </g>
+-</svg>
 diff --git a/Telegram/Resources/langs/lang.strings b/Telegram/Resources/langs/lang.strings
-index f1d4e37ba4..3422b26486 100644
+index 073cf6a978..1de836efe6 100644
 --- a/Telegram/Resources/langs/lang.strings
 +++ b/Telegram/Resources/langs/lang.strings
 @@ -1264,6 +1264,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
@@ -20,8 +143,123 @@ index f1d4e37ba4..3422b26486 100644
  "lng_proxy_auto_switch" = "Auto-switch proxies";
  "lng_proxy_auto_switch_about" = "You can choose how quickly the app should auto-connect to the nearest active proxy if the current one stops working.";
  "lng_proxy_auto_switch_timeout#one" = "{count} s";
+@@ -1861,8 +1872,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ "lng_media_type_polls" = "Polls";
+ "lng_polls_search_none" = "No polls found";
+ "lng_media_type_rounds" = "Video messages";
+-"lng_media_zoom_in" = "Zoom In";
+-"lng_media_zoom_out" = "Zoom Out";
+ "lng_media_saved_music_your" = "Your playlist";
+ "lng_media_saved_music_title" = "Playlist";
+ "lng_profile_common_groups_section" = "Groups in common";
+@@ -4582,7 +4591,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ "lng_emoji_remove_group_set" = "Remove group emoji set?";
+ "lng_emoji_group_from_your" = "Choose from your emoji";
+ "lng_emoji_group_from_featured" = "Choose from trending emoji";
+-"lng_emoji_group_badge" = "Group Emoji";
+ "lng_masks_archive_pack" = "Archive Masks";
+ "lng_masks_has_been_archived" = "Mask pack has been archived.";
+ "lng_masks_installed" = "Mask pack has been installed.";
+diff --git a/Telegram/Resources/qrc/telegram/animations.qrc b/Telegram/Resources/qrc/telegram/animations.qrc
+index ffadf0ee79..9f596c2771 100644
+--- a/Telegram/Resources/qrc/telegram/animations.qrc
++++ b/Telegram/Resources/qrc/telegram/animations.qrc
+@@ -51,18 +51,6 @@
+     <file alias="toast/tagged.tgs">../../animations/toast/tagged.tgs</file>
+     <file alias="my_gifts_empty.tgs">../../animations/my_gifts_empty.tgs</file>
+     <file alias="toast/chats_filter_in.tgs">../../animations/toast/chats_filter_in.tgs</file>
+-    <file alias="toast/save_to_gallery.tgs">../../animations/toast/save_to_gallery.tgs</file>
+-    <file alias="toast/save_to_music.tgs">../../animations/toast/save_to_music.tgs</file>
+-    <file alias="toast/delete.tgs">../../animations/toast/delete.tgs</file>
+-    <file alias="toast/voip_invite.tgs">../../animations/toast/voip_invite.tgs</file>
+-    <file alias="toast/copy.tgs">../../animations/toast/copy.tgs</file>
+-    <file alias="toast/mute.tgs">../../animations/toast/mute.tgs</file>
+-    <file alias="toast/unmute.tgs">../../animations/toast/unmute.tgs</file>
+-    <file alias="toast/pin.tgs">../../animations/toast/pin.tgs</file>
+-    <file alias="toast/unpin.tgs">../../animations/toast/unpin.tgs</file>
+-    <file alias="toast/chats_archived.tgs">../../animations/toast/chats_archived.tgs</file>
+-    <file alias="toast/star_premium_2.tgs">../../animations/toast/star_premium_2.tgs</file>
+-    <file alias="toast/contact_check.tgs">../../animations/toast/contact_check.tgs</file>
+     <file alias="rtmp.tgs">../../animations/rtmp.tgs</file>
+     <file alias="show_or_premium_lastseen.tgs">../../animations/show_or_premium_lastseen.tgs</file>
+     <file alias="show_or_premium_readtime.tgs">../../animations/show_or_premium_readtime.tgs</file>
+diff --git a/Telegram/SourceFiles/api/api_bot.cpp b/Telegram/SourceFiles/api/api_bot.cpp
+index 8898ff605b..236eafad9b 100644
+--- a/Telegram/SourceFiles/api/api_bot.cpp
++++ b/Telegram/SourceFiles/api/api_bot.cpp
+@@ -41,7 +41,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/layers/generic_box.h"
+ #include "ui/text/text_utilities.h"
+ #include "styles/style_chat.h"
+-#include "styles/style_chat_helpers.h"
+ 
+ #include <QtCore/QDataStream>
+ #include <QtGui/QGuiApplication>
+@@ -526,11 +525,7 @@ void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
+ 		const auto text = QString::fromUtf8(button->data);
+ 		if (!text.isEmpty()) {
+ 			QGuiApplication::clipboard()->setText(text);
+-			controller->showToast({
+-				.text = { tr::lng_text_copied(tr::now) },
+-				.iconLottie = u"toast/copy"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			controller->showToast(tr::lng_text_copied(tr::now));
+ 		}
+ 	} break;
+ 
+diff --git a/Telegram/SourceFiles/boxes/add_contact_box.cpp b/Telegram/SourceFiles/boxes/add_contact_box.cpp
+index 815e2bbea9..5968f43eba 100644
+--- a/Telegram/SourceFiles/boxes/add_contact_box.cpp
++++ b/Telegram/SourceFiles/boxes/add_contact_box.cpp
+@@ -42,7 +42,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "api/api_peer_photo.h"
+ #include "api/api_self_destruct.h"
+ #include "main/main_session.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_info.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_menu_icons.h"
+@@ -1249,11 +1248,7 @@ void SetupChannelBox::mousePressEvent(QMouseEvent *e) {
+ 		return;
+ 	} else if (!_channel->inviteLink().isEmpty()) {
+ 		QGuiApplication::clipboard()->setText(_channel->inviteLink());
+-		showToast({
+-			.text = { tr::lng_create_channel_link_copied(tr::now) },
+-			.iconLottie = u"toast/voip_invite"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		showToast(tr::lng_create_channel_link_copied(tr::now));
+ 	} else if (_channel->isFullLoaded() && !_creatingInviteLink) {
+ 		_creatingInviteLink = true;
+ 		_channel->session().api().inviteLinks().create({ _channel });
+diff --git a/Telegram/SourceFiles/boxes/background_preview_box.cpp b/Telegram/SourceFiles/boxes/background_preview_box.cpp
+index f6646b3ebf..dd07ffd5e7 100644
+--- a/Telegram/SourceFiles/boxes/background_preview_box.cpp
++++ b/Telegram/SourceFiles/boxes/background_preview_box.cpp
+@@ -47,7 +47,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "window/window_session_controller.h"
+ #include "window/themes/window_themes_embedded.h"
+ #include "styles/style_chat.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_boxes.h"
+ 
+@@ -839,11 +838,7 @@ void BackgroundPreviewBox::applyForEveryone() {
+ void BackgroundPreviewBox::share() {
+ 	QGuiApplication::clipboard()->setText(
+ 		_paper.shareUrl(&_controller->session()));
+-	showToast({
+-		.text = { tr::lng_background_link_copied(tr::now) },
+-		.iconLottie = u"toast/voip_invite"_q,
+-		.iconLottieSize = st::toastLottieIconSize,
+-	});
++	showToast(tr::lng_background_link_copied(tr::now));
+ }
+ 
+ void BackgroundPreviewBox::paintEvent(QPaintEvent *e) {
 diff --git a/Telegram/SourceFiles/boxes/connection_box.cpp b/Telegram/SourceFiles/boxes/connection_box.cpp
-index 94b33cbaca..6bd836b191 100644
+index 6d99e31da3..6bd836b191 100644
 --- a/Telegram/SourceFiles/boxes/connection_box.cpp
 +++ b/Telegram/SourceFiles/boxes/connection_box.cpp
 @@ -44,6 +44,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
@@ -33,7 +271,33 @@ index 94b33cbaca..6bd836b191 100644
  #include "ui/wrap/slide_wrap.h"
  #include "ui/wrap/table_layout.h"
  #include "ui/wrap/vertical_layout.h"
-@@ -618,16 +620,23 @@ private:
+@@ -240,11 +242,7 @@ void ShowProxyQrBox(std::shared_ptr<Ui::Show> show, const QString &link) {
+ 
+ 		const auto copyCallback = [=, image = ProxyQrForShare(link)] {
+ 			QGuiApplication::clipboard()->setImage(image);
+-			show->showToast({
+-				.text = { tr::lng_group_invite_qr_copied(tr::now) },
+-				.iconLottie = u"toast/copy"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			show->showToast(tr::lng_group_invite_qr_copied(tr::now));
+ 		};
+ 
+ 		const auto qr = ProxyQrTile(
+@@ -310,11 +308,7 @@ void ShareProxy(
+ 		return;
+ 	}
+ 	TextUtilities::SetClipboardText(TextForMimeData::Simple(shareLink));
+-	show->showToast({
+-		.text = { tr::lng_username_copied(tr::now) },
+-		.iconLottie = u"toast/voip_invite"_q,
+-		.iconLottieSize = st::toastLottieIconSize,
+-	});
++	show->showToast(tr::lng_username_copied(tr::now));
+ }
+ 
+ [[nodiscard]] ProxyData ProxyDataFromFields(
+@@ -626,16 +620,23 @@ private:
  	int rowHeight() const;
  	void refreshProxyForCalls();
  	void refreshProxyRotation();
@@ -57,7 +321,7 @@ index 94b33cbaca..6bd836b191 100644
  	base::unique_qptr<Ui::RpWidget> _noRows;
  	object_ptr<Ui::VerticalLayout> _initialWrap;
  	QPointer<Ui::VerticalLayout> _wrap;
-@@ -1129,6 +1138,109 @@ void ProxiesBox::setupContent() {
+@@ -1137,6 +1138,109 @@ void ProxiesBox::setupContent() {
  			ProxyData::Settings::Enabled,
  			tr::lng_proxy_use_custom(tr::now)),
  		st::proxyUsePadding);
@@ -167,7 +431,7 @@ index 94b33cbaca..6bd836b191 100644
  	_proxyForCalls = inner->add(
  		object_ptr<Ui::SlideWrap<Ui::Checkbox>>(
  			inner,
-@@ -1211,6 +1323,33 @@ void ProxiesBox::setupContent() {
+@@ -1219,6 +1323,33 @@ void ProxiesBox::setupContent() {
  		refreshProxyForCalls();
  		refreshProxyRotation();
  	});
@@ -201,7 +465,7 @@ index 94b33cbaca..6bd836b191 100644
  	_tryIPv6->checkedChanges(
  	) | rpl::on_next([=](bool checked) {
  		_controller->setTryIPv6(checked);
-@@ -1245,6 +1384,7 @@ void ProxiesBox::setupContent() {
+@@ -1253,6 +1384,7 @@ void ProxiesBox::setupContent() {
  	refreshProxyRotation();
  	_proxyForCalls->finishAnimating();
  	_proxyRotation->finishAnimating();
@@ -209,7 +473,7 @@ index 94b33cbaca..6bd836b191 100644
  	_proxyRotationOptions->finishAnimating();
  
  	{
-@@ -1304,6 +1444,14 @@ void ProxiesBox::refreshProxyRotation() {
+@@ -1312,6 +1444,14 @@ void ProxiesBox::refreshProxyRotation() {
  		anim::type::normal);
  }
  
@@ -224,7 +488,20 @@ index 94b33cbaca..6bd836b191 100644
  int ProxiesBox::rowHeight() const {
  	return st::proxyRowPadding.top()
  		+ st::semiboldFont->height
-@@ -2289,6 +2437,52 @@ bool ProxiesBoxController::setProxySettings(ProxyData::Settings value) {
+@@ -2116,11 +2256,7 @@ void ProxiesBoxController::shareItems() {
+ 		return;
+ 	}
+ 	QGuiApplication::clipboard()->setText(result);
+-	_show->showToast({
+-		.text = { tr::lng_proxy_edit_share_list_toast(tr::now) },
+-		.iconLottie = u"toast/copy"_q,
+-		.iconLottieSize = st::toastLottieIconSize,
+-	});
++	_show->showToast(tr::lng_proxy_edit_share_list_toast(tr::now));
+ }
+ 
+ void ProxiesBoxController::applyItem(int id) {
+@@ -2301,6 +2437,52 @@ bool ProxiesBoxController::setProxySettings(ProxyData::Settings value) {
  	return true;
  }
  
@@ -292,6 +569,724 @@ index 5de98bc663..87bd5f38e2 100644
  	void setProxyForCalls(bool enabled);
  	void setProxyRotationEnabled(bool enabled);
  	void setProxyRotationTimeout(int value);
+diff --git a/Telegram/SourceFiles/boxes/delete_messages_box.cpp b/Telegram/SourceFiles/boxes/delete_messages_box.cpp
+index ab24f0359d..5524db0cf4 100644
+--- a/Telegram/SourceFiles/boxes/delete_messages_box.cpp
++++ b/Telegram/SourceFiles/boxes/delete_messages_box.cpp
+@@ -25,13 +25,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/boxes/confirm_box.h"
+ #include "ui/layers/generic_box.h"
+ #include "ui/text/text_utilities.h"
+-#include "ui/toast/toast.h"
+ #include "ui/widgets/buttons.h"
+ #include "ui/widgets/checkbox.h"
+ #include "ui/widgets/labels.h"
+ #include "ui/rect.h"
+ #include "ui/wrap/slide_wrap.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_boxes.h"
+ 
+@@ -516,11 +514,7 @@ void DeleteMessagesBox::deleteAndClear() {
+ 		// which will cause this box to be destroyed.
+ 		const auto weak = base::make_weak(this);
+ 		if (hasSavedMusicMessages()) {
+-			uiShow()->showToast({
+-				.text = { tr::lng_saved_music_removed(tr::now) },
+-				.iconLottie = u"toast/delete"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			uiShow()->showToast(tr::lng_saved_music_removed(tr::now));
+ 		}
+ 		if (const auto callback = _deleteConfirmedCallback) {
+ 			callback();
+diff --git a/Telegram/SourceFiles/boxes/edit_privacy_box.cpp b/Telegram/SourceFiles/boxes/edit_privacy_box.cpp
+index a2b343f83b..83ef8a3528 100644
+--- a/Telegram/SourceFiles/boxes/edit_privacy_box.cpp
++++ b/Telegram/SourceFiles/boxes/edit_privacy_box.cpp
+@@ -41,7 +41,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/wrap/slide_wrap.h"
+ #include "window/window_session_controller.h"
+ #include "styles/style_boxes.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_info.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_menu_icons.h"
+@@ -1356,11 +1355,7 @@ void EditDirectMessagesPriceBox(
+ 			+ kDirectParam.utf8();
+ 		const auto copyLink = [=] {
+ 			TextUtilities::SetClipboardText(TextForMimeData::Simple(link));
+-			box->uiShow()->showToast({
+-				.text = { tr::lng_group_invite_copied(tr::now) },
+-				.iconLottie = u"toast/voip_invite"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			box->uiShow()->showToast(tr::lng_group_invite_copied(tr::now));
+ 		};
+ 		const auto shareLink = [=] {
+ 			box->uiShow()->showBox(ShareInviteLinkBox(channel, link));
+diff --git a/Telegram/SourceFiles/boxes/gift_premium_box.cpp b/Telegram/SourceFiles/boxes/gift_premium_box.cpp
+index b249a7b1ec..88d437ae1c 100644
+--- a/Telegram/SourceFiles/boxes/gift_premium_box.cpp
++++ b/Telegram/SourceFiles/boxes/gift_premium_box.cpp
+@@ -75,7 +75,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "window/window_peer_menu.h" // ShowChooseRecipientBox.
+ #include "window/window_session_controller.h"
+ #include "styles/style_boxes.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_credits.h"
+ #include "styles/style_giveaway.h"
+ #include "styles/style_info.h"
+@@ -1561,11 +1560,8 @@ void AddStarGiftTable(
+ 			label->setClickHandlerFilter([=](const auto &...) {
+ 				TextUtilities::SetClipboardText(
+ 					TextForMimeData::Simple(FixupTransactionId(address)));
+-				show->showToast({
+-					.text = { tr::lng_gift_unique_address_copied(tr::now) },
+-					.iconLottie = u"toast/copy"_q,
+-					.iconLottieSize = st::toastLottieIconSize,
+-				});
++				show->showToast(
++					tr::lng_gift_unique_address_copied(tr::now));
+ 				return false;
+ 			});
+ 			AddTableRow(
+@@ -2050,13 +2046,8 @@ void AddCreditsHistoryEntryTable(
+ 		label->setClickHandlerFilter([=](const auto &...) {
+ 			TextUtilities::SetClipboardText(
+ 				TextForMimeData::Simple(FixupTransactionId(entry.id)));
+-			show->showToast({
+-				.text = {
+-					tr::lng_credits_box_history_entry_id_copied(tr::now),
+-				},
+-				.iconLottie = u"toast/copy"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			show->showToast(
++				tr::lng_credits_box_history_entry_id_copied(tr::now));
+ 			return false;
+ 		});
+ 		AddTableRow(
+@@ -2256,13 +2247,8 @@ void AddChannelEarnTable(
+ 		label->setClickHandlerFilter([=](const auto &...) {
+ 			TextUtilities::SetClipboardText(
+ 				TextForMimeData::Simple(FixupTransactionId(entry.id)));
+-			show->showToast({
+-				.text = {
+-					tr::lng_credits_box_history_entry_id_copied(tr::now),
+-				},
+-				.iconLottie = u"toast/copy"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			show->showToast(
++				tr::lng_credits_box_history_entry_id_copied(tr::now));
+ 			return false;
+ 		});
+ 		AddTableRow(
+diff --git a/Telegram/SourceFiles/boxes/language_box.cpp b/Telegram/SourceFiles/boxes/language_box.cpp
+index 95fb8c3ffe..d7844fb5bc 100644
+--- a/Telegram/SourceFiles/boxes/language_box.cpp
++++ b/Telegram/SourceFiles/boxes/language_box.cpp
+@@ -514,11 +514,7 @@ bool Rows::hasMenu(not_null<const Row*> row) const {
+ void Rows::share(not_null<const Row*> row) const {
+ 	const auto link = u"https://t.me/setlanguage/"_q + row->data.id;
+ 	QGuiApplication::clipboard()->setText(link);
+-	Ui::Toast::Show({
+-		.text = { tr::lng_username_copied(tr::now) },
+-		.iconLottie = u"toast/voip_invite"_q,
+-		.iconLottieSize = st::toastLottieIconSize,
+-	});
++	Ui::Toast::Show(tr::lng_username_copied(tr::now));
+ }
+ 
+ void Rows::remove(not_null<Row*> row) {
+diff --git a/Telegram/SourceFiles/boxes/max_invite_box.cpp b/Telegram/SourceFiles/boxes/max_invite_box.cpp
+index cffd35fc82..6433501abc 100644
+--- a/Telegram/SourceFiles/boxes/max_invite_box.cpp
++++ b/Telegram/SourceFiles/boxes/max_invite_box.cpp
+@@ -20,7 +20,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/painter.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_boxes.h"
+-#include "styles/style_chat_helpers.h"
+ 
+ #include <QtGui/QGuiApplication>
+ #include <QtGui/QClipboard>
+@@ -92,11 +91,7 @@ void MaxInviteBox::mousePressEvent(QMouseEvent *e) {
+ 	if (_linkOver) {
+ 		if (!_channel->inviteLink().isEmpty()) {
+ 			QGuiApplication::clipboard()->setText(_channel->inviteLink());
+-			showToast({
+-				.text = { tr::lng_create_channel_link_copied(tr::now) },
+-				.iconLottie = u"toast/voip_invite"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			showToast(tr::lng_create_channel_link_copied(tr::now));
+ 		} else if (_channel->isFullLoaded() && !_creatingInviteLink) {
+ 			_creatingInviteLink = true;
+ 			_channel->session().api().inviteLinks().create({ _channel });
+diff --git a/Telegram/SourceFiles/boxes/peers/edit_peer_invite_link.cpp b/Telegram/SourceFiles/boxes/peers/edit_peer_invite_link.cpp
+index 72b8329317..d4f61cd0e9 100644
+--- a/Telegram/SourceFiles/boxes/peers/edit_peer_invite_link.cpp
++++ b/Telegram/SourceFiles/boxes/peers/edit_peer_invite_link.cpp
+@@ -55,7 +55,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "window/window_controller.h"
+ #include "window/window_session_controller.h"
+ #include "styles/style_boxes.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_credits.h"
+ #include "styles/style_dialogs.h"
+ #include "styles/style_giveaway.h"
+@@ -1456,11 +1455,7 @@ void AddPermanentLinkBlock(
+ 
+ void CopyInviteLink(std::shared_ptr<Ui::Show> show, const QString &link) {
+ 	QGuiApplication::clipboard()->setText(link);
+-	show->showToast({
+-		.text = { tr::lng_group_invite_copied(tr::now) },
+-		.iconLottie = u"toast/voip_invite"_q,
+-		.iconLottieSize = st::toastLottieIconSize,
+-	});
++	show->showToast(tr::lng_group_invite_copied(tr::now));
+ }
+ 
+ object_ptr<Ui::BoxContent> ShareInviteLinkBox(
+@@ -1485,15 +1480,9 @@ object_ptr<Ui::BoxContent> ShareInviteLinkBox(
+ 
+ 	auto copyCallback = [=] {
+ 		QGuiApplication::clipboard()->setText(link);
+-		if (*box) {
+-			(*box)->showToast({
+-				.text = { copied.isEmpty()
+-					? tr::lng_group_invite_copied(tr::now)
+-					: copied },
+-				.iconLottie = u"toast/voip_invite"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
+-		}
++		showToast(copied.isEmpty()
++			? tr::lng_group_invite_copied(tr::now)
++			: copied);
+ 	};
+ 	auto countMessagesCallback = [=](const TextWithTags &comment) {
+ 		return 1;
+diff --git a/Telegram/SourceFiles/boxes/peers/edit_peer_usernames_list.cpp b/Telegram/SourceFiles/boxes/peers/edit_peer_usernames_list.cpp
+index 5b74ffeb75..1674f80e2a 100644
+--- a/Telegram/SourceFiles/boxes/peers/edit_peer_usernames_list.cpp
++++ b/Telegram/SourceFiles/boxes/peers/edit_peer_usernames_list.cpp
+@@ -28,7 +28,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/widgets/popup_menu.h"
+ #include "ui/wrap/vertical_layout_reorder.h"
+ #include "styles/style_boxes.h" // contactsStatusFont.
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_info.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_menu_icons.h"
+@@ -122,13 +121,8 @@ UsernamesList::Row::Row(
+ 			tr::lng_group_invite_context_copy(tr::now),
+ 			[=] {
+ 				QGuiApplication::clipboard()->setText(link);
+-				show->showToast({
+-					.text = {
+-						tr::lng_create_channel_link_copied(tr::now),
+-					},
+-					.iconLottie = u"toast/voip_invite"_q,
+-					.iconLottieSize = st::toastLottieIconSize,
+-				});
++				show->showToast(
++					tr::lng_create_channel_link_copied(tr::now));
+ 			},
+ 			&st::menuIconCopy);
+ 		_menu->popup(QCursor::pos());
+diff --git a/Telegram/SourceFiles/boxes/share_box.cpp b/Telegram/SourceFiles/boxes/share_box.cpp
+index c59329b57c..8b10c34c0d 100644
+--- a/Telegram/SourceFiles/boxes/share_box.cpp
++++ b/Telegram/SourceFiles/boxes/share_box.cpp
+@@ -23,7 +23,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/wrap/slide_wrap.h"
+ #include "ui/text/text_options.h"
+ #include "ui/text/text_utilities.h"
+-#include "ui/toast/toast.h"
+ #include "ui/painter.h"
+ #include "ui/ui_utility.h"
+ #include "chat_helpers/message_field.h"
+@@ -58,7 +57,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "core/application.h"
+ #include "core/core_settings.h"
+ #include "styles/style_calls.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_boxes.h"
+ #include "styles/style_menu_icons.h"
+@@ -2006,13 +2004,8 @@ void FastShareMessage(
+ 
+ 					QGuiApplication::clipboard()->setText(link);
+ 
+-					show->showToast({
+-						.text = {
+-							tr::lng_share_game_link_copied(tr::now),
+-						},
+-						.iconLottie = u"toast/voip_invite"_q,
+-						.iconLottieSize = st::toastLottieIconSize,
+-					});
++					show->showToast(
++						tr::lng_share_game_link_copied(tr::now));
+ 				}
+ 			}
+ 		}
+@@ -2109,11 +2102,7 @@ void FastShareLink(
+ 	const auto sending = std::make_shared<bool>();
+ 	auto copyCallback = [=] {
+ 		QGuiApplication::clipboard()->setText(url);
+-		show->showToast({
+-			.text = { tr::lng_background_link_copied(tr::now) },
+-			.iconLottie = u"toast/voip_invite"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		show->showToast(tr::lng_background_link_copied(tr::now));
+ 	};
+ 	auto countMessagesCallback = [=](const TextWithTags &comment) {
+ 		return 1;
+diff --git a/Telegram/SourceFiles/boxes/star_gift_auction_box.cpp b/Telegram/SourceFiles/boxes/star_gift_auction_box.cpp
+index 21b4a3230b..312b75351b 100644
+--- a/Telegram/SourceFiles/boxes/star_gift_auction_box.cpp
++++ b/Telegram/SourceFiles/boxes/star_gift_auction_box.cpp
+@@ -309,11 +309,7 @@ Fn<void(not_null<Ui::PopupMenu*>)> MakeAuctionFillMenuCallback(
+ 
+ 		menu->addAction(tr::lng_auction_menu_copy_link(tr::now), [=] {
+ 			QApplication::clipboard()->setText(url);
+-			show->showToast({
+-				.text = { tr::lng_username_copied(tr::now) },
+-				.iconLottie = u"toast/voip_invite"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			show->showToast(tr::lng_username_copied(tr::now));
+ 		}, &st::menuIconLink);
+ 
+ 		menu->addAction(tr::lng_auction_menu_share(tr::now), [=] {
+diff --git a/Telegram/SourceFiles/boxes/sticker_set_box.cpp b/Telegram/SourceFiles/boxes/sticker_set_box.cpp
+index 3172733ca6..2be98be85b 100644
+--- a/Telegram/SourceFiles/boxes/sticker_set_box.cpp
++++ b/Telegram/SourceFiles/boxes/sticker_set_box.cpp
+@@ -582,11 +582,7 @@ void StickerSetBox::prepare() {
+ 	_inner->setInstalled(
+ 	) | rpl::on_next([=](uint64 setId) {
+ 		if (_inner->setType() == Data::StickersType::Masks) {
+-			showToast({
+-				.text = { tr::lng_masks_installed(tr::now) },
+-				.iconLottie = u"toast/contact_check"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			showToast(tr::lng_masks_installed(tr::now));
+ 		} else if (_inner->setType() == Data::StickersType::Emoji) {
+ 			auto &stickers = _session->data().stickers();
+ 			stickers.notifyEmojiSetInstalled(setId);
+@@ -775,13 +771,9 @@ void StickerSetBox::updateButtons() {
+ 		const auto type = _inner->setType();
+ 		const auto share = [=] {
+ 			copyStickersLink();
+-			showToast({
+-				.text = { type == Data::StickersType::Emoji
++			showToast(type == Data::StickersType::Emoji
+ 					? tr::lng_stickers_copied_emoji(tr::now)
+-					: tr::lng_stickers_copied(tr::now) },
+-				.iconLottie = u"toast/voip_invite"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++					: tr::lng_stickers_copied(tr::now));
+ 		};
+ 		const auto fillSetCreatorMenu = [&] {
+ 			using Filler = Fn<void(not_null<Ui::PopupMenu*>)>;
+diff --git a/Telegram/SourceFiles/calls/group/calls_group_common.cpp b/Telegram/SourceFiles/calls/group/calls_group_common.cpp
+index 6ea98ef9d4..90c1c18b9f 100644
+--- a/Telegram/SourceFiles/calls/group/calls_group_common.cpp
++++ b/Telegram/SourceFiles/calls/group/calls_group_common.cpp
+@@ -39,7 +39,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "styles/style_menu_icons.h"
+ #include "styles/style_calls.h"
+ #include "styles/style_chat.h"
+-#include "styles/style_chat_helpers.h"
+ 
+ #include <QtWidgets/QApplication>
+ #include <QtGui/QClipboard>
+@@ -377,11 +376,7 @@ void ShowConferenceCallLinkBox(
+ 
+ 		const auto copyCallback = [=] {
+ 			QApplication::clipboard()->setText(link);
+-			show->showToast({
+-				.text = { tr::lng_username_copied(tr::now) },
+-				.iconLottie = u"toast/voip_invite"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			show->showToast(tr::lng_username_copied(tr::now));
+ 		};
+ 		const auto shareCallback = [=] {
+ 			FastShareLink(
+diff --git a/Telegram/SourceFiles/calls/group/calls_group_panel.cpp b/Telegram/SourceFiles/calls/group/calls_group_panel.cpp
+index dd3dcb3433..080f551bbe 100644
+--- a/Telegram/SourceFiles/calls/group/calls_group_panel.cpp
++++ b/Telegram/SourceFiles/calls/group/calls_group_panel.cpp
+@@ -68,7 +68,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "webrtc/webrtc_audio_input_tester.h"
+ #include "webrtc/webrtc_create_adm.h"
+ #include "styles/style_calls.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_layers.h"
+ 
+ #include <QtWidgets/QApplication>
+@@ -1426,15 +1425,9 @@ void Panel::createPinOnTop() {
+ 				pin ? &st::groupCallPinnedOnTop : nullptr,
+ 				pin ? &st::groupCallPinnedOnTop : nullptr);
+ 			if (!_pinOnTop->isHidden()) {
+-				uiShow()->showToast({
+-					.text = { pin
+-						? tr::lng_group_call_pinned_on_top(tr::now)
+-						: tr::lng_group_call_unpinned_on_top(tr::now) },
+-					.iconLottie = pin
+-						? u"toast/pin"_q
+-						: u"toast/unpin"_q,
+-					.iconLottieSize = st::toastLottieIconSize,
+-				});
++				uiShow()->showToast({ pin
++					? tr::lng_group_call_pinned_on_top(tr::now)
++					: tr::lng_group_call_unpinned_on_top(tr::now) });
+ 			}
+ 		}
+ 	};
+diff --git a/Telegram/SourceFiles/calls/group/calls_group_rtmp.cpp b/Telegram/SourceFiles/calls/group/calls_group_rtmp.cpp
+index a11523da21..e398598a80 100644
+--- a/Telegram/SourceFiles/calls/group/calls_group_rtmp.cpp
++++ b/Telegram/SourceFiles/calls/group/calls_group_rtmp.cpp
+@@ -27,7 +27,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/vertical_list.h"
+ #include "styles/style_boxes.h"
+ #include "styles/style_calls.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_info.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_menu_icons.h"
+@@ -246,6 +245,9 @@ void StartRtmpProcess::FillRtmpRows(
+ 		data
+ 	) | rpl::map([=](const auto &d) { return d.url; });
+ 
++	const auto showToast = [=](const QString &text) {
++		show->showToast(text);
++	};
+ 	const auto addButton = [&](
+ 			bool key,
+ 			rpl::producer<QString> &&text) {
+@@ -257,19 +259,11 @@ void StartRtmpProcess::FillRtmpRows(
+ 		button->setClickedCallback(key
+ 			? Fn<void()>([=] {
+ 				QGuiApplication::clipboard()->setText(state->key.current());
+-				show->showToast({
+-					.text = { tr::lng_group_call_rtmp_key_copied(tr::now) },
+-					.iconLottie = u"toast/copy"_q,
+-					.iconLottieSize = st::toastLottieIconSize,
+-				});
++				showToast(tr::lng_group_call_rtmp_key_copied(tr::now));
+ 			})
+ 			: Fn<void()>([=] {
+ 				QGuiApplication::clipboard()->setText(state->url.current());
+-				show->showToast({
+-					.text = { tr::lng_group_call_rtmp_url_copied(tr::now) },
+-					.iconLottie = u"toast/voip_invite"_q,
+-					.iconLottieSize = st::toastLottieIconSize,
+-				});
++				showToast(tr::lng_group_call_rtmp_url_copied(tr::now));
+ 			}));
+ 		Ui::AddSkip(container, st::groupCallRtmpCopyButtonTopSkip);
+ 		const auto weak = container->add(std::move(wrap), rowPadding);
+diff --git a/Telegram/SourceFiles/calls/group/calls_group_settings.cpp b/Telegram/SourceFiles/calls/group/calls_group_settings.cpp
+index b4b16d9f71..7f629582bf 100644
+--- a/Telegram/SourceFiles/calls/group/calls_group_settings.cpp
++++ b/Telegram/SourceFiles/calls/group/calls_group_settings.cpp
+@@ -50,7 +50,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "main/main_session.h"
+ #include "apiwrap.h"
+ #include "api/api_invite_links.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_calls.h"
+ #include "styles/style_settings.h"
+@@ -159,11 +158,7 @@ object_ptr<ShareBox> ShareInviteLinkBox(
+ 	};
+ 	auto copyCallback = [=] {
+ 		QGuiApplication::clipboard()->setText(currentLink());
+-		show->showToast({
+-			.text = { tr::lng_group_invite_copied(tr::now) },
+-			.iconLottie = u"toast/voip_invite"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		show->showToast(tr::lng_group_invite_copied(tr::now));
+ 	};
+ 	auto countMessagesCallback = [=](const TextWithTags &comment) {
+ 		return 1;
+@@ -660,13 +655,8 @@ void SettingsBox(
+ 				}
+ 				QGuiApplication::clipboard()->setText(link);
+ 				if (weakBox) {
+-					box->showToast({
+-						.text = {
+-							tr::lng_create_channel_link_copied(tr::now),
+-						},
+-						.iconLottie = u"toast/voip_invite"_q,
+-						.iconLottieSize = st::toastLottieIconSize,
+-					});
++					box->showToast(
++						tr::lng_create_channel_link_copied(tr::now));
+ 				}
+ 				return true;
+ 			};
+diff --git a/Telegram/SourceFiles/chat_helpers/chat_helpers.style b/Telegram/SourceFiles/chat_helpers/chat_helpers.style
+index da6748f48c..f45d815300 100644
+--- a/Telegram/SourceFiles/chat_helpers/chat_helpers.style
++++ b/Telegram/SourceFiles/chat_helpers/chat_helpers.style
+@@ -934,7 +934,6 @@ reactPanelScrollRounded: ScrollArea(emojiScroll) {
+ }
+ selfForwardsTaggerStripSkip: 11px;
+ 
+-toastLottieIconSize: size(20px, 20px);
+ selfForwardsTaggerIconPadding: margins(14px, 2px, 8px, 2px);
+ selfForwardsTaggerToast: Toast(defaultToast) {
+ 	minWidth: 160px;
+diff --git a/Telegram/SourceFiles/chat_helpers/emoji_list_widget.cpp b/Telegram/SourceFiles/chat_helpers/emoji_list_widget.cpp
+index 31ef56ecee..721a26f405 100644
+--- a/Telegram/SourceFiles/chat_helpers/emoji_list_widget.cpp
++++ b/Telegram/SourceFiles/chat_helpers/emoji_list_widget.cpp
+@@ -31,7 +31,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/cached_round_corners.h"
+ #include "boxes/share_box.h"
+ #include "boxes/sticker_set_box.h"
+-#include "boxes/stickers_box.h"
+ #include "lang/lang_keys.h"
+ #include "layout/layout_position.h"
+ #include "data/data_emoji_statuses.h"
+@@ -2340,9 +2339,9 @@ void EmojiListWidget::paint(
+ 		&& !_searchRequestTimer.isActive()) {
+ 		paintEmptySearchResults(p);
+ 	}
+-	const auto creatorBadgeText = tr::lng_stickers_creator_badge(tr::now);
+-	const auto groupBadgeText = tr::lng_emoji_group_badge(tr::now);
++	const auto badgeText = tr::lng_stickers_creator_badge(tr::now);
+ 	const auto &badgeFont = st::stickersHeaderBadgeFont;
++	const auto badgeWidth = badgeFont->width(badgeText);
+ 	enumerateSections([&](const SectionInfo &info) {
+ 		if (clip.top() >= info.rowsBottom) {
+ 			return true;
+@@ -2371,22 +2370,9 @@ void EmojiListWidget::paint(
+ 				: (info.section >= _staticCount)
+ 				? _custom[info.section - _staticCount].set.get()
+ 				: nullptr;
+-			const auto megagroupEmoji = !_searchMode
+-				&& (info.section >= _staticCount)
+-				&& (_custom[info.section - _staticCount].id
+-					== Data::Stickers::MegagroupSetId);
+-			const auto amCreator = !megagroupEmoji
+-				&& titleSet
++			const auto amCreator = titleSet
+ 				&& (titleSet->flags & Data::StickersSetFlag::AmCreator);
+-			const auto badgeText = megagroupEmoji
+-				? groupBadgeText
+-				: amCreator
+-				? creatorBadgeText
+-				: QString();
+-			const auto badgeWidth = badgeText.isEmpty()
+-				? 0
+-				: badgeFont->width(badgeText);
+-			if (!badgeText.isEmpty()) {
++			if (amCreator) {
+ 				widthForTitle -= badgeWidth
+ 					+ st::stickersFeaturedUnreadSkip
+ 					+ st::stickersHeaderBadgeFontSkip;
+@@ -2408,7 +2394,7 @@ void EmojiListWidget::paint(
+ 			p.setFont(st::emojiPanHeaderFont);
+ 			p.setPen(st().headerFg);
+ 			p.drawText(titleLeft, textBaseline, titleText);
+-			if (!badgeText.isEmpty()) {
++			if (amCreator) {
+ 				const auto badgeLeft = titleLeft
+ 					+ titleWidth
+ 					+ st::stickersFeaturedUnreadSkip;
+@@ -2939,11 +2925,7 @@ void EmojiListWidget::displaySet(not_null<DocumentData*> document) {
+ 
+ void EmojiListWidget::displaySet(uint64 setId) {
+ 	if (setId == Data::Stickers::MegagroupSetId) {
+-		if (_megagroupSet->canEditEmoji()) {
+-			showBoxPreventHide(
+-				Box<StickersBox>(_show, _megagroupSet, true));
+-			return;
+-		} else if (_megagroupSet->mgInfo->emojiSet.id) {
++		if (_megagroupSet->mgInfo->emojiSet.id) {
+ 			setId = _megagroupSet->mgInfo->emojiSet.id;
+ 		} else {
+ 			return;
+diff --git a/Telegram/SourceFiles/chat_helpers/stickers_list_widget.cpp b/Telegram/SourceFiles/chat_helpers/stickers_list_widget.cpp
+index 54476c37e9..8c6aefd599 100644
+--- a/Telegram/SourceFiles/chat_helpers/stickers_list_widget.cpp
++++ b/Telegram/SourceFiles/chat_helpers/stickers_list_widget.cpp
+@@ -22,7 +22,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "chat_helpers/stickers_lottie.h"
+ #include "chat_helpers/stickers_list_footer.h"
+ #include "ui/controls/tabbed_search.h"
+-#include "ui/toast/toast.h"
+ #include "ui/widgets/buttons.h"
+ #include "ui/widgets/popup_menu.h"
+ #include "ui/effects/animations.h"
+@@ -2677,11 +2676,7 @@ base::unique_qptr<Ui::PopupMenu> FillStickerSetContextMenu(
+ 			[=] {
+ 				localSetsManager->install(setId);
+ 				if (isMasks) {
+-					show->showToast({
+-						.text = { tr::lng_masks_installed(tr::now) },
+-						.iconLottie = u"toast/contact_check"_q,
+-						.iconLottieSize = st::toastLottieIconSize,
+-					});
++					show->showToast(tr::lng_masks_installed(tr::now));
+ 				} else if (isEmoji) {
+ 					session->data().stickers().notifyEmojiSetInstalled(
+ 						setId);
+@@ -2703,13 +2698,9 @@ base::unique_qptr<Ui::PopupMenu> FillStickerSetContextMenu(
+ 		tr::lng_context_copy_link(tr::now),
+ 		[=] {
+ 			TextUtilities::SetClipboardText(TextForMimeData::Simple(url));
+-			show->showToast({
+-				.text = { isEmoji
+-					? tr::lng_stickers_copied_emoji(tr::now)
+-					: tr::lng_stickers_copied(tr::now) },
+-				.iconLottie = u"toast/voip_invite"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			show->showToast(isEmoji
++				? tr::lng_stickers_copied_emoji(tr::now)
++				: tr::lng_stickers_copied(tr::now));
+ 		},
+ 		&st::menuIconLink);
+ 	if (installed) {
+diff --git a/Telegram/SourceFiles/core/bank_card_click_handler.cpp b/Telegram/SourceFiles/core/bank_card_click_handler.cpp
+index 1cb6903e33..3191c49122 100644
+--- a/Telegram/SourceFiles/core/bank_card_click_handler.cpp
++++ b/Telegram/SourceFiles/core/bank_card_click_handler.cpp
+@@ -16,14 +16,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "mtproto/sender.h"
+ #include "ui/painter.h"
+ #include "ui/rect.h"
+-#include "ui/toast/toast.h"
+ #include "ui/widgets/menu/menu_multiline_action.h"
+ #include "ui/widgets/popup_menu.h"
+ #include "window/window_controller.h"
+ #include "window/window_session_controller.h"
+ #include "styles/style_calls.h"
+ #include "styles/style_chat.h" // popupMenuExpandedSeparator.
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_menu_icons.h"
+ 
+ namespace {
+@@ -192,11 +190,7 @@ void BankCardClickHandler::onClick(ClickContext context) const {
+ 	const auto copy = [bankCard, show = controller->uiShow()] {
+ 		TextUtilities::SetClipboardText(
+ 			TextForMimeData::Simple(bankCard));
+-		show->showToast({
+-			.text = { tr::lng_context_bank_card_copied(tr::now) },
+-			.iconLottie = u"toast/copy"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		show->showToast(tr::lng_context_bank_card_copied(tr::now));
+ 	};
+ 
+ 	menu->addAction(
+diff --git a/Telegram/SourceFiles/core/click_handler_types.cpp b/Telegram/SourceFiles/core/click_handler_types.cpp
+index 162971ff04..cf92ce618c 100644
+--- a/Telegram/SourceFiles/core/click_handler_types.cpp
++++ b/Telegram/SourceFiles/core/click_handler_types.cpp
+@@ -590,11 +590,7 @@ void MonospaceClickHandler::onClick(ClickContext context) const {
+ 	}
+ 	const auto my = context.other.value<ClickHandlerContext>();
+ 	if (const auto controller = my.sessionWindow.get()) {
+-		controller->showToast({
+-			.text = { tr::lng_text_copied(tr::now) },
+-			.iconLottie = u"toast/copy"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		controller->showToast(tr::lng_text_copied(tr::now));
+ 	}
+ 	TextUtilities::SetClipboardText(TextForMimeData::Simple(_text.trimmed()));
+ }
+@@ -637,11 +633,7 @@ void FormattedDateClickHandler::onClick(ClickContext context) const {
+ 				base::unixtime::parse(date),
+ 				QLocale::LongFormat);
+ 			TextUtilities::SetClipboardText(TextForMimeData::Simple(text));
+-			show->showToast({
+-				.text = { tr::lng_date_copied(tr::now) },
+-				.iconLottie = u"toast/copy"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			show->showToast(tr::lng_date_copied(tr::now));
+ 		},
+ 		&st::menuIconCopy);
+ 
+diff --git a/Telegram/SourceFiles/core/core_settings.cpp b/Telegram/SourceFiles/core/core_settings.cpp
+index ea1f066718..2ab7958485 100644
+--- a/Telegram/SourceFiles/core/core_settings.cpp
++++ b/Telegram/SourceFiles/core/core_settings.cpp
+@@ -270,8 +270,7 @@ QByteArray Settings::serialize() const {
+ 		size += Serialize::bytearraySize(key)
+ 			+ Serialize::bytearraySize(value);
+ 	}
+-	size += sizeof(qint32) // _audioPlaybackSpeed
+-		+ sizeof(qint32); // _mediaGridZoomStep
++	size += sizeof(qint32); // _audioPlaybackSpeed
+ 
+ 	auto result = QByteArray();
+ 	result.reserve(size);
+@@ -446,7 +445,6 @@ QByteArray Settings::serialize() const {
+ 			stream << key << value;
+ 		}
+ 		stream << qint32(SerializePlaybackSpeed(_audioPlaybackSpeed.current()));
+-		stream << qint32(_mediaGridZoomStep);
+ 	}
+ 
+ 	Ensures(result.size() == size);
+@@ -961,13 +959,6 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
+ 			audioPlaybackSpeed = speed;
+ 		}
+ 	}
+-	if (!stream.atEnd()) {
+-		auto step = qint32();
+-		stream >> step;
+-		if (stream.status() == QDataStream::Ok) {
+-			_mediaGridZoomStep = step;
+-		}
+-	}
+ 	if (stream.status() != QDataStream::Ok) {
+ 		LOG(("App Error: "
+ 			"Bad data for Core::Settings::constructFromSerialized()"));
+diff --git a/Telegram/SourceFiles/core/core_settings.h b/Telegram/SourceFiles/core/core_settings.h
+index 5fd841c065..26da92fd8f 100644
+--- a/Telegram/SourceFiles/core/core_settings.h
++++ b/Telegram/SourceFiles/core/core_settings.h
+@@ -1025,13 +1025,6 @@ public:
+ 		_notificationsVolume = value;
+ 	}
+ 
+-	[[nodiscard]] int mediaGridZoomStep() const {
+-		return _mediaGridZoomStep;
+-	}
+-	void setMediaGridZoomStep(int value) {
+-		_mediaGridZoomStep = value;
+-	}
+-
+ 	template <typename Type, typename Other>
+ 	void writePref(std::string_view key, Other &&value) {
+ 		writePrefImpl<Type>(key, std::forward<Other>(value));
+@@ -1209,8 +1202,6 @@ private:
+ 
+ 	ushort _notificationsVolume = 100;
+ 
+-	int _mediaGridZoomStep = 0;
+-
+ 	QByteArray _photoEditorBrush;
+ 
+ };
 diff --git a/Telegram/SourceFiles/core/core_settings_proxy.cpp b/Telegram/SourceFiles/core/core_settings_proxy.cpp
 index 495bb0b846..b04434e43d 100644
 --- a/Telegram/SourceFiles/core/core_settings_proxy.cpp
@@ -466,6 +1461,1591 @@ index 1f2ec5c516..f165ef39d8 100644
  	MTP::ProxyData _selected;
  	std::vector<MTP::ProxyData> _list;
  	std::vector<int> _proxyRotationPreferredIndices;
+diff --git a/Telegram/SourceFiles/core/local_url_handlers.cpp b/Telegram/SourceFiles/core/local_url_handlers.cpp
+index c1ff5fda47..61857485c0 100644
+--- a/Telegram/SourceFiles/core/local_url_handlers.cpp
++++ b/Telegram/SourceFiles/core/local_url_handlers.cpp
+@@ -76,8 +76,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "iv/iv_instance.h"
+ #include "apiwrap.h"
+ 
+-#include "styles/style_chat_helpers.h"
+-
+ #include <QtGui/QGuiApplication>
+ 
+ namespace Core {
+@@ -868,11 +866,7 @@ bool ShowInviteLink(
+ 		return false;
+ 	}
+ 	QGuiApplication::clipboard()->setText(link);
+-	controller->showToast({
+-		.text = { tr::lng_group_invite_copied(tr::now) },
+-		.iconLottie = u"toast/voip_invite"_q,
+-		.iconLottieSize = st::toastLottieIconSize,
+-	});
++	controller->showToast(tr::lng_group_invite_copied(tr::now));
+ 	return true;
+ }
+ 
+@@ -891,11 +885,7 @@ bool CopyPeerId(
+ 		const QVariant &context) {
+ 	TextUtilities::SetClipboardText({ match->captured(1) });
+ 	if (controller) {
+-		controller->showToast({
+-			.text = { u"ID copied to clipboard."_q },
+-			.iconLottie = u"toast/copy"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		controller->showToast(u"ID copied to clipboard."_q);
+ 	}
+ 	return true;
+ }
+@@ -1168,11 +1158,7 @@ bool ShowCollectibleUsername(
+ 				TextUtilities::SetClipboardText({
+ 					strong->session().createInternalLinkFull(username)
+ 				});
+-				strong->showToast({
+-					.text = { tr::lng_username_copied(tr::now) },
+-					.iconLottie = u"toast/voip_invite"_q,
+-					.iconLottieSize = st::toastLottieIconSize,
+-				});
++				strong->showToast(tr::lng_username_copied(tr::now));
+ 			}
+ 		}
+ 	});
+@@ -1190,11 +1176,7 @@ bool CopyUsernameLink(
+ 	TextUtilities::SetClipboardText({
+ 		controller->session().createInternalLinkFull(username)
+ 	});
+-	controller->showToast({
+-		.text = { tr::lng_username_copied(tr::now) },
+-		.iconLottie = u"toast/voip_invite"_q,
+-		.iconLottieSize = st::toastLottieIconSize,
+-	});
++	controller->showToast(tr::lng_username_copied(tr::now));
+ 	return true;
+ }
+ 
+@@ -1207,11 +1189,7 @@ bool CopyUsername(
+ 	}
+ 	const auto username = match->captured(1);
+ 	TextUtilities::SetClipboardText({ '@' + username });
+-	controller->showToast({
+-		.text = { tr::lng_username_text_copied(tr::now) },
+-		.iconLottie = u"toast/copy"_q,
+-		.iconLottieSize = st::toastLottieIconSize,
+-	});
++	controller->showToast(tr::lng_username_text_copied(tr::now));
+ 	return true;
+ }
+ 
+@@ -1398,11 +1376,7 @@ void ExportTestChatTheme(
+ 		const auto slug = Data::CloudTheme::Parse(session, result, true).slug;
+ 		QGuiApplication::clipboard()->setText(
+ 			session->createInternalLinkFull("addtheme/" + slug));
+-		show->showToast({
+-			.text = { tr::lng_background_link_copied(tr::now) },
+-			.iconLottie = u"toast/voip_invite"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		show->showToast(tr::lng_background_link_copied(tr::now));
+ 	}).fail([=](const MTP::Error &error) {
+ 		show->showToast(u"Error: "_q + error.type());
+ 	}).send();
+diff --git a/Telegram/SourceFiles/core/ui_integration.cpp b/Telegram/SourceFiles/core/ui_integration.cpp
+index 824626b934..27d953deeb 100644
+--- a/Telegram/SourceFiles/core/ui_integration.cpp
++++ b/Telegram/SourceFiles/core/ui_integration.cpp
+@@ -21,7 +21,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/text/text_utilities.h"
+ #include "ui/basic_click_handlers.h"
+ #include "ui/emoji_config.h"
+-#include "ui/toast/toast.h"
+ #include "lang/lang_keys.h"
+ #include "platform/platform_specific.h"
+ #include "boxes/url_auth_box.h"
+@@ -34,7 +33,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "window/window_session_controller.h"
+ #include "mainwindow.h"
+ #include "base/unixtime.h"
+-#include "styles/style_chat_helpers.h"
+ 
+ #include <QtCore/QDateTime>
+ #include <QtCore/QLocale>
+@@ -445,17 +443,9 @@ bool UiIntegration::handleUrlClick(
+ bool UiIntegration::copyPreOnClick(const QVariant &context) {
+ 	const auto my = context.value<ClickHandlerContext>();
+ 	if (const auto window = my.sessionWindow.get()) {
+-		window->showToast({
+-			.text = { tr::lng_code_copied(tr::now) },
+-			.iconLottie = u"toast/copy"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		window->showToast(tr::lng_code_copied(tr::now));
+ 	} else if (my.show) {
+-		my.show->showToast({
+-			.text = { tr::lng_code_copied(tr::now) },
+-			.iconLottie = u"toast/copy"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		my.show->showToast(tr::lng_code_copied(tr::now));
+ 	}
+ 	return true;
+ }
+diff --git a/Telegram/SourceFiles/dialogs/dialogs_quick_action.cpp b/Telegram/SourceFiles/dialogs/dialogs_quick_action.cpp
+index 5d8618f96e..a796b4721e 100644
+--- a/Telegram/SourceFiles/dialogs/dialogs_quick_action.cpp
++++ b/Telegram/SourceFiles/dialogs/dialogs_quick_action.cpp
+@@ -19,10 +19,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "lottie/lottie_icon.h"
+ #include "main/main_session.h"
+ #include "menu/menu_mute.h"
+-#include "ui/toast/toast.h"
+ #include "window/window_peer_menu.h"
+ #include "window/window_session_controller.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_dialogs.h"
+ 
+ namespace Dialogs {
+@@ -78,36 +76,22 @@ void PerformQuickDialogAction(
+ 		MuteMenu::ThreadDescriptor(history).updateMutePeriod(isMuted
+ 			? 0
+ 			: std::numeric_limits<TimeId>::max());
+-		controller->showToast({
+-			.text = { isMuted
+-				? tr::lng_quick_dialog_action_toast_unmute_success(tr::now)
+-				: tr::lng_quick_dialog_action_toast_mute_success(tr::now) },
+-			.iconLottie = isMuted
+-				? u"toast/unmute"_q
+-				: u"toast/mute"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		controller->showToast(isMuted
++			? tr::lng_quick_dialog_action_toast_unmute_success(tr::now)
++			: tr::lng_quick_dialog_action_toast_mute_success(tr::now));
+ 	} else if (action == Dialogs::Ui::QuickDialogAction::Pin) {
+ 		const auto entry = (Dialogs::Entry*)(history);
+ 		const auto isPinned = entry->isPinnedDialog(filterId);
+ 		const auto onToggled = isPinned
+ 			? Fn<void()>(nullptr)
+ 			: [=] {
+-				controller->showToast({
+-					.text = { tr::lng_quick_dialog_action_toast_pin_success(
+-						tr::now) },
+-					.iconLottie = u"toast/pin"_q,
+-					.iconLottieSize = st::toastLottieIconSize,
+-				});
++				controller->showToast(
++					tr::lng_quick_dialog_action_toast_pin_success(tr::now));
+ 			};
+ 		Window::TogglePinnedThread(controller, entry, filterId, onToggled);
+ 		if (isPinned) {
+-			controller->showToast({
+-				.text = { tr::lng_quick_dialog_action_toast_unpin_success(
+-					tr::now) },
+-				.iconLottie = u"toast/unpin"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			controller->showToast(
++				tr::lng_quick_dialog_action_toast_unpin_success(tr::now));
+ 		}
+ 	} else if (action == Dialogs::Ui::QuickDialogAction::Read) {
+ 		if (Window::IsUnreadThread(history)) {
+diff --git a/Telegram/SourceFiles/history/view/history_view_context_menu.cpp b/Telegram/SourceFiles/history/view/history_view_context_menu.cpp
+index dc2172b974..092fd789cd 100644
+--- a/Telegram/SourceFiles/history/view/history_view_context_menu.cpp
++++ b/Telegram/SourceFiles/history/view/history_view_context_menu.cpp
+@@ -1672,18 +1672,12 @@ void CopyPostLink(
+ 			).append('\n').append(Platform::IsMac()
+ 				? tr::lng_public_post_private_hint_cmd(tr::now)
+ 				: tr::lng_public_post_private_hint_ctrl(tr::now)),
+-			.iconLottie = u"toast/voip_invite"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+ 			.duration = kPublicPostLinkToastDuration,
+ 		});
+-	} else if (isPublicLink) {
+-		show->showToast({
+-			.text = { tr::lng_channel_public_link_copied(tr::now) },
+-			.iconLottie = u"toast/voip_invite"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
+ 	} else {
+-		show->showToast(tr::lng_context_about_private_link(tr::now));
++		show->showToast(isPublicLink
++			? tr::lng_channel_public_link_copied(tr::now)
++			: tr::lng_context_about_private_link(tr::now));
+ 	}
+ }
+ 
+@@ -1698,11 +1692,7 @@ void CopyStoryLink(
+ 	const auto story = *maybeStory;
+ 	QGuiApplication::clipboard()->setText(
+ 		session->api().exportDirectStoryLink(story));
+-	show->showToast({
+-		.text = { tr::lng_channel_public_link_copied(tr::now) },
+-		.iconLottie = u"toast/voip_invite"_q,
+-		.iconLottieSize = st::toastLottieIconSize,
+-	});
++	show->showToast(tr::lng_channel_public_link_copied(tr::now));
+ }
+ 
+ void FillPollOptionPage(
+diff --git a/Telegram/SourceFiles/history/view/media/history_view_poll.cpp b/Telegram/SourceFiles/history/view/media/history_view_poll.cpp
+index af67d95642..d5162268e6 100644
+--- a/Telegram/SourceFiles/history/view/media/history_view_poll.cpp
++++ b/Telegram/SourceFiles/history/view/media/history_view_poll.cpp
+@@ -1436,7 +1436,6 @@ struct Poll::Header : public Poll::Part {
+ 	std::unique_ptr<Media> _attachedMediaAttach;
+ 	mutable QImage _attachedMediaCache;
+ 	mutable Ui::BubbleRounding _attachedMediaCacheRounding;
+-	mutable bool _attachedMediaCacheBlurred = false;
+ 	std::vector<RecentVoter> _recentVoters;
+ 	QImage _recentVotersImage;
+ 	mutable ClickHandlerPtr _showSolutionLink;
+@@ -2778,8 +2777,11 @@ void Poll::Header::validateTopMediaCache(QSize size) const {
+ 	}
+ 	const auto ratio = style::DevicePixelRatio();
+ 	const auto rounding = topMediaRounding();
++	if ((_attachedMediaCache.size() == (size * ratio))
++		&& (_attachedMediaCacheRounding == rounding)) {
++		return;
++	}
+ 	auto source = QImage();
+-	auto blurred = false;
+ 	if (_attachedMedia->photoMedia) {
+ 		if (const auto image
+ 			= _attachedMedia->photoMedia->image(Data::PhotoSize::Large)) {
+@@ -2788,11 +2790,9 @@ void Poll::Header::validateTopMediaCache(QSize size) const {
+ 			= _attachedMedia->photoMedia->image(
+ 				Data::PhotoSize::Thumbnail)) {
+ 			source = image->original();
+-			blurred = true;
+ 		} else if (const auto image
+ 			= _attachedMedia->photoMedia->thumbnailInline()) {
+ 			source = image->original();
+-			blurred = true;
+ 		}
+ 	}
+ 	if (source.isNull()) {
+@@ -2802,11 +2802,6 @@ void Poll::Header::validateTopMediaCache(QSize size) const {
+ 	if (source.isNull()) {
+ 		return;
+ 	}
+-	if ((_attachedMediaCache.size() == (size * ratio))
+-		&& (_attachedMediaCacheRounding == rounding)
+-		&& (_attachedMediaCacheBlurred == blurred)) {
+-		return;
+-	}
+ 	const auto sw = source.width();
+ 	const auto sh = source.height();
+ 	const auto tw = size.width() * ratio;
+@@ -2820,20 +2815,16 @@ void Poll::Header::validateTopMediaCache(QSize size) const {
+ 			cropW,
+ 			cropH);
+ 	}
+-	const auto options = blurred
+-		? Images::Option::Blur
+-		: Images::Option();
+ 	auto prepared = Images::Prepare(
+ 		source,
+ 		size * ratio,
+-		{ .options = options, .outer = size });
++		{ .outer = size });
+ 	prepared = Images::Round(
+ 		std::move(prepared),
+ 		MediaRoundingMask(rounding));
+ 	prepared.setDevicePixelRatio(ratio);
+ 	_attachedMediaCache = std::move(prepared);
+ 	_attachedMediaCacheRounding = rounding;
+-	_attachedMediaCacheBlurred = blurred;
+ }
+ 
+ int Poll::Header::countDescriptionHeight(int innerWidth) const {
+diff --git a/Telegram/SourceFiles/history/view/media/history_view_save_document_action.cpp b/Telegram/SourceFiles/history/view/media/history_view_save_document_action.cpp
+index 6bb6eeb4e6..ad42de3592 100644
+--- a/Telegram/SourceFiles/history/view/media/history_view_save_document_action.cpp
++++ b/Telegram/SourceFiles/history/view/media/history_view_save_document_action.cpp
+@@ -19,7 +19,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "history/history.h"
+ #include "history/history_item.h"
+ #include "lang/lang_keys.h"
+-#include "ui/toast/toast.h"
+ #include "ui/widgets/menu/menu_add_action_callback.h"
+ #include "ui/widgets/menu/menu_add_action_callback_factory.h"
+ #include "ui/widgets/menu/menu_multiline_action.h"
+@@ -27,7 +26,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "window/window_peer_menu.h"
+ #include "window/window_session_controller.h"
+ #include "styles/style_chat.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_menu_icons.h"
+ #include "styles/style_widgets.h"
+ 
+@@ -68,11 +66,7 @@ void AddSaveDocumentAction(
+ 		if (!inProfile) {
+ 			const auto saved = [=] {
+ 				savedMusic->save(document, contextId);
+-				show->showToast({
+-					.text = { tr::lng_saved_music_added(tr::now) },
+-					.iconLottie = u"toast/save_to_music"_q,
+-					.iconLottieSize = st::toastLottieIconSize,
+-				});
++				show->showToast(tr::lng_saved_music_added(tr::now));
+ 			};
+ 			menu->addAction(
+ 				tr::lng_context_save_music_profile(tr::now),
+diff --git a/Telegram/SourceFiles/info/bot/starref/info_bot_starref_common.cpp b/Telegram/SourceFiles/info/bot/starref/info_bot_starref_common.cpp
+index 7210b937d2..56336a36f2 100644
+--- a/Telegram/SourceFiles/info/bot/starref/info_bot_starref_common.cpp
++++ b/Telegram/SourceFiles/info/bot/starref/info_bot_starref_common.cpp
+@@ -34,7 +34,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/wrap/table_layout.h"
+ #include "ui/wrap/vertical_layout.h"
+ #include "ui/text/text_utilities.h"
+-#include "ui/toast/toast.h"
+ #include "ui/new_badges.h"
+ #include "ui/painter.h"
+ #include "ui/vertical_list.h"
+@@ -460,11 +459,7 @@ object_ptr<Ui::BoxContent> StarRefLinkBox(
+ 		const auto copy = [=](bool close) {
+ 			return [=] {
+ 				QApplication::clipboard()->setText(row.state.link);
+-				box->uiShow()->showToast({
+-					.text = { tr::lng_username_copied(tr::now) },
+-					.iconLottie = u"toast/voip_invite"_q,
+-					.iconLottieSize = st::toastLottieIconSize,
+-				});
++				box->uiShow()->showToast(tr::lng_username_copied(tr::now));
+ 				if (close) {
+ 					box->closeBox();
+ 				}
+diff --git a/Telegram/SourceFiles/info/bot/starref/info_bot_starref_join_widget.cpp b/Telegram/SourceFiles/info/bot/starref/info_bot_starref_join_widget.cpp
+index a1cecf2c24..f912a3a234 100644
+--- a/Telegram/SourceFiles/info/bot/starref/info_bot_starref_join_widget.cpp
++++ b/Telegram/SourceFiles/info/bot/starref/info_bot_starref_join_widget.cpp
+@@ -43,7 +43,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/painter.h"
+ #include "ui/ui_utility.h"
+ #include "ui/vertical_list.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_info.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_media_player.h"
+@@ -635,11 +634,7 @@ base::unique_qptr<Ui::PopupMenu> ListController::rowContextMenu(
+ 	if (!state.link.isEmpty()) {
+ 		addAction(tr::lng_star_ref_list_my_copy(tr::now), [=] {
+ 			QApplication::clipboard()->setText(state.link);
+-			_controller->showToast({
+-				.text = { tr::lng_username_copied(tr::now) },
+-				.iconLottie = u"toast/voip_invite"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			_controller->showToast(tr::lng_username_copied(tr::now));
+ 		}, &st::menuIconLinks);
+ 		const auto revoke = [=] {
+ 			const auto link = state.link;
+diff --git a/Telegram/SourceFiles/info/channel_statistics/boosts/info_boosts_inner_widget.cpp b/Telegram/SourceFiles/info/channel_statistics/boosts/info_boosts_inner_widget.cpp
+index 45206c7456..0475266629 100644
+--- a/Telegram/SourceFiles/info/channel_statistics/boosts/info_boosts_inner_widget.cpp
++++ b/Telegram/SourceFiles/info/channel_statistics/boosts/info_boosts_inner_widget.cpp
+@@ -32,7 +32,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/layers/generic_box.h"
+ #include "ui/painter.h"
+ #include "ui/rect.h"
+-#include "ui/toast/toast.h"
+ #include "ui/vertical_list.h"
+ #include "ui/widgets/buttons.h"
+ #include "ui/widgets/labels.h"
+@@ -40,7 +39,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/widgets/slider_natural_width.h"
+ #include "ui/wrap/slide_wrap.h"
+ #include "ui/ui_utility.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_color_indices.h"
+ #include "styles/style_dialogs.h" // dialogsSearchTabs
+ #include "styles/style_giveaway.h"
+@@ -179,11 +177,7 @@ void FillShareLink(
+ 	const auto weak = base::make_weak(content);
+ 	const auto copyLink = crl::guard(weak, [=] {
+ 		QGuiApplication::clipboard()->setText(link);
+-		show->showToast({
+-			.text = { tr::lng_channel_public_link_copied(tr::now) },
+-			.iconLottie = u"toast/voip_invite"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		show->showToast(tr::lng_channel_public_link_copied(tr::now));
+ 	});
+ 	const auto shareLink = crl::guard(weak, [=] {
+ 		show->showBox(ShareInviteLinkBox(peer, link));
+diff --git a/Telegram/SourceFiles/info/channel_statistics/earn/info_channel_earn_list.cpp b/Telegram/SourceFiles/info/channel_statistics/earn/info_channel_earn_list.cpp
+index eae0d93cf3..e806c3658d 100644
+--- a/Telegram/SourceFiles/info/channel_statistics/earn/info_channel_earn_list.cpp
++++ b/Telegram/SourceFiles/info/channel_statistics/earn/info_channel_earn_list.cpp
+@@ -56,7 +56,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/painter.h"
+ #include "ui/rect.h"
+ #include "ui/text/text_utilities.h"
+-#include "ui/toast/toast.h"
+ #include "ui/vertical_list.h"
+ #include "ui/widgets/fields/input_field.h"
+ #include "ui/widgets/peer_bubble.h"
+@@ -89,11 +88,7 @@ void ShowMenu(not_null<Ui::GenericBox*> box, const QString &text) {
+ 	const auto menu = Ui::CreateChild<Ui::PopupMenu>(box.get());
+ 	menu->addAction(tr::lng_context_copy_link(tr::now), [=] {
+ 		TextUtilities::SetClipboardText(TextForMimeData::Simple(text));
+-		box->uiShow()->showToast({
+-			.text = { tr::lng_background_link_copied(tr::now) },
+-			.iconLottie = u"toast/voip_invite"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		box->uiShow()->showToast(tr::lng_background_link_copied(tr::now));
+ 	});
+ 	menu->popup(QCursor::pos());
+ }
+@@ -174,11 +169,7 @@ void AddRecipient(not_null<Ui::GenericBox*> box, const TextWithEntities &t) {
+ 	}, container->lifetime());
+ 	container->setClickedCallback([=] {
+ 		QGuiApplication::clipboard()->setText(t.text);
+-		box->showToast({
+-			.text = { tr::lng_text_copied(tr::now) },
+-			.iconLottie = u"toast/copy"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		box->showToast(tr::lng_text_copied(tr::now));
+ 	});
+ }
+ 
+diff --git a/Telegram/SourceFiles/info/info.style b/Telegram/SourceFiles/info/info.style
+index 35da2772b3..d9153947f6 100644
+--- a/Telegram/SourceFiles/info/info.style
++++ b/Telegram/SourceFiles/info/info.style
+@@ -427,11 +427,6 @@ infoProfileTopBarActionButtonIconTop: 6px;
+ infoProfileTopBarActionButtonTextTop: infoProfileTopBarActionButtonIconSize + infoProfileTopBarActionButtonIconTop + 1px;
+ infoProfileTopBarActionButtonTextSkip: 4px;
+ infoProfileTopBarActionButtonFont: font(11px);
+-infoProfileTopBarActionButtonShadow: BoxShadow {
+-	blurRadius: 1px;
+-	offset: point(0px, 0px);
+-	opacity: 0.25;
+-}
+ 
+ infoProfileTopBarActionButtonsPadding: margins(18px, 0px, 18px, 16px);
+ infoProfileTopBarActionButtonsHeight: infoProfileTopBarActionButtonSize + infoProfileTopBarActionButtonsPadding.topBottom;
+@@ -813,7 +808,6 @@ infoMediaSkip: 2px;
+ infoMediaLeft: 3px;
+ infoMediaMargin: margins(0px, 6px, 0px, 2px);
+ infoMediaMinGridSize: 82px;
+-infoMediaGridSizeStep: 16px;
+ 
+ infoCommonGroupsMargin: margins(0px, 2px, 0px, 2px);
+ infoCommonGroupsListItem: PeerListItem(defaultPeerListItem) {
+diff --git a/Telegram/SourceFiles/info/info_content_widget.h b/Telegram/SourceFiles/info/info_content_widget.h
+index b0415a79ec..4f064c969d 100644
+--- a/Telegram/SourceFiles/info/info_content_widget.h
++++ b/Telegram/SourceFiles/info/info_content_widget.h
+@@ -151,9 +151,6 @@ public:
+ 	virtual void saveChanges(FnMut<void()> done);
+ 	[[nodiscard]] virtual SendMenu::Details sendMenuDetails() const;
+ 	virtual bool processChosenSticker(ChatHelpers::FileChosen &&chosen);
+-	virtual bool processZoomKey(not_null<QKeyEvent*> e) {
+-		return false;
+-	}
+ 
+ 	[[nodiscard]] int scrollBottomSkip() const;
+ 	[[nodiscard]] rpl::producer<int> scrollBottomSkipValue() const;
+diff --git a/Telegram/SourceFiles/info/info_wrap_widget.cpp b/Telegram/SourceFiles/info/info_wrap_widget.cpp
+index fa907c2115..8c4f524745 100644
+--- a/Telegram/SourceFiles/info/info_wrap_widget.cpp
++++ b/Telegram/SourceFiles/info/info_wrap_widget.cpp
+@@ -1036,9 +1036,6 @@ void WrapWidget::resizeEvent(QResizeEvent *e) {
+ }
+ 
+ void WrapWidget::keyPressEvent(QKeyEvent *e) {
+-	if (_content && _content->processZoomKey(e)) {
+-		return;
+-	}
+ 	if (e->key() == Qt::Key_Escape || e->key() == Qt::Key_Back) {
+ 		if (!closeByBackButton()) {
+ 			checkBeforeCloseByEscape(
+diff --git a/Telegram/SourceFiles/info/media/info_media_grid_zoom.cpp b/Telegram/SourceFiles/info/media/info_media_grid_zoom.cpp
+deleted file mode 100644
+index 473f55b8a5..0000000000
+--- a/Telegram/SourceFiles/info/media/info_media_grid_zoom.cpp
++++ /dev/null
+@@ -1,253 +0,0 @@
+-/*
+-This file is part of Telegram Desktop,
+-the official desktop application for the Telegram messaging service.
+-
+-For license and copyright information please follow this link:
+-https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+-*/
+-#include "info/media/info_media_grid_zoom.h"
+-
+-#include "info/media/info_media_list_widget.h"
+-#include "info/media/info_media_list_section.h"
+-#include "core/application.h"
+-#include "core/core_settings.h"
+-#include "ui/ui_utility.h"
+-#include "styles/style_info.h"
+-#include "styles/style_layers.h"
+-#include "styles/style_overview.h"
+-
+-namespace Info::Media {
+-namespace {
+-
+-constexpr auto kStepMin = -2;
+-constexpr auto kStepMax = 3;
+-constexpr auto kPinchStep = 0.5;
+-constexpr auto kFadeDuration = crl::time(200);
+-
+-} // namespace
+-
+-ListZoom::ListZoom(not_null<ListWidget*> list)
+-: _list(list)
+-, _step(std::clamp(
+-	Core::App().settings().mediaGridZoomStep(),
+-	kStepMin,
+-	kStepMax)) {
+-}
+-
+-bool ListZoom::isZoomable() const {
+-	switch (_list->_provider->type()) {
+-	case Type::Photo:
+-	case Type::Video:
+-	case Type::PhotoVideo:
+-	case Type::RoundFile:
+-		return true;
+-	default:
+-		return false;
+-	}
+-}
+-
+-int ListZoom::minVideoGridSize() const {
+-	return 2 * st::overviewVideoStatusMargin
+-		+ 3 * st::overviewVideoStatusPadding.x()
+-		+ st::overviewVideoPlay.width()
+-		+ st::normalFont->width(u"00:00"_q);
+-}
+-
+-int ListZoom::minGridSizeForStep(int step) const {
+-	const auto base = st::infoMediaMinGridSize
+-		+ step * st::infoMediaGridSizeStep;
+-	switch (_list->_provider->type()) {
+-	case Type::Video:
+-	case Type::PhotoVideo:
+-	case Type::RoundFile:
+-		return std::max(base, minVideoGridSize());
+-	default:
+-		return base;
+-	}
+-}
+-
+-int ListZoom::minGridSize() const {
+-	return minGridSizeForStep(_step);
+-}
+-
+-int ListZoom::columnsForGridSize(int gridSize) const {
+-	const auto outer = _list->width();
+-	if (outer <= 0) {
+-		return 1;
+-	}
+-	const auto skip = st::infoMediaSkip;
+-	const auto left = st::infoMediaLeft;
+-	return std::max(1, (outer - left * 2 + skip) / (gridSize + skip));
+-}
+-
+-std::optional<int> ListZoom::nextZoomStep(int direction) const {
+-	if (_list->_sections.empty() || !isZoomable()) {
+-		return std::nullopt;
+-	}
+-	const auto currentColumns = columnsForGridSize(minGridSize());
+-	for (auto step = _step + direction
+-		; step >= kStepMin && step <= kStepMax
+-		; step += direction) {
+-		const auto columns = columnsForGridSize(minGridSizeForStep(step));
+-		if ((direction > 0)
+-			? (columns < currentColumns)
+-			: (columns > currentColumns)) {
+-			return step;
+-		}
+-	}
+-	return std::nullopt;
+-}
+-
+-QPoint ListZoom::defaultAnchor() const {
+-	return QPoint(
+-		_list->width() / 2,
+-		(_list->_visibleTop + _list->_visibleBottom) / 2);
+-}
+-
+-void ListZoom::zoomBy(int direction, QPoint anchor) {
+-	if (const auto step = nextZoomStep(direction)) {
+-		apply(*step, anchor);
+-	}
+-}
+-
+-void ListZoom::zoomIn() {
+-	zoomBy(1, defaultAnchor());
+-}
+-
+-void ListZoom::zoomOut() {
+-	zoomBy(-1, defaultAnchor());
+-}
+-
+-bool ListZoom::canZoomIn() const {
+-	return nextZoomStep(1).has_value();
+-}
+-
+-bool ListZoom::canZoomOut() const {
+-	return nextZoomStep(-1).has_value();
+-}
+-
+-QPixmap ListZoom::grabViewport(int height) {
+-	const auto width = _list->width();
+-	if (width <= 0 || height <= 0) {
+-		return QPixmap();
+-	}
+-	return Ui::GrabWidget(
+-		_list.get(),
+-		QRect(0, _list->_visibleTop, width, height),
+-		st::boxBg->c);
+-}
+-
+-void ListZoom::apply(int step, QPoint anchor) {
+-	step = std::clamp(step, kStepMin, kStepMax);
+-	if (step == _step || _list->_sections.empty()) {
+-		return;
+-	}
+-	const auto oldColumns = columnsForGridSize(minGridSize());
+-	const auto newColumns = columnsForGridSize(minGridSizeForStep(step));
+-	_step = step;
+-	Core::App().settings().setMediaGridZoomStep(step);
+-	Core::App().saveSettingsDelayed();
+-	if (newColumns == oldColumns) {
+-		return;
+-	}
+-	const auto fadeHeight = _list->_visibleBottom - _list->_visibleTop;
+-	const auto anchorScreen = QPoint(
+-		anchor.x(),
+-		anchor.y() - _list->_visibleTop);
+-	_fade.stop();
+-	auto oldPix = grabViewport(fadeHeight);
+-
+-	_list->_scrollTopState = _list->countScrollState(anchor);
+-	_list->resizeToWidth(_list->width());
+-	_list->restoreScrollState();
+-
+-	auto newPix = grabViewport(fadeHeight);
+-	if (!oldPix.isNull() && !newPix.isNull() && fadeHeight > 0) {
+-		_oldPix = std::move(oldPix);
+-		_newPix = std::move(newPix);
+-		_anchorScreen = anchorScreen;
+-		_fadeHeight = fadeHeight;
+-		_scaleRatio = float64(oldColumns) / newColumns;
+-		_fade.start([=] {
+-			_list->update(
+-				QRect(0, _list->_visibleTop, _list->width(), _fadeHeight));
+-		}, 0., 1., kFadeDuration, anim::easeOutCirc);
+-	}
+-	_list->update();
+-}
+-
+-bool ListZoom::handleNativeGesture(not_null<QNativeGestureEvent*> e) {
+-	if (e->gestureType() == Qt::BeginNativeGesture) {
+-		_pinchAccumulated = 0.;
+-		return false;
+-	} else if (e->gestureType() != Qt::ZoomNativeGesture) {
+-		return false;
+-	} else if (!isZoomable()) {
+-		return false;
+-	}
+-	const auto anchor = e->position().toPoint();
+-	_pinchAccumulated += e->value();
+-	while (_pinchAccumulated >= kPinchStep) {
+-		_pinchAccumulated -= kPinchStep;
+-		zoomBy(1, anchor);
+-	}
+-	while (_pinchAccumulated <= -kPinchStep) {
+-		_pinchAccumulated += kPinchStep;
+-		zoomBy(-1, anchor);
+-	}
+-	return true;
+-}
+-
+-bool ListZoom::processWheel(not_null<QWheelEvent*> e) {
+-	if (!isZoomable()) {
+-		return false;
+-	}
+-	const auto delta = e->angleDelta().y();
+-	if (!delta) {
+-		return false;
+-	}
+-	const auto position = e->position();
+-	const auto anchor = QPoint(
+-		qRound(position.x()),
+-		_list->_visibleTop + qRound(position.y()));
+-	zoomBy((delta > 0) ? 1 : -1, anchor);
+-	return true;
+-}
+-
+-bool ListZoom::paint(QPainter &p) {
+-	if (_fade.animating() && !_oldPix.isNull() && !_newPix.isNull()) {
+-		const auto progress = _fade.value(1.);
+-		const auto top = _list->_visibleTop;
+-		const auto width = _list->width();
+-		const auto target = QRect(0, top, width, _fadeHeight);
+-		const auto pivot = QPointF(
+-			_anchorScreen.x(),
+-			top + _anchorScreen.y());
+-		p.setRenderHint(QPainter::SmoothPixmapTransform);
+-		const auto layer = [&](
+-				const QPixmap &pix,
+-				float64 scale,
+-				float64 opacity) {
+-			if (opacity <= 0.) {
+-				return;
+-			}
+-			p.save();
+-			p.setOpacity(opacity);
+-			p.translate(pivot);
+-			p.scale(scale, scale);
+-			p.translate(-pivot);
+-			p.drawPixmap(target, pix);
+-			p.restore();
+-		};
+-		const auto inv = 1. / _scaleRatio;
+-		layer(_newPix, inv + (1. - inv) * progress, progress);
+-		layer(_oldPix, 1. + (_scaleRatio - 1.) * progress, 1. - progress);
+-		return true;
+-	} else if (!_oldPix.isNull() || !_newPix.isNull()) {
+-		_oldPix = QPixmap();
+-		_newPix = QPixmap();
+-	}
+-	return false;
+-}
+-
+-} // namespace Info::Media
+diff --git a/Telegram/SourceFiles/info/media/info_media_grid_zoom.h b/Telegram/SourceFiles/info/media/info_media_grid_zoom.h
+deleted file mode 100644
+index 227f2c2410..0000000000
+--- a/Telegram/SourceFiles/info/media/info_media_grid_zoom.h
++++ /dev/null
+@@ -1,55 +0,0 @@
+-/*
+-This file is part of Telegram Desktop,
+-the official desktop application for the Telegram messaging service.
+-
+-For license and copyright information please follow this link:
+-https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+-*/
+-#pragma once
+-
+-#include "ui/effects/animations.h"
+-
+-namespace Info::Media {
+-
+-class ListWidget;
+-
+-class ListZoom final {
+-public:
+-	explicit ListZoom(not_null<ListWidget*> list);
+-
+-	[[nodiscard]] bool isZoomable() const;
+-	[[nodiscard]] int minGridSize() const;
+-
+-	void zoomIn();
+-	void zoomOut();
+-	[[nodiscard]] bool canZoomIn() const;
+-	[[nodiscard]] bool canZoomOut() const;
+-
+-	bool handleNativeGesture(not_null<QNativeGestureEvent*> e);
+-	bool processWheel(not_null<QWheelEvent*> e);
+-
+-	[[nodiscard]] bool paint(QPainter &p);
+-
+-private:
+-	[[nodiscard]] int minGridSizeForStep(int step) const;
+-	[[nodiscard]] int minVideoGridSize() const;
+-	[[nodiscard]] int columnsForGridSize(int gridSize) const;
+-	[[nodiscard]] std::optional<int> nextZoomStep(int direction) const;
+-	[[nodiscard]] QPoint defaultAnchor() const;
+-	[[nodiscard]] QPixmap grabViewport(int height);
+-	void zoomBy(int direction, QPoint anchor);
+-	void apply(int step, QPoint anchor);
+-
+-	const not_null<ListWidget*> _list;
+-	int _step = 0;
+-	float64 _pinchAccumulated = 0.;
+-	Ui::Animations::Simple _fade;
+-	QPixmap _oldPix;
+-	QPixmap _newPix;
+-	QPoint _anchorScreen;
+-	float64 _scaleRatio = 1.;
+-	int _fadeHeight = 0;
+-
+-};
+-
+-} // namespace Info::Media
+diff --git a/Telegram/SourceFiles/info/media/info_media_inner_widget.cpp b/Telegram/SourceFiles/info/media/info_media_inner_widget.cpp
+index 69a56d602b..7735e50cf6 100644
+--- a/Telegram/SourceFiles/info/media/info_media_inner_widget.cpp
++++ b/Telegram/SourceFiles/info/media/info_media_inner_widget.cpp
+@@ -245,26 +245,6 @@ rpl::producer<Ui::ScrollToRequest> InnerWidget::scrollToRequests() const {
+ 	return _scrollToRequests.events();
+ }
+ 
+-bool InnerWidget::processZoomWheel(not_null<QWheelEvent*> e) {
+-	return _list->processZoomWheel(e);
+-}
+-
+-void InnerWidget::zoomIn() {
+-	_list->zoomIn();
+-}
+-
+-void InnerWidget::zoomOut() {
+-	_list->zoomOut();
+-}
+-
+-bool InnerWidget::canZoomIn() const {
+-	return _list->canZoomIn();
+-}
+-
+-bool InnerWidget::canZoomOut() const {
+-	return _list->canZoomOut();
+-}
+-
+ void InnerWidget::jumpToMessage(MsgId msgId) {
+ 	_empty->setLoading(true);
+ 	_emptyHeightThreshold = st::semiboldFont->height;
+diff --git a/Telegram/SourceFiles/info/media/info_media_inner_widget.h b/Telegram/SourceFiles/info/media/info_media_inner_widget.h
+index e1c4ca28e9..744a4adb87 100644
+--- a/Telegram/SourceFiles/info/media/info_media_inner_widget.h
++++ b/Telegram/SourceFiles/info/media/info_media_inner_widget.h
+@@ -51,12 +51,6 @@ public:
+ 
+ 	void jumpToMessage(MsgId msgId);
+ 
+-	bool processZoomWheel(not_null<QWheelEvent*> e);
+-	void zoomIn();
+-	void zoomOut();
+-	[[nodiscard]] bool canZoomIn() const;
+-	[[nodiscard]] bool canZoomOut() const;
+-
+ 	~InnerWidget();
+ 
+ protected:
+diff --git a/Telegram/SourceFiles/info/media/info_media_list_section.cpp b/Telegram/SourceFiles/info/media/info_media_list_section.cpp
+index 13064b2433..a759e0a604 100644
+--- a/Telegram/SourceFiles/info/media/info_media_list_section.cpp
++++ b/Telegram/SourceFiles/info/media/info_media_list_section.cpp
+@@ -50,10 +50,6 @@ void ListSection::setCanReorder(bool value) {
+ 	_canReorder = value;
+ }
+ 
+-void ListSection::setMinGridSize(int value) {
+-	_minGridSize = value;
+-}
+-
+ int ListSection::height() const {
+ 	return _height;
+ }
+@@ -361,10 +357,7 @@ int ListSection::oneColumnRightPadding() const {
+ }
+ 
+ void ListSection::resizeToWidth(int newWidth) {
+-	const auto gridSize = _minGridSize
+-		? _minGridSize
+-		: st::infoMediaMinGridSize;
+-	const auto minWidth = gridSize + st::infoMediaSkip * 2;
++	const auto minWidth = st::infoMediaMinGridSize + st::infoMediaSkip * 2;
+ 	if (newWidth < minWidth) {
+ 		return;
+ 	}
+@@ -388,7 +381,7 @@ void ListSection::resizeToWidth(int newWidth) {
+ 		_itemsLeft = st::infoMediaLeft;
+ 		_itemsTop = st::infoMediaSkip;
+ 		_itemsInRow = (newWidth - _itemsLeft * 2 + skip)
+-			/ (gridSize + skip);
++			/ (st::infoMediaMinGridSize + skip);
+ 		_itemWidth = ((newWidth - _itemsLeft * 2 + skip) / _itemsInRow)
+ 			- st::infoMediaSkip;
+ 		_itemsLeft = (newWidth - (_itemWidth + skip) * _itemsInRow + skip)
+diff --git a/Telegram/SourceFiles/info/media/info_media_list_section.h b/Telegram/SourceFiles/info/media/info_media_list_section.h
+index cebedafd89..1d1468e985 100644
+--- a/Telegram/SourceFiles/info/media/info_media_list_section.h
++++ b/Telegram/SourceFiles/info/media/info_media_list_section.h
+@@ -27,7 +27,6 @@ public:
+ 	void setTop(int top);
+ 	[[nodiscard]] int top() const;
+ 	void setCanReorder(bool);
+-	void setMinGridSize(int value);
+ 	void resizeToWidth(int newWidth);
+ 	[[nodiscard]] int height() const;
+ 
+@@ -92,7 +91,6 @@ private:
+ 	mutable int _rowsCount = 0;
+ 	int _top = 0;
+ 	int _height = 0;
+-	int _minGridSize = 0;
+ 	bool _canReorder = false;
+ 
+ 	Mosaic::Layout::MosaicLayout<BaseLayout> _mosaic;
+diff --git a/Telegram/SourceFiles/info/media/info_media_list_widget.cpp b/Telegram/SourceFiles/info/media/info_media_list_widget.cpp
+index be3e74dc67..dcee596edc 100644
+--- a/Telegram/SourceFiles/info/media/info_media_list_widget.cpp
++++ b/Telegram/SourceFiles/info/media/info_media_list_widget.cpp
+@@ -11,7 +11,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "info/media/info_media_common.h"
+ #include "info/media/info_media_provider.h"
+ #include "info/media/info_media_list_section.h"
+-#include "info/media/info_media_grid_zoom.h"
+ #include "info/downloads/info_downloads_provider.h"
+ #include "info/saved/info_saved_music_provider.h"
+ #include "info/stories/info_stories_provider.h"
+@@ -67,7 +66,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "boxes/delete_messages_box.h"
+ #include "boxes/peer_list_controllers.h"
+ #include "boxes/sticker_set_box.h" // StickerPremiumMark
+-#include "core/click_handler_types.h"
+ #include "core/file_utilities.h"
+ #include "core/application.h"
+ #include "ui/toast/toast.h"
+@@ -80,7 +78,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "styles/style_chat_helpers.h"
+ #include "styles/style_media_stories.h"
+ 
+-#include <QtCore/QMimeData>
+ #include <QtWidgets/QApplication>
+ #include <QtGui/QClipboard>
+ 
+@@ -174,7 +171,6 @@ ListWidget::ListWidget(
+ 		&_controller->session(),
+ 		st::giftBoxHiddenMark,
+ 		RectPart::Center)) {
+-	_zoom = std::make_unique<ListZoom>(this);
+ 	start();
+ }
+ 
+@@ -740,10 +736,8 @@ void ListWidget::restoreState(not_null<Memento*> memento) {
+ 
+ int ListWidget::resizeGetHeight(int newWidth) {
+ 	if (newWidth > 0) {
+-		const auto gridSize = _zoom->minGridSize();
+ 		for (auto &section : _sections) {
+ 			section.setCanReorder(canReorder());
+-			section.setMinGridSize(gridSize);
+ 			section.resizeToWidth(newWidth);
+ 		}
+ 	}
+@@ -922,19 +916,15 @@ void ListWidget::clearHeavyItems() {
+ }
+ 
+ ListScrollTopState ListWidget::countScrollState() const {
+-	return countScrollState({ st::infoMediaSkip, _visibleTop });
+-}
+-
+-ListScrollTopState ListWidget::countScrollState(QPoint anchor) const {
+ 	if (_sections.empty() || _visibleTop <= 0) {
+ 		return {};
+ 	}
+-	const auto anchorItem = findItemByPoint(anchor);
+-	const auto item = anchorItem.layout->getItem();
++	const auto topItem = findItemByPoint({ st::infoMediaSkip, _visibleTop });
++	const auto item = topItem.layout->getItem();
+ 	return {
+ 		.position = _provider->scrollTopStatePosition(item),
+ 		.item = item,
+-		.shift = _visibleTop - anchorItem.geometry.y(),
++		.shift = _visibleTop - topItem.geometry.y(),
+ 	};
+ }
+ 
+@@ -968,30 +958,6 @@ void ListWidget::restoreScrollState() {
+ 	_scrollTopState = ListScrollTopState();
+ }
+ 
+-bool ListWidget::keepPhotoMediaLoaded() {
+-	return _zoom->isZoomable();
+-}
+-
+-void ListWidget::zoomIn() {
+-	_zoom->zoomIn();
+-}
+-
+-void ListWidget::zoomOut() {
+-	_zoom->zoomOut();
+-}
+-
+-bool ListWidget::canZoomIn() const {
+-	return _zoom->canZoomIn();
+-}
+-
+-bool ListWidget::canZoomOut() const {
+-	return _zoom->canZoomOut();
+-}
+-
+-bool ListWidget::processZoomWheel(not_null<QWheelEvent*> e) {
+-	return _zoom->processWheel(e);
+-}
+-
+ MsgId ListWidget::topicRootId() const {
+ 	const auto topic = _controller->key().topic();
+ 	return topic ? topic->rootId() : MsgId(0);
+@@ -1006,23 +972,9 @@ QMargins ListWidget::padding() const {
+ 	return st::infoMediaMargin;
+ }
+ 
+-bool ListWidget::eventHook(QEvent *e) {
+-	if (e->type() == QEvent::NativeGesture) {
+-		const auto gesture = static_cast<QNativeGestureEvent*>(e);
+-		if (_zoom->handleNativeGesture(gesture)) {
+-			return true;
+-		}
+-	}
+-	return RpWidget::eventHook(e);
+-}
+-
+ void ListWidget::paintEvent(QPaintEvent *e) {
+ 	Painter p(this);
+ 
+-	if (_zoom->paint(p)) {
+-		return;
+-	}
+-
+ 	const auto outerWidth = width();
+ 	const auto clip = e->rect();
+ 	const auto ms = crl::now();
+@@ -2171,42 +2123,87 @@ void ListWidget::mouseActionCancel() {
+ }
+ 
+ void ListWidget::performDrag() {
+-	if (_mouseAction != MouseAction::Dragging) {
+-		return;
+-	} else if (_provider->hasSelectRestriction()) {
+-		return;
+-	}
+-	const auto pressedHandler = ClickHandler::getPressed();
+-	if (!pressedHandler
+-		|| dynamic_cast<VoiceSeekClickHandler*>(pressedHandler.get())) {
+-		return;
+-	}
+-	const auto document = reinterpret_cast<DocumentData*>(
+-		pressedHandler->property(
+-			kDocumentLinkMediaProperty).toULongLong());
+-	if (!document) {
+-		return;
++	if (_mouseAction != MouseAction::Dragging) return;
++
++	auto uponSelected = false;
++	if (_pressState.item && _pressState.inside) {
++		if (hasSelectedItems()) {
++			uponSelected = isItemUnderPressSelected();
++		} else if (const auto pressLayout = _provider->lookupLayout(
++				_pressState.item)) {
++			StateRequest request;
++			request.flags |= Ui::Text::StateRequest::Flag::LookupSymbol;
++			const auto dragState = pressLayout->getState(
++				_pressState.cursor,
++				request);
++			uponSelected = isPressInSelectedText(dragState);
++		}
+ 	}
+-	const auto filepath = document->filepath(true);
+-	if (filepath.isEmpty()) {
++	auto pressedHandler = ClickHandler::getPressed();
++
++	if (dynamic_cast<VoiceSeekClickHandler*>(pressedHandler.get())) {
+ 		return;
+ 	}
+-	auto mimeData = std::make_unique<QMimeData>();
+-	mimeData->setUrls({ QUrl::fromLocalFile(filepath) });
+ 
+-	auto pixmap = QPixmap();
+-	if (const auto layout = _provider->lookupLayout(_pressState.item)) {
+-		if (const auto file = dynamic_cast<Overview::Layout::Document*>(
+-				layout)) {
+-			pixmap = Ui::PixmapFromImage(file->dragPreviewImage());
+-		}
++	TextWithEntities sel;
++	//QList<QUrl> urls;
++	if (uponSelected) {
++//		sel = getSelectedText();
++	} else if (pressedHandler) {
++		sel = { pressedHandler->dragText(), EntitiesInText() };
++		//if (!sel.isEmpty() && sel.at(0) != '/' && sel.at(0) != '@' && sel.at(0) != '#') {
++		//	urls.push_back(QUrl::fromEncoded(sel.toUtf8())); // Google Chrome crashes in Mac OS X O_o
++		//}
+ 	}
++	//if (auto mimeData = MimeDataFromText(sel)) {
++	//	clearDragSelection();
++	//	_widget->noSelectingScroll();
+ 
+-	// This call enters event loop and can destroy any QObject.
+-	_controller->parentController()->widget()->launchDrag(
+-		std::move(mimeData),
+-		crl::guard(this, [=] { mouseActionUpdate(QCursor::pos()); }),
+-		std::move(pixmap));
++	//	if (!urls.isEmpty()) mimeData->setUrls(urls);
++	//	if (uponSelected && !Adaptive::OneColumn()) {
++	//		auto selectedState = getSelectionState();
++	//		if (selectedState.count > 0 && selectedState.count == selectedState.canForwardCount) {
++	//			session().data().setMimeForwardIds(collectSelectedIds());
++	//			mimeData->setData(u"application/x-td-forward"_q, "1");
++	//		}
++	//	}
++	//	_controller->parentController()->window()->launchDrag(std::move(mimeData));
++	//	return;
++	//} else {
++	//	auto forwardMimeType = QString();
++	//	auto pressedMedia = static_cast<HistoryView::Media*>(nullptr);
++	//	if (auto pressedItem = _pressState.layout) {
++	//		pressedMedia = pressedItem->getMedia();
++	//		if (_mouseCursorState == CursorState::Date) {
++	//			session().data().setMimeForwardIds(session().data().itemOrItsGroup(pressedItem));
++	//			forwardMimeType = u"application/x-td-forward"_q;
++	//		}
++	//	}
++	//	if (auto pressedLnkItem = App::pressedLinkItem()) {
++	//		if ((pressedMedia = pressedLnkItem->getMedia())) {
++	//			if (forwardMimeType.isEmpty() && pressedMedia->dragItemByHandler(pressedHandler)) {
++	//				session().data().setMimeForwardIds({ 1, pressedLnkItem->fullId() });
++	//				forwardMimeType = u"application/x-td-forward"_q;
++	//			}
++	//		}
++	//	}
++	//	if (!forwardMimeType.isEmpty()) {
++	//		auto mimeData = std::make_unique<QMimeData>();
++	//		mimeData->setData(forwardMimeType, "1");
++	//		if (auto document = (pressedMedia ? pressedMedia->getDocument() : nullptr)) {
++	//			auto filepath = document->filepath(true);
++	//			if (!filepath.isEmpty()) {
++	//				QList<QUrl> urls;
++	//				urls.push_back(QUrl::fromLocalFile(filepath));
++	//				mimeData->setUrls(urls);
++	//			}
++	//		}
++
++	//		// This call enters event loop and can destroy any QObject.
++	//		_controller->parentController()->window()->launchDrag(std::move(mimeData));
++	//		return;
++	//	}
++	//}
+ }
+ 
+ void ListWidget::mouseActionFinish(
+diff --git a/Telegram/SourceFiles/info/media/info_media_list_widget.h b/Telegram/SourceFiles/info/media/info_media_list_widget.h
+index 221c5d19e1..eaf3ec57b7 100644
+--- a/Telegram/SourceFiles/info/media/info_media_list_widget.h
++++ b/Telegram/SourceFiles/info/media/info_media_list_widget.h
+@@ -52,7 +52,6 @@ struct ListFoundItemWithSection;
+ struct ListContext;
+ class ListSection;
+ class ListProvider;
+-class ListZoom;
+ 
+ class ListWidget final
+ 	: public Ui::RpWidget
+@@ -90,18 +89,11 @@ public:
+ 
+ 	void jumpToMessage(MsgId msgId);
+ 
+-	bool processZoomWheel(not_null<QWheelEvent*> e);
+-	void zoomIn();
+-	void zoomOut();
+-	[[nodiscard]] bool canZoomIn() const;
+-	[[nodiscard]] bool canZoomOut() const;
+-
+ 	// Overview::Layout::Delegate
+ 	void registerHeavyItem(not_null<const BaseLayout*> item) override;
+ 	void unregisterHeavyItem(not_null<const BaseLayout*> item) override;
+ 	void repaintItem(not_null<const BaseLayout*> item) override;
+ 	bool itemVisible(not_null<const BaseLayout*> item) override;
+-	bool keepPhotoMediaLoaded() override;
+ 	not_null<StickerPremiumMark*> hiddenMark() override;
+ 
+ 	// AbstractTooltipShower interface
+@@ -116,8 +108,6 @@ public:
+ 		bool showInMediaView = false) override;
+ 
+ private:
+-	friend class ListZoom;
+-
+ 	struct DateBadge;
+ 	using Section = ListSection;
+ 	using FoundItem = ListFoundItem;
+@@ -178,7 +168,6 @@ private:
+ 		int visibleTop,
+ 		int visibleBottom) override;
+ 
+-	bool eventHook(QEvent *e) override;
+ 	void paintEvent(QPaintEvent *e) override;
+ 	void mouseMoveEvent(QMouseEvent *e) override;
+ 	void mousePressEvent(QMouseEvent *e) override;
+@@ -285,7 +274,6 @@ private:
+ 		const Section &section) const;
+ 
+ 	[[nodiscard]] ListScrollTopState countScrollState() const;
+-	[[nodiscard]] ListScrollTopState countScrollState(QPoint anchor) const;
+ 	void saveScrollState();
+ 	void restoreScrollState();
+ 
+@@ -348,8 +336,6 @@ private:
+ 	ListScrollTopState _scrollTopState;
+ 	rpl::event_stream<int> _scrollToRequests;
+ 
+-	std::unique_ptr<ListZoom> _zoom;
+-
+ 	MouseAction _mouseAction = MouseAction::None;
+ 	TextSelectType _mouseSelectType = TextSelectType::Letters;
+ 	QPoint _mousePosition;
+diff --git a/Telegram/SourceFiles/info/media/info_media_widget.cpp b/Telegram/SourceFiles/info/media/info_media_widget.cpp
+index c9777d753a..4d621ce113 100644
+--- a/Telegram/SourceFiles/info/media/info_media_widget.cpp
++++ b/Telegram/SourceFiles/info/media/info_media_widget.cpp
+@@ -148,11 +148,6 @@ Widget::Widget(QWidget *parent, not_null<Controller*> controller)
+ 	) | rpl::on_next([this](Ui::ScrollToRequest request) {
+ 		scrollTo(request);
+ 	}, _inner->lifetime());
+-
+-	scroll()->setCustomWheelProcess([this](not_null<QWheelEvent*> e) {
+-		return (e->modifiers() & Qt::ControlModifier)
+-			&& _inner->processZoomWheel(e);
+-	});
+ }
+ 
+ rpl::producer<SelectedItems> Widget::selectedListValue() const {
+@@ -168,16 +163,6 @@ void Widget::fillTopBarMenu(const Ui::Menu::MenuCallback &addAction) {
+ 	if (type != Type::Photo && type != Type::Video) {
+ 		return;
+ 	}
+-	if (_inner->canZoomIn()) {
+-		addAction(tr::lng_media_zoom_in(tr::now), [=] {
+-			_inner->zoomIn();
+-		}, &st::menuIconZoomIn);
+-	}
+-	if (_inner->canZoomOut()) {
+-		addAction(tr::lng_media_zoom_out(tr::now), [=] {
+-			_inner->zoomOut();
+-		}, &st::menuIconZoomOut);
+-	}
+ 	addAction(tr::lng_calendar(tr::now), [=] {
+ 		controller()->parentController()->showCalendar({
+ 			.chat = Dialogs::Key(
+@@ -194,21 +179,6 @@ void Widget::fillTopBarMenu(const Ui::Menu::MenuCallback &addAction) {
+ 	}, &st::menuIconSchedule);
+ }
+ 
+-bool Widget::processZoomKey(not_null<QKeyEvent*> e) {
+-	if (!(e->modifiers() & Qt::ControlModifier)) {
+-		return false;
+-	}
+-	const auto key = e->key();
+-	if (key == Qt::Key_Plus || key == Qt::Key_Equal) {
+-		_inner->zoomIn();
+-		return true;
+-	} else if (key == Qt::Key_Minus || key == Qt::Key_Underscore) {
+-		_inner->zoomOut();
+-		return true;
+-	}
+-	return false;
+-}
+-
+ rpl::producer<QString> Widget::title() {
+ 	if (controller()->key().peer()->sharedMediaInfo() && isStackBottom()) {
+ 		return tr::lng_profile_shared_media();
+diff --git a/Telegram/SourceFiles/info/media/info_media_widget.h b/Telegram/SourceFiles/info/media/info_media_widget.h
+index 490539d1ef..3274a1a0e3 100644
+--- a/Telegram/SourceFiles/info/media/info_media_widget.h
++++ b/Telegram/SourceFiles/info/media/info_media_widget.h
+@@ -126,7 +126,6 @@ public:
+ 	void selectionAction(SelectionAction action) override;
+ 
+ 	void fillTopBarMenu(const Ui::Menu::MenuCallback &addAction) override;
+-	bool processZoomKey(not_null<QKeyEvent*> e) override;
+ 
+ 	rpl::producer<QString> title() override;
+ 
+diff --git a/Telegram/SourceFiles/info/profile/info_profile_actions.cpp b/Telegram/SourceFiles/info/profile/info_profile_actions.cpp
+index 92fb5f0bd8..f172f6c067 100644
+--- a/Telegram/SourceFiles/info/profile/info_profile_actions.cpp
++++ b/Telegram/SourceFiles/info/profile/info_profile_actions.cpp
+@@ -103,7 +103,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "window/window_session_controller.h"
+ #include "styles/style_boxes.h"
+ #include "styles/style_channel_earn.h" // st::channelEarnCurrencyCommonMargins
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_info.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_menu_icons.h"
+@@ -207,13 +206,8 @@ base::options::toggle ShowChannelJoinedBelowAbout({
+ 		if (!link.isEmpty()) {
+ 			TextUtilities::SetClipboardText({ link });
+ 			if (const auto strong = weak.get()) {
+-				strong->showToast({
+-					.text = {
+-						tr::lng_channel_public_link_copied(tr::now),
+-					},
+-					.iconLottie = u"toast/voip_invite"_q,
+-					.iconLottieSize = st::toastLottieIconSize,
+-				});
++				strong->showToast(
++					tr::lng_channel_public_link_copied(tr::now));
+ 			}
+ 		}
+ 	};
+@@ -1590,13 +1584,8 @@ Section DetailsFiller::makeInfo() {
+ 				[=] {
+ 					TextUtilities::SetClipboardText({ url });
+ 					if (const auto strong = weak.get()) {
+-						strong->showToast({
+-							.text = {
+-								tr::lng_channel_public_link_copied(tr::now),
+-							},
+-							.iconLottie = u"toast/voip_invite"_q,
+-							.iconLottieSize = st::toastLottieIconSize,
+-						});
++						strong->showToast(
++							tr::lng_channel_public_link_copied(tr::now));
+ 					}
+ 				});
+ 			request.menu->addAction(
+diff --git a/Telegram/SourceFiles/info/profile/info_profile_top_bar.cpp b/Telegram/SourceFiles/info/profile/info_profile_top_bar.cpp
+index 77088acbc2..a40730995a 100644
+--- a/Telegram/SourceFiles/info/profile/info_profile_top_bar.cpp
++++ b/Telegram/SourceFiles/info/profile/info_profile_top_bar.cpp
+@@ -742,38 +742,6 @@ void TopBar::setupActions(not_null<Window::SessionController*> controller) {
+ 	};
+ 	const auto guard = gsl::finally([&] {
+ 		addMore();
+-
+-		_actionsShadow = base::make_unique_q<Ui::RpWidget>(this);
+-		const auto shadowRaw = _actionsShadow.get();
+-		shadowRaw->setAttribute(Qt::WA_TransparentForMouseEvents);
+-		const auto shadow = shadowRaw->lifetime().make_state<Ui::BoxShadow>(
+-			st::infoProfileTopBarActionButtonShadow);
+-		const auto shadowShown = shadowRaw->lifetime().make_state<bool>(
+-			false);
+-		const auto extend = Ui::BoxShadow::ExtendFor(
+-			st::infoProfileTopBarActionButtonShadow);
+-		shadowRaw->paintRequest() | rpl::on_next([=] {
+-			if (!*shadowShown) {
+-				return;
+-			}
+-			const auto full = st::infoProfileTopBarActionButtonSize;
+-			const auto progress = std::clamp(
+-				float64(_actions->height()) / full,
+-				0.,
+-				1.);
+-			if (progress <= 0.) {
+-				return;
+-			}
+-			auto p = QPainter(shadowRaw);
+-			const auto opacity = shadow->opacity() * progress;
+-			for (const auto &button : buttons) {
+-				const auto buttonRect = button->geometry().translated(
+-					extend.left(),
+-					extend.top());
+-				shadow->paint(p, buttonRect, st::boxRadius, opacity);
+-			}
+-		}, shadowRaw->lifetime());
+-
+ 		style::PaletteChanged(
+ 		) | rpl::on_next([=] {
+ 			const auto current = _edgeColor.current();
+@@ -786,8 +754,6 @@ void TopBar::setupActions(not_null<Window::SessionController*> controller) {
+ 			for (const auto &button : buttons) {
+ 				button->setStyle(st);
+ 			}
+-			*shadowShown = st.shadowColor.has_value();
+-			shadowRaw->update();
+ 		}, _actions->lifetime());
+ 		const auto padding = st::infoProfileTopBarActionButtonsPadding;
+ 		sizeValue() | rpl::on_next([=](const QSize &size) {
+@@ -806,14 +772,8 @@ void TopBar::setupActions(not_null<Window::SessionController*> controller) {
+ 				size.width() - rect::m::sum::h(padding),
+ 				resultHeight);
+ 		}, _actions->lifetime());
+-		_actions->geometryValue() | rpl::on_next([=](QRect geometry) {
+-			shadowRaw->setGeometry(geometry.marginsAdded(extend));
+-			shadowRaw->update();
+-		}, shadowRaw->lifetime());
+-		shadowRaw->show();
+ 		_actions->show();
+ 		_actions->raise();
+-		shadowRaw->stackUnder(_actions.get());
+ 	});
+ 	if (user) {
+ 		const auto message = Ui::CreateChild<TopBarActionButton>(
+@@ -2915,9 +2875,7 @@ TopBarActionButtonStyle TopBar::mapActionStyle(
+ 				st::boxBg->c,
+ 				1. - st::infoProfileTopBarActionButtonBgOpacity),
+ 			.fgColor = std::nullopt,
+-			.shadowColor = Window::Theme::IsNightMode()
+-				? std::nullopt
+-				: std::make_optional(st::windowShadowFgFallback->c),
++			.shadowColor = std::make_optional(st::windowShadowFgFallback->c),
+ 		};
+ 	}
+ }
+diff --git a/Telegram/SourceFiles/info/profile/info_profile_top_bar.h b/Telegram/SourceFiles/info/profile/info_profile_top_bar.h
+index b0bf5ea20f..cbe4fedc2e 100644
+--- a/Telegram/SourceFiles/info/profile/info_profile_top_bar.h
++++ b/Telegram/SourceFiles/info/profile/info_profile_top_bar.h
+@@ -269,7 +269,6 @@ private:
+ 	Ui::RpWidget *_actionMore = nullptr;
+ 
+ 	base::unique_qptr<Ui::HorizontalFitContainer> _actions;
+-	base::unique_qptr<Ui::RpWidget> _actionsShadow;
+ 
+ 	std::unique_ptr<Lottie::MultiPlayer> _lottiePlayer;
+ 	bool _lottieSingleLoop = false;
+diff --git a/Telegram/SourceFiles/info/profile/info_profile_top_bar_action_button.cpp b/Telegram/SourceFiles/info/profile/info_profile_top_bar_action_button.cpp
+index e96a432854..0172f0fce8 100644
+--- a/Telegram/SourceFiles/info/profile/info_profile_top_bar_action_button.cpp
++++ b/Telegram/SourceFiles/info/profile/info_profile_top_bar_action_button.cpp
+@@ -103,6 +103,7 @@ void TopBarActionButton::setLottieColor(const style::color *color) {
+ void TopBarActionButton::setStyle(const TopBarActionButtonStyle &style) {
+ 	_bgColor = style.bgColor;
+ 	_fgColor = style.fgColor;
++	_shadowColor = style.shadowColor;
+ 	update();
+ }
+ 
+@@ -117,6 +118,7 @@ void TopBarActionButton::paintEvent(QPaintEvent *e) {
+ 	p.setBrush(_bgColor);
+ 	{
+ 		auto hq = PainterHighQualityEnabler(p);
++		// Todo shadows.
+ 		p.drawRoundedRect(rect(), st::boxRadius, st::boxRadius);
+ 	}
+ 
+diff --git a/Telegram/SourceFiles/info/profile/info_profile_top_bar_action_button.h b/Telegram/SourceFiles/info/profile/info_profile_top_bar_action_button.h
+index 73d108cb99..6588a85ba9 100644
+--- a/Telegram/SourceFiles/info/profile/info_profile_top_bar_action_button.h
++++ b/Telegram/SourceFiles/info/profile/info_profile_top_bar_action_button.h
+@@ -68,6 +68,7 @@ private:
+ 
+ 	QColor _bgColor;
+ 	std::optional<QColor> _fgColor;
++	std::optional<QColor> _shadowColor;
+ 
+ };
+ 
+diff --git a/Telegram/SourceFiles/iv/markdown/iv_markdown_view_widget.cpp b/Telegram/SourceFiles/iv/markdown/iv_markdown_view_widget.cpp
+index d4b880a608..b0c602ca15 100644
+--- a/Telegram/SourceFiles/iv/markdown/iv_markdown_view_widget.cpp
++++ b/Telegram/SourceFiles/iv/markdown/iv_markdown_view_widget.cpp
+@@ -20,7 +20,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/chat/chat_theme.h"
+ #include "ui/layers/show.h"
+ #include "ui/text/text_extended_data.h"
+-#include "ui/toast/toast.h"
+ #include "ui/ui_utility.h"
+ #include "ui/widgets/popup_menu.h"
+ #include "ui/color_contrast.h"
+@@ -28,7 +27,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ 
+ #include "styles/palette.h"
+ #include "styles/style_chat.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_iv.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_menu_icons.h"
+@@ -953,11 +951,7 @@ QVariant MarkdownDocumentWidget::viewerToastClickHandlerContext() const {
+ void MarkdownDocumentWidget::showToast(const QString &text) const {
+ 	const auto context = clickHandlerContext().value<ClickHandlerContext>();
+ 	if (context.show) {
+-		context.show->showToast({
+-			.text = { text },
+-			.iconLottie = u"toast/copy"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		context.show->showToast(text);
+ 	}
+ }
+ 
+diff --git a/Telegram/SourceFiles/media/stories/media_stories_controller.cpp b/Telegram/SourceFiles/media/stories/media_stories_controller.cpp
+index 6dd7e1559a..3ac7b92a7d 100644
+--- a/Telegram/SourceFiles/media/stories/media_stories_controller.cpp
++++ b/Telegram/SourceFiles/media/stories/media_stories_controller.cpp
+@@ -2045,10 +2045,6 @@ Ui::Toast::Config PrepareTogglePinToast(
+ 					tr::now,
+ 					lt_count,
+ 					count))) },
+-		.iconLottie = pin
+-			? u"toast/pin"_q
+-			: u"toast/unpin"_q,
+-		.iconLottieSize = st::toastLottieIconSize,
+ 		.st = &st::storiesActionToast,
+ 		.duration = (pin
+ 			? Data::Stories::kInProfileToastDuration
+diff --git a/Telegram/SourceFiles/media/view/media_view_overlay_widget.cpp b/Telegram/SourceFiles/media/view/media_view_overlay_widget.cpp
+index 7c64eeec98..89b160404f 100644
+--- a/Telegram/SourceFiles/media/view/media_view_overlay_widget.cpp
++++ b/Telegram/SourceFiles/media/view/media_view_overlay_widget.cpp
+@@ -5204,13 +5204,8 @@ void OverlayWidget::initThemePreview() {
+ 					_themeShare->setClickedCallback([=] {
+ 						QGuiApplication::clipboard()->setText(
+ 							session->createInternalLinkFull("addtheme/" + slug));
+-						uiShow()->showToast({
+-							.text = {
+-								tr::lng_background_link_copied(tr::now),
+-							},
+-							.iconLottie = u"toast/voip_invite"_q,
+-							.iconLottieSize = st::toastLottieIconSize,
+-						});
++						uiShow()->showToast(
++							tr::lng_background_link_copied(tr::now));
+ 					});
+ 				} else {
+ 					_themeShare.destroy();
+diff --git a/Telegram/SourceFiles/menu/menu_item_download_files.cpp b/Telegram/SourceFiles/menu/menu_item_download_files.cpp
+index 050ead06f4..660acd738a 100644
+--- a/Telegram/SourceFiles/menu/menu_item_download_files.cpp
++++ b/Telegram/SourceFiles/menu/menu_item_download_files.cpp
+@@ -30,7 +30,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/widgets/popup_menu.h"
+ #include "window/window_session_controller.h"
+ #include "window/window_controller.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_menu_icons.h"
+ #include "styles/style_widgets.h"
+ 
+@@ -110,8 +109,6 @@ void AddAction(
+ 							"internal:show_saved_message"),
+ 						tr::marked),
+ 					.filter = filter,
+-					.iconLottie = u"toast/save_to_gallery"_q,
+-					.iconLottieSize = st::toastLottieIconSize,
+ 					.st = &st::defaultToast,
+ 				});
+ 			};
+diff --git a/Telegram/SourceFiles/menu/menu_sponsored.cpp b/Telegram/SourceFiles/menu/menu_sponsored.cpp
+index e2ff3fd0f5..49d723102b 100644
+--- a/Telegram/SourceFiles/menu/menu_sponsored.cpp
++++ b/Telegram/SourceFiles/menu/menu_sponsored.cpp
+@@ -31,7 +31,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/widgets/popup_menu.h"
+ #include "styles/style_channel_earn.h"
+ #include "styles/style_chat.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_info.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_media_view.h"
+@@ -406,11 +405,7 @@ void FillSponsored(
+ 				}).text;
+ 			const auto callback = [=] {
+ 				TextUtilities::SetClipboardText({ allText });
+-				show->showToast({
+-					.text = { tr::lng_text_copied(tr::now) },
+-					.iconLottie = u"toast/copy"_q,
+-					.iconLottieSize = st::toastLottieIconSize,
+-				});
++				show->showToast(tr::lng_text_copied(tr::now));
+ 			};
+ 			for (const auto &i : info) {
+ 				auto item = base::make_unique_q<Ui::Menu::MultilineAction>(
 diff --git a/Telegram/SourceFiles/mtproto/connection_resolving.cpp b/Telegram/SourceFiles/mtproto/connection_resolving.cpp
 index 571e14eb38..102206f072 100644
 --- a/Telegram/SourceFiles/mtproto/connection_resolving.cpp
@@ -1283,10 +3863,10 @@ index f1f2c5402f..fdae22ea90 100644
 +
  } // namespace MTP
 diff --git a/Telegram/SourceFiles/mtproto/mtproto_proxy_data.h b/Telegram/SourceFiles/mtproto/mtproto_proxy_data.h
-index 9aed98a6e0..04b4428e07 100644
+index 367ee3f523..7dd4b52353 100644
 --- a/Telegram/SourceFiles/mtproto/mtproto_proxy_data.h
 +++ b/Telegram/SourceFiles/mtproto/mtproto_proxy_data.h
-@@ -27,6 +27,15 @@ struct ProxyData {
+@@ -29,6 +29,15 @@ struct ProxyData {
  		IncorrectSecret,
  		Invalid,
  	};
@@ -1302,7 +3882,7 @@ index 9aed98a6e0..04b4428e07 100644
  
  	Type type = Type::None;
  	QString host;
-@@ -49,6 +58,23 @@ struct ProxyData {
+@@ -51,6 +60,23 @@ struct ProxyData {
  	[[nodiscard]] static Status MtprotoPasswordStatus(
  		const QString &password);
  
@@ -1326,19 +3906,222 @@ index 9aed98a6e0..04b4428e07 100644
  };
  
  [[nodiscard]] ProxyData ToDirectIpProxy(
-diff --git a/Telegram/SourceFiles/mtproto/session_private.cpp b/Telegram/SourceFiles/mtproto/session_private.cpp
-index 86be336379..8be55b6157 100644
---- a/Telegram/SourceFiles/mtproto/session_private.cpp
-+++ b/Telegram/SourceFiles/mtproto/session_private.cpp
-@@ -34,7 +34,7 @@ constexpr auto kIntSize = static_cast<int>(sizeof(mtpPrime));
- constexpr auto kWaitForBetterTimeout = crl::time(2000);
- constexpr auto kMinConnectedTimeout = crl::time(1000);
- constexpr auto kMaxConnectedTimeout = crl::time(8000);
--constexpr auto kMinReceiveTimeout = crl::time(4000);
-+constexpr auto kMinReceiveTimeout = crl::time(8000);
- constexpr auto kMaxReceiveTimeout = crl::time(64000);
- constexpr auto kMarkConnectionOldTimeout = crl::time(192000);
- constexpr auto kPingDelayDisconnect = 60;
+diff --git a/Telegram/SourceFiles/overview/overview_layout.cpp b/Telegram/SourceFiles/overview/overview_layout.cpp
+index ca3f7aee68..b02785e41f 100644
+--- a/Telegram/SourceFiles/overview/overview_layout.cpp
++++ b/Telegram/SourceFiles/overview/overview_layout.cpp
+@@ -489,8 +489,7 @@ void Photo::setPixFrom(not_null<Image*> image) {
+ 
+ 	// In case we have inline thumbnail we can unload all images and we still
+ 	// won't get a blank image in the media viewer when the photo is opened.
+-	if (!_data->inlineThumbnailBytes().isEmpty()
+-		&& !delegate()->keepPhotoMediaLoaded()) {
++	if (!_data->inlineThumbnailBytes().isEmpty()) {
+ 		_dataMedia = nullptr;
+ 		delegate()->unregisterHeavyItem(this);
+ 	}
+@@ -701,22 +700,14 @@ void Video::paint(
+ 			const auto margin = st::overviewVideoStatusMargin;
+ 			const auto padding = st::overviewVideoStatusPadding;
+ 			const auto statusX = margin + padding.x(), statusY = _height - margin - padding.y() - st::normalFont->height;
+-			const auto fullW = icon.width()
+-				+ 3 * padding.x()
+-				+ st::normalFont->width(text);
+-			const auto showText = (fullW <= _width - 2 * margin);
+-			const auto statusW = showText
+-				? fullW
+-				: (icon.width() + 2 * padding.x());
++			const auto statusW = icon.width() + padding.x() + st::normalFont->width(text) + 2 * padding.x();
+ 			const auto statusH = st::normalFont->height + 2 * padding.y();
+ 			p.setOpacity(1. - radialOpacity);
+ 			Ui::FillRoundRect(p, statusX - padding.x(), statusY - padding.y(), statusW, statusH, selected ? st::msgDateImgBgSelected : st::msgDateImgBg, selected ? Ui::OverviewVideoSelectedCorners : Ui::OverviewVideoCorners);
+ 			p.setFont(st::normalFont);
+ 			p.setPen(st::msgDateImgFg);
+ 			icon.paint(p, statusX, statusY + (st::normalFont->height - icon.height()) / 2, _width);
+-			if (showText) {
+-				p.drawTextLeft(statusX + icon.width() + padding.x(), statusY, _width, text, statusW - 2 * padding.x());
+-			}
++			p.drawTextLeft(statusX + icon.width() + padding.x(), statusY, _width, text, statusW - 2 * padding.x());
+ 		}
+ 	}
+ 
+@@ -1394,7 +1385,54 @@ void Document::paint(Painter &p, const QRect &clip, TextSelection selection, con
+ 
+ 		QRect rthumb(style::rtlrect(0, st::linksBorder + _st.filePadding.top(), _st.fileThumbSize, _st.fileThumbSize, _width));
+ 		if (clip.intersects(rthumb)) {
+-			paintThumbnail(p, rthumb, wthumb, !radial && loaded);
++			if (wthumb) {
++				ensureDataMediaCreated();
++				const auto good = _data->isSvgImage()
++					? _dataMedia->goodThumbnail()
++					: nullptr;
++				const auto thumbnail = good
++					? good
++					: _dataMedia->thumbnail();
++				const auto blurred = _dataMedia->thumbnailInline();
++				if (thumbnail || blurred) {
++					if (_thumb.isNull() || (thumbnail && !_thumbLoaded)) {
++						_thumbLoaded = (thumbnail != nullptr);
++						const auto options = Images::Option::RoundSmall
++							| (_thumbLoaded
++								? Images::Option()
++								: Images::Option::Blur);
++						const auto image = thumbnail ? thumbnail : blurred;
++						_thumb = image->pixNoCache(
++							_thumbw * style::DevicePixelRatio(),
++							{
++								.options = options,
++								.outer = QSize(
++									_st.fileThumbSize,
++									_st.fileThumbSize),
++							});
++					}
++					p.drawPixmap(rthumb.topLeft(), _thumb);
++				} else {
++					p.setPen(Qt::NoPen);
++					p.setBrush(st::overviewFileThumbBg);
++					p.drawRoundedRect(
++						rthumb,
++						st::roundRadiusSmall,
++						st::roundRadiusSmall);
++				}
++			} else {
++				p.setPen(Qt::NoPen);
++				p.setBrush(_generic.color);
++				p.drawRoundedRect(
++					rthumb,
++					st::roundRadiusSmall,
++					st::roundRadiusSmall);
++				if (!radial && loaded && !_ext.isEmpty()) {
++					p.setFont(st::overviewFileExtFont);
++					p.setPen(st::overviewFileExtFg);
++					p.drawText(rthumb.left() + (rthumb.width() - _extw) / 2, rthumb.top() + st::overviewFileExtTop + st::overviewFileExtFont->ascent, _ext);
++				}
++			}
+ 			if (selected) {
+ 				p.setPen(Qt::NoPen);
+ 				p.setBrush(st::defaultTextPalette.selectOverlay);
+@@ -1478,85 +1516,6 @@ void Document::paint(Painter &p, const QRect &clip, TextSelection selection, con
+ 	paintCheckbox(p, { checkLeft, checkTop }, selected, context);
+ }
+ 
+-void Document::paintThumbnail(
+-		Painter &p,
+-		QRect rthumb,
+-		bool wthumb,
+-		bool withExt) {
+-	if (wthumb) {
+-		ensureDataMediaCreated();
+-		const auto good = _data->isSvgImage()
+-			? _dataMedia->goodThumbnail()
+-			: nullptr;
+-		const auto thumbnail = good
+-			? good
+-			: _dataMedia->thumbnail();
+-		const auto blurred = _dataMedia->thumbnailInline();
+-		if (thumbnail || blurred) {
+-			if (_thumb.isNull() || (thumbnail && !_thumbLoaded)) {
+-				_thumbLoaded = (thumbnail != nullptr);
+-				const auto options = Images::Option::RoundSmall
+-					| (_thumbLoaded
+-						? Images::Option()
+-						: Images::Option::Blur);
+-				const auto image = thumbnail ? thumbnail : blurred;
+-				_thumb = image->pixNoCache(
+-					_thumbw * style::DevicePixelRatio(),
+-					{
+-						.options = options,
+-						.outer = QSize(
+-							_st.fileThumbSize,
+-							_st.fileThumbSize),
+-					});
+-			}
+-			p.drawPixmap(rthumb.topLeft(), _thumb);
+-		} else {
+-			p.setPen(Qt::NoPen);
+-			p.setBrush(st::overviewFileThumbBg);
+-			p.drawRoundedRect(
+-				rthumb,
+-				st::roundRadiusSmall,
+-				st::roundRadiusSmall);
+-		}
+-	} else {
+-		p.setPen(Qt::NoPen);
+-		p.setBrush(_generic.color);
+-		p.drawRoundedRect(
+-			rthumb,
+-			st::roundRadiusSmall,
+-			st::roundRadiusSmall);
+-		if (withExt && !_ext.isEmpty()) {
+-			p.setFont(st::overviewFileExtFont);
+-			p.setPen(st::overviewFileExtFg);
+-			p.drawText(
+-				rthumb.left() + (rthumb.width() - _extw) / 2,
+-				rthumb.top()
+-					+ st::overviewFileExtTop
+-					+ st::overviewFileExtFont->ascent,
+-				_ext);
+-		}
+-	}
+-}
+-
+-QImage Document::dragPreviewImage() {
+-	ensureDataMediaCreated();
+-	const auto ratio = style::DevicePixelRatio();
+-	auto result = QImage(
+-		QSize(_st.fileThumbSize, _st.fileThumbSize) * ratio,
+-		QImage::Format_ARGB32_Premultiplied);
+-	result.setDevicePixelRatio(ratio);
+-	result.fill(Qt::transparent);
+-
+-	auto p = Painter(&result);
+-	auto hq = PainterHighQualityEnabler(p);
+-	paintThumbnail(
+-		p,
+-		QRect(0, 0, _st.fileThumbSize, _st.fileThumbSize),
+-		withThumb(),
+-		true);
+-	return result;
+-}
+-
+ void Document::drawCornerDownload(QPainter &p, bool selected, const PaintContext *context) const {
+ 	if (dataLoaded()
+ 		|| _data->loadedInMediaCache()
+diff --git a/Telegram/SourceFiles/overview/overview_layout.h b/Telegram/SourceFiles/overview/overview_layout.h
+index 6613d8fdad..70096a32ff 100644
+--- a/Telegram/SourceFiles/overview/overview_layout.h
++++ b/Telegram/SourceFiles/overview/overview_layout.h
+@@ -422,8 +422,6 @@ public:
+ 
+ 	void clearHeavyPart() override;
+ 
+-	[[nodiscard]] QImage dragPreviewImage();
+-
+ protected:
+ 	float64 dataProgress() const override;
+ 	bool dataFinished() const override;
+@@ -440,7 +438,6 @@ private:
+ 
+ 	[[nodiscard]] bool songLayout() const;
+ 	void ensureDataMediaCreated() const;
+-	void paintThumbnail(Painter &p, QRect rthumb, bool wthumb, bool withExt);
+ 
+ 	not_null<DocumentData*> _data;
+ 	mutable std::shared_ptr<Data::DocumentMedia> _dataMedia;
+diff --git a/Telegram/SourceFiles/overview/overview_layout_delegate.h b/Telegram/SourceFiles/overview/overview_layout_delegate.h
+index 0d016974b1..ff129a2366 100644
+--- a/Telegram/SourceFiles/overview/overview_layout_delegate.h
++++ b/Telegram/SourceFiles/overview/overview_layout_delegate.h
+@@ -19,9 +19,6 @@ public:
+ 	virtual void unregisterHeavyItem(not_null<const ItemBase*> item) = 0;
+ 	virtual void repaintItem(not_null<const ItemBase*> item) = 0;
+ 	virtual bool itemVisible(not_null<const ItemBase*> item) = 0;
+-	[[nodiscard]] virtual bool keepPhotoMediaLoaded() {
+-		return false;
+-	}
+ 
+ 	[[nodiscard]] virtual not_null<StickerPremiumMark*> hiddenMark() = 0;
+ 
 diff --git a/Telegram/SourceFiles/platform/linux/current_geo_location_linux.cpp b/Telegram/SourceFiles/platform/linux/current_geo_location_linux.cpp
 index fe26b13df9..ad9f88785e 100644
 --- a/Telegram/SourceFiles/platform/linux/current_geo_location_linux.cpp
@@ -1351,27 +4134,1895 @@ index fe26b13df9..ad9f88785e 100644
  #include "platform/linux/current_geo_location_linux.h"
  
  #include "core/current_geo_location.h"
-diff --git a/Telegram/SourceFiles/platform/win/specific_win.cpp b/Telegram/SourceFiles/platform/win/specific_win.cpp
-index 26ed3ad420..7c58cf0657 100644
---- a/Telegram/SourceFiles/platform/win/specific_win.cpp
-+++ b/Telegram/SourceFiles/platform/win/specific_win.cpp
-@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
- #include "mainwindow.h"
- #include "mainwidget.h"
- #include "history/history_location_manager.h"
-+#include "core/version.h"
- #include "storage/localstorage.h"
- #include "core/application.h"
+diff --git a/Telegram/SourceFiles/settings/business/settings_chat_links.cpp b/Telegram/SourceFiles/settings/business/settings_chat_links.cpp
+index 7a53001f1a..784b643bda 100644
+--- a/Telegram/SourceFiles/settings/business/settings_chat_links.cpp
++++ b/Telegram/SourceFiles/settings/business/settings_chat_links.cpp
+@@ -31,7 +31,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/boxes/confirm_box.h"
+ #include "ui/controls/emoji_button.h"
+ #include "ui/text/text_utilities.h"
+-#include "ui/toast/toast.h"
+ #include "ui/widgets/buttons.h"
+ #include "ui/widgets/fields/input_field.h"
+ #include "ui/widgets/popup_menu.h"
+@@ -596,11 +595,8 @@ base::unique_qptr<Ui::PopupMenu> LinksController::createRowContextMenu(
+ 		st::popupMenuWithIcons);
+ 	result->addAction(tr::lng_group_invite_context_copy(tr::now), [=] {
+ 		QGuiApplication::clipboard()->setText(link);
+-		delegate()->peerListUiShow()->showToast({
+-			.text = { tr::lng_chat_link_copied(tr::now) },
+-			.iconLottie = u"toast/voip_invite"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		delegate()->peerListUiShow()->showToast(
++			tr::lng_chat_link_copied(tr::now));
+ 	}, &st::menuIconCopy);
+ 	result->addAction(tr::lng_group_invite_context_share(tr::now), [=] {
+ 		delegate()->peerListUiShow()->showBox(ShareInviteLinkBox(
+@@ -805,11 +801,7 @@ void ChatLinks::setupContent(
+ 		st::boxDividerLabel);
+ 	label->setClickHandlerFilter([=](ClickHandlerPtr handler, auto) {
+ 		QGuiApplication::clipboard()->setText(handler->url());
+-		controller->showToast({
+-			.text = { tr::lng_chat_link_copied(tr::now) },
+-			.iconLottie = u"toast/voip_invite"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		controller->showToast(tr::lng_chat_link_copied(tr::now));
+ 		return false;
+ 	});
+ 	content->add(object_ptr<Ui::DividerLabel>(
+diff --git a/Telegram/SourceFiles/settings/sections/settings_main.cpp b/Telegram/SourceFiles/settings/sections/settings_main.cpp
+index ea0e360fcb..ef8ba208b4 100644
+--- a/Telegram/SourceFiles/settings/sections/settings_main.cpp
++++ b/Telegram/SourceFiles/settings/sections/settings_main.cpp
+@@ -70,7 +70,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/rect.h"
+ #include "ui/text/format_values.h"
+ #include "ui/text/text_utilities.h"
+-#include "ui/toast/toast.h"
+ #include "ui/vertical_list.h"
+ #include "ui/widgets/buttons.h"
+ #include "ui/widgets/continuous_sliders.h"
+@@ -80,7 +79,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/wrap/slide_wrap.h"
  #include "window/window_controller.h"
-diff --git a/Telegram/SourceFiles/platform/win/tray_win.cpp b/Telegram/SourceFiles/platform/win/tray_win.cpp
-index d3af931f41..c31ecdb695 100644
---- a/Telegram/SourceFiles/platform/win/tray_win.cpp
-+++ b/Telegram/SourceFiles/platform/win/tray_win.cpp
-@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
- #include "core/application.h"
- #include "lang/lang_keys.h"
- #include "main/main_session.h"
-+#include "core/version.h"
- #include "storage/localstorage.h"
+ #include "window/window_session_controller.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_info.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_menu_icons.h"
+@@ -289,11 +287,7 @@ void Cover::initViewers() {
+ 		} else {
+ 			QGuiApplication::clipboard()->setText(
+ 				_user->session().createInternalLinkFull(username));
+-			_controller->showToast({
+-				.text = { tr::lng_username_copied(tr::now) },
+-				.iconLottie = u"toast/voip_invite"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			_controller->showToast(tr::lng_username_copied(tr::now));
+ 		}
+ 	});
+ }
+diff --git a/Telegram/SourceFiles/settings/settings_credits_graphics.cpp b/Telegram/SourceFiles/settings/settings_credits_graphics.cpp
+index 517b59a18a..b24a5bb1b5 100644
+--- a/Telegram/SourceFiles/settings/settings_credits_graphics.cpp
++++ b/Telegram/SourceFiles/settings/settings_credits_graphics.cpp
+@@ -101,7 +101,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "styles/style_calls.h"
+ #include "styles/style_channel_earn.h"
+ #include "styles/style_chat.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_credits.h"
+ #include "styles/style_giveaway.h"
+ #include "styles/style_info.h"
+@@ -1093,11 +1092,7 @@ void FillUniqueGiftMenu(
+ 		const auto url = show->session().createInternalLinkFull(local);
+ 		menu->addAction(tr::lng_context_copy_link(tr::now), [=] {
+ 			TextUtilities::SetClipboardText({ url });
+-			show->showToast({
+-				.text = { tr::lng_channel_public_link_copied(tr::now) },
+-				.iconLottie = u"toast/voip_invite"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			show->showToast(tr::lng_channel_public_link_copied(tr::now));
+ 		}, st.link ? st.link : &st::menuIconLink);
+ 
+ 		const auto shareBoxSt = st.shareBox;
+@@ -3419,13 +3414,8 @@ void AddWithdrawalWidget(
+ 					tr::lng_context_copy_link(tr::now),
+ 					[=, show = controller->uiShow()] {
+ 						TextUtilities::SetClipboardText({ urlState->url });
+-						show->showToast({
+-							.text = {
+-								tr::lng_channel_public_link_copied(tr::now),
+-							},
+-							.iconLottie = u"toast/voip_invite"_q,
+-							.iconLottieSize = st::toastLottieIconSize,
+-						});
++						show->showToast(
++							tr::lng_channel_public_link_copied(tr::now));
+ 					},
+ 					&st::menuIconCopy);
+ 				urlState->menu->popup(QCursor::pos());
+diff --git a/Telegram/SourceFiles/settings/settings_experimental.cpp b/Telegram/SourceFiles/settings/settings_experimental.cpp
+index 38abbb78f3..86da7715d8 100644
+--- a/Telegram/SourceFiles/settings/settings_experimental.cpp
++++ b/Telegram/SourceFiles/settings/settings_experimental.cpp
+@@ -12,7 +12,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/boxes/confirm_box.h"
+ #include "ui/search_field_controller.h"
+ #include "ui/text/text_entity.h"
+-#include "ui/toast/toast.h"
+ #include "ui/widgets/menu/menu_add_action_callback.h"
+ #include "ui/widgets/fields/input_field.h"
+ #include "ui/wrap/padding_wrap.h"
+@@ -51,7 +50,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "window/notifications_manager.h"
+ #include "info/info_flexible_scroll.h"
+ #include "chat_helpers/stickers_list_widget.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_info.h"
+ #include "styles/style_settings.h"
+ #include "styles/style_layers.h"
+@@ -158,11 +156,7 @@ void AddOption(
+ 			st::popupMenuWithIcons);
+ 		(*menu)->addAction(u"Copy deep link"_q, [=] {
+ 			TextUtilities::SetClipboardText({ link });
+-			window->showToast({
+-				.text = { u"Deep link copied to clipboard."_q },
+-				.iconLottie = u"toast/voip_invite"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			window->showToast(u"Deep link copied to clipboard."_q);
+ 		}, &st::menuIconCopy);
+ 		(*menu)->popup(QCursor::pos());
+ 		e->accept();
+@@ -335,11 +329,7 @@ void Experimental::fillTopBarMenu(const Ui::Menu::MenuCallback &addAction) {
+ 		[=] {
+ 			TextUtilities::SetClipboardText(
+ 				{ EncodeOptionsToText(base::options::serialize()) });
+-			window->showToast({
+-				.text = { u"Experimental settings code copied to clipboard."_q },
+-				.iconLottie = u"toast/copy"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			window->showToast(u"Experimental settings code copied to clipboard."_q);
+ 		},
+ 		&st::menuIconCopy);
+ 	if (!DecodeOptionsFromText(QGuiApplication::clipboard()->text()).ok) {
+diff --git a/Telegram/SourceFiles/settings/settings_privacy_controllers.cpp b/Telegram/SourceFiles/settings/settings_privacy_controllers.cpp
+index 60a94103b5..281b7c82ae 100644
+--- a/Telegram/SourceFiles/settings/settings_privacy_controllers.cpp
++++ b/Telegram/SourceFiles/settings/settings_privacy_controllers.cpp
+@@ -532,11 +532,8 @@ void PhoneNumberPrivacyController::prepareWarningLabel(
+ 	warning->overrideLinkClickHandler([=] {
+ 		QGuiApplication::clipboard()->setText(PublicLinkByPhone(
+ 			_controller->session().user()));
+-		_controller->window().showToast({
+-			.text = { tr::lng_username_copied(tr::now) },
+-			.iconLottie = u"toast/voip_invite"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		_controller->window().showToast(
++			tr::lng_username_copied(tr::now));
+ 	});
+ }
+ 
+diff --git a/Telegram/SourceFiles/settings/settings_search.cpp b/Telegram/SourceFiles/settings/settings_search.cpp
+index 161f1b95ef..d38e444ace 100644
+--- a/Telegram/SourceFiles/settings/settings_search.cpp
++++ b/Telegram/SourceFiles/settings/settings_search.cpp
+@@ -19,7 +19,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "settings/settings_recent_searches.h"
  #include "ui/painter.h"
+ #include "ui/text/text_entity.h"
+-#include "ui/toast/toast.h"
+ #include "ui/search_field_controller.h"
+ #include "ui/vertical_list.h"
+ #include "ui/widgets/buttons.h"
+@@ -32,7 +31,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/wrap/padding_wrap.h"
+ #include "ui/wrap/vertical_layout.h"
+ #include "window/window_session_controller.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_info.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_menu_icons.h"
+@@ -490,13 +488,8 @@ not_null<Ui::SettingsButton*> Search::createEntryButton(
+ 					[=] {
+ 						TextUtilities::SetClipboardText(
+ 							TextForMimeData::Simple(copyLink));
+-						controller()->showToast({
+-							.text = {
+-								tr::lng_channel_public_link_copied(tr::now),
+-							},
+-							.iconLottie = u"toast/voip_invite"_q,
+-							.iconLottieSize = st::toastLottieIconSize,
+-						});
++						controller()->showToast(
++							tr::lng_channel_public_link_copied(tr::now));
+ 					},
+ 					&st::menuIconLink);
+ 			}
+diff --git a/Telegram/SourceFiles/ui/boxes/boost_box.cpp b/Telegram/SourceFiles/ui/boxes/boost_box.cpp
+index 19cc0e793a..108c69b9c1 100644
+--- a/Telegram/SourceFiles/ui/boxes/boost_box.cpp
++++ b/Telegram/SourceFiles/ui/boxes/boost_box.cpp
+@@ -15,12 +15,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/effects/premium_graphics.h"
+ #include "ui/layers/generic_box.h"
+ #include "ui/text/text_utilities.h"
+-#include "ui/toast/toast.h"
+ #include "ui/widgets/buttons.h"
+ #include "ui/wrap/fade_wrap.h"
+ #include "ui/painter.h"
+ #include "ui/rect.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_giveaway.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_premium.h"
+@@ -650,11 +648,7 @@ object_ptr<Ui::RpWidget> MakeLinkLabel(
+ 	}
+ 	raw->setClickedCallback([=] {
+ 		QGuiApplication::clipboard()->setText(state->link.current());
+-		show->showToast({
+-			.text = { tr::lng_username_copied(tr::now) },
+-			.iconLottie = u"toast/voip_invite"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		show->showToast(tr::lng_username_copied(tr::now));
+ 	});
+ 
+ 	return result;
+@@ -840,11 +834,7 @@ void AskBoostBox(
+ 	auto submit = tr::lng_boost_channel_ask_button();
+ 	box->addButton(rpl::duplicate(submit), [=] {
+ 		QGuiApplication::clipboard()->setText(data.link);
+-		box->uiShow()->showToast({
+-			.text = { tr::lng_username_copied(tr::now) },
+-			.iconLottie = u"toast/voip_invite"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		box->uiShow()->showToast(tr::lng_username_copied(tr::now));
+ 	});
+ }
+ 
+diff --git a/Telegram/SourceFiles/ui/boxes/collectible_info_box.cpp b/Telegram/SourceFiles/ui/boxes/collectible_info_box.cpp
+index f9f5698add..93f2911bff 100644
+--- a/Telegram/SourceFiles/ui/boxes/collectible_info_box.cpp
++++ b/Telegram/SourceFiles/ui/boxes/collectible_info_box.cpp
+@@ -15,14 +15,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/layers/generic_box.h"
+ #include "ui/text/format_values.h"
+ #include "ui/text/text_utilities.h"
+-#include "ui/toast/toast.h"
+ #include "ui/widgets/buttons.h"
+ #include "ui/widgets/labels.h"
+ #include "ui/dynamic_image.h"
+ #include "ui/painter.h"
+ #include "settings/settings_common.h"
+ #include "styles/style_boxes.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_credits.h"
+ #include "styles/style_layers.h"
+ 
+@@ -190,18 +188,11 @@ void CollectibleInfoBox(
+ 		QGuiApplication::clipboard()->setText((text.isEmpty() || !copyLink)
+ 			? formatted
+ 			: text);
+-		const auto link = (type != CollectibleType::Phone) && copyLink;
+-		box->uiShow()->showToast({
+-			.text = { (type == CollectibleType::Phone)
+-				? tr::lng_collectible_phone_copied(tr::now)
+-				: copyLink
+-				? tr::lng_username_copied(tr::now)
+-				: tr::lng_username_text_copied(tr::now) },
+-			.iconLottie = link
+-				? u"toast/voip_invite"_q
+-				: u"toast/copy"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+-		});
++		box->uiShow()->showToast((type == CollectibleType::Phone)
++			? tr::lng_collectible_phone_copied(tr::now)
++			: copyLink
++			? tr::lng_username_copied(tr::now)
++			: tr::lng_username_text_copied(tr::now));
+ 	};
+ 	box->addRow(
+ 		object_ptr<Ui::FlatLabel>(
+diff --git a/Telegram/SourceFiles/ui/boxes/peer_qr_box.cpp b/Telegram/SourceFiles/ui/boxes/peer_qr_box.cpp
+index 05192a56a0..28b09e9807 100644
+--- a/Telegram/SourceFiles/ui/boxes/peer_qr_box.cpp
++++ b/Telegram/SourceFiles/ui/boxes/peer_qr_box.cpp
+@@ -26,7 +26,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "ui/layers/generic_box.h"
+ #include "ui/painter.h"
+ #include "ui/rect.h"
+-#include "ui/toast/toast.h"
  #include "ui/ui_utility.h"
+ #include "ui/vertical_list.h"
+ #include "ui/widgets/box_content_divider.h"
+@@ -36,7 +35,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "window/window_controller.h"
+ #include "window/window_session_controller.h"
+ #include "styles/style_boxes.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_giveaway.h"
+ #include "styles/style_credits.h"
+ #include "styles/style_intro.h"
+@@ -979,11 +977,7 @@ void FillPeerQrBox(
+ 				auto mime = std::make_unique<QMimeData>();
+ 				mime->setImageData(std::move(image));
+ 				QGuiApplication::clipboard()->setMimeData(mime.release());
+-				show->showToast({
+-					.text = { tr::lng_group_invite_qr_copied(tr::now) },
+-					.iconLottie = u"toast/copy"_q,
+-					.iconLottieSize = st::toastLottieIconSize,
+-				});
++				show->showToast(tr::lng_group_invite_qr_copied(tr::now));
+ 			});
+ 		});
+ 	});
+diff --git a/Telegram/SourceFiles/ui/menu_icons.style b/Telegram/SourceFiles/ui/menu_icons.style
+index b30b62a5a1..0f1c000825 100644
+--- a/Telegram/SourceFiles/ui/menu_icons.style
++++ b/Telegram/SourceFiles/ui/menu_icons.style
+@@ -69,8 +69,6 @@ menuIconArticle: icon {{ "/menu/article_rich-24x24", menuIconColor }};
+ menuIconQrCode: icon {{ "menu/qr_code", menuIconColor }};
+ menuIconExpand: icon {{ "menu/expand", menuIconColor }};
+ menuIconCollapse: icon {{ "menu/collapse", menuIconColor }};
+-menuIconZoomIn: icon {{ "/menu/zoom_in-24x24", menuIconColor }};
+-menuIconZoomOut: icon {{ "/menu/zoom_out-24x24", menuIconColor }};
+ menuIconToMainMenu: icon {{ "menu/move_to_menu", menuIconColor }};
+ menuIconFromMainMenu: icon {{ "menu/move_from_menu", menuIconColor }};
+ menuIconAddAccount: icon {{ "menu/add_account", menuIconColor }};
+diff --git a/Telegram/SourceFiles/window/themes/window_themes_cloud_list.cpp b/Telegram/SourceFiles/window/themes/window_themes_cloud_list.cpp
+index 94de939669..245c4f102c 100644
+--- a/Telegram/SourceFiles/window/themes/window_themes_cloud_list.cpp
++++ b/Telegram/SourceFiles/window/themes/window_themes_cloud_list.cpp
+@@ -30,7 +30,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "styles/style_settings.h"
+ #include "styles/style_boxes.h"
+ #include "styles/style_chat.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_menu_icons.h"
+ 
+ #include <QtGui/QGuiApplication>
+@@ -595,11 +594,8 @@ void CloudList::showMenu(Element &element) {
+ 		_contextMenu->addAction(tr::lng_theme_share(tr::now), [=] {
+ 			QGuiApplication::clipboard()->setText(
+ 				_window->session().createInternalLinkFull("addtheme/" + slug));
+-			_window->window().showToast({
+-				.text = { tr::lng_background_link_copied(tr::now) },
+-				.iconLottie = u"toast/voip_invite"_q,
+-				.iconLottieSize = st::toastLottieIconSize,
+-			});
++			_window->window().showToast(
++				tr::lng_background_link_copied(tr::now));
+ 		}, &st::menuIconShare);
+ 	}
+ 	if (cloud.documentId
+diff --git a/Telegram/SourceFiles/window/window_filters_menu.cpp b/Telegram/SourceFiles/window/window_filters_menu.cpp
+index d22390eaff..3a31037158 100644
+--- a/Telegram/SourceFiles/window/window_filters_menu.cpp
++++ b/Telegram/SourceFiles/window/window_filters_menu.cpp
+@@ -364,7 +364,6 @@ void FiltersMenu::refresh() {
+ 	// Re-establish the list's Tab-stop on the folder that was focused (if it
+ 	// survived the rebuild), else on the active one, so a refresh - rename,
+ 	// deletion, Premium-state change - never leaves the list without a Tab-stop.
+-	auto refocus = (Ui::SideBarButton*)nullptr;
+ 	if (Ui::ScreenReaderModeActive()) {
+ 		auto i = focusedId ? _filters.find(*focusedId) : end(_filters);
+ 		if (i == end(_filters)) {
+@@ -372,15 +371,6 @@ void FiltersMenu::refresh() {
+ 		}
+ 		if (i != end(_filters)) {
+ 			setListTabStop(i->second.get());
+-			// setListTabStop only fixes the Tab order; the std::move above
+-			// destroyed the focused button, so Qt also dropped keyboard focus
+-			// (to the menu, the edit button or nowhere). If a folder held it,
+-			// restore focus to the replacement - or the active fallback - below,
+-			// once the scroll is restored, so it lands focused and visible and a
+-			// screen reader keeps reading a folder rather than where focus fell.
+-			if (focusedId) {
+-				refocus = i->second.get();
+-			}
+ 		}
+ 	}
+ 	_reorder->start();
+@@ -390,11 +380,6 @@ void FiltersMenu::refresh() {
+ 	// After the filters are refreshed, the scroll is reset,
+ 	// so we have to restore it.
+ 	_scroll.scrollToY(oldTop);
+-
+-	if (refocus) {
+-		refocus->setFocus();
+-		scrollToButton(refocus);
+-	}
+ }
+ 
+ void FiltersMenu::setupList() {
+diff --git a/Telegram/SourceFiles/window/window_peer_menu.cpp b/Telegram/SourceFiles/window/window_peer_menu.cpp
+index 2f9cf604ae..7bde506634 100644
+--- a/Telegram/SourceFiles/window/window_peer_menu.cpp
++++ b/Telegram/SourceFiles/window/window_peer_menu.cpp
+@@ -119,7 +119,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "boxes/peers/edit_peer_info_box.h"
+ #include "boxes/premium_preview_box.h"
+ #include "styles/style_chat.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_credits.h"
+ #include "styles/style_layers.h"
+ #include "styles/style_boxes.h"
+@@ -1126,16 +1125,9 @@ void Filler::addTopicLink() {
+ 		if (const auto strong = weak.get()) {
+ 			const auto link = Info::Profile::TopicLink(strong, true);
+ 			QGuiApplication::clipboard()->setText(link);
+-			if (channel->hasUsername()) {
+-				controller->showToast({
+-					.text = { tr::lng_channel_public_link_copied(tr::now) },
+-					.iconLottie = u"toast/voip_invite"_q,
+-					.iconLottieSize = st::toastLottieIconSize,
+-				});
+-			} else {
+-				controller->showToast(
+-					tr::lng_context_about_private_link(tr::now));
+-			}
++			controller->showToast(channel->hasUsername()
++				? tr::lng_channel_public_link_copied(tr::now)
++				: tr::lng_context_about_private_link(tr::now));
+ 		}
+ 	}, &st::menuIconCopy);
+ }
+@@ -3880,10 +3872,6 @@ void ToggleHistoryArchived(
+ 			.text = { (archived
+ 				? tr::lng_archived_added(tr::now)
+ 				: tr::lng_archived_removed(tr::now)) },
+-			.iconLottie = (archived
+-				? u"toast/chats_archived"_q
+-				: QString()),
+-			.iconLottieSize = st::toastLottieIconSize,
+ 			.st = &st::windowArchiveToast,
+ 			.duration = (archived
+ 				? kArchivedToastDuration
+diff --git a/Telegram/SourceFiles/window/window_session_controller.cpp b/Telegram/SourceFiles/window/window_session_controller.cpp
+index b178124dcf..674a73be0d 100644
+--- a/Telegram/SourceFiles/window/window_session_controller.cpp
++++ b/Telegram/SourceFiles/window/window_session_controller.cpp
+@@ -123,7 +123,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "styles/style_chat.h"
+ #include "settings/sections/settings_premium.h"
+ #include "settings/sections/settings_privacy_security.h"
+-#include "styles/style_chat_helpers.h"
+ #include "styles/style_window.h"
+ #include "styles/style_boxes.h"
+ #include "styles/style_dialogs.h"
+@@ -2202,8 +2201,6 @@ void SessionController::setupPremiumToast() {
+ 	}) | rpl::on_next([=] {
+ 		MainWindowShow(this).showToast({
+ 			.text = { tr::lng_premium_success(tr::now) },
+-			.iconLottie = u"toast/star_premium_2"_q,
+-			.iconLottieSize = st::toastLottieIconSize,
+ 			.adaptive = true,
+ 		});
+ 	}, _lifetime);
+diff --git a/cmake b/cmake
+index f95a64c05e..8fb178b7a3 160000
+--- a/cmake
++++ b/cmake
+@@ -1 +1 @@
+-Subproject commit f95a64c05e01595aa3bf247874aa001e0c873249
++Subproject commit 8fb178b7a34a4e07b5de6eb1ecc5aa21e2926a0a-dirty
+diff --git a/patches/cmake-qt6-win-openssl-tls.patch b/patches/cmake-qt6-win-openssl-tls.patch
+new file mode 100644
+index 0000000000..885c98b769
+--- /dev/null
++++ b/patches/cmake-qt6-win-openssl-tls.patch
+@@ -0,0 +1,21 @@
++diff --git a/external/qt/CMakeLists.txt b/external/qt/CMakeLists.txt
++index 9845f55..6bbf570 100644
++--- a/external/qt/CMakeLists.txt
+++++ b/external/qt/CMakeLists.txt
++@@ -176,14 +176,14 @@ if (WIN32)
++     )
++     if (QT_VERSION GREATER 6)
++         list(APPEND qt_libs
++-            plugins/tls/${qt_lib_prefix}qschannelbackend
+++            plugins/tls/${qt_lib_prefix}qopensslbackend
++             plugins/networkinformation/${qt_lib_prefix}qnetworklistmanager
++             lib/${qt_lib_prefix}Qt${QT_VERSION_MAJOR}BundledFreetype
++             lib/${qt_lib_prefix}Qt${QT_VERSION_MAJOR}EntryPoint
++         )
++         list(APPEND qt_libs_list
++             $<TARGET_OBJECTS:Qt${QT_VERSION_MAJOR}::QWindowsIntegrationPlugin_init>
++-            $<TARGET_OBJECTS:Qt${QT_VERSION_MAJOR}::QSchannelBackendPlugin_init>
+++            $<TARGET_OBJECTS:Qt${QT_VERSION_MAJOR}::QTlsBackendOpenSSLPlugin_init>
++             $<TARGET_OBJECTS:Qt${QT_VERSION_MAJOR}::QNLMNIPlugin_init>
++             $<TARGET_OBJECTS:Qt${QT_VERSION_MAJOR}::QWindowsIntegrationPlugin_resources_1>
++         )
+diff --git a/patches/tdesktop-MSVC.patch b/patches/tdesktop-MSVC.patch
+new file mode 100644
+index 0000000000..459d903430
+--- /dev/null
++++ b/patches/tdesktop-MSVC.patch
+@@ -0,0 +1,1377 @@
++diff --git a/Telegram/Resources/langs/lang.strings b/Telegram/Resources/langs/lang.strings
++index f1d4e37ba4..3422b26486 100644
++--- a/Telegram/Resources/langs/lang.strings
+++++ b/Telegram/Resources/langs/lang.strings
++@@ -1264,6 +1264,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
++ "lng_proxy_use_system_settings" = "Use system proxy settings";
++ "lng_proxy_use_custom" = "Use custom proxy";
++ "lng_proxy_use_for_calls" = "Use proxy for calls";
+++"lng_proxy_chello_about"   = "MTProto Client Hello selection";
+++"lng_proxy_chello_chrome"  = "Chrome";
+++"lng_proxy_chello_firefox" = "FireFox";
+++"lng_proxy_chello_custom"  = "Firefox (permutated ext)";
+++"lng_proxy_chello_random"  = "Random selection on each connection";
+++"lng_proxy_chello_safari_mac" = "Safari (macOS)";
+++"lng_proxy_chello_yandex_gost" = "Yandex (GOST)";
+++"lng_proxy_slow_mode" = "Slow connection mode (250-400ms delay)";
+++"lng_proxy_slow_delay" = "Delay (ms)";
+++"lng_proxy_slow_jitter" = "Jitter (ms)";
+++
++ "lng_proxy_auto_switch" = "Auto-switch proxies";
++ "lng_proxy_auto_switch_about" = "You can choose how quickly the app should auto-connect to the nearest active proxy if the current one stops working.";
++ "lng_proxy_auto_switch_timeout#one" = "{count} s";
++diff --git a/Telegram/SourceFiles/boxes/connection_box.cpp b/Telegram/SourceFiles/boxes/connection_box.cpp
++index 94b33cbaca..6bd836b191 100644
++--- a/Telegram/SourceFiles/boxes/connection_box.cpp
+++++ b/Telegram/SourceFiles/boxes/connection_box.cpp
++@@ -44,6 +44,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
++ #include "ui/widgets/menu/menu_add_action_callback.h"
++ #include "ui/widgets/menu/menu_add_action_callback_factory.h"
++ #include "ui/widgets/popup_menu.h"
+++#include "ui/widgets/fields/number_input.h"
+++#include "ui/wrap/padding_wrap.h"
++ #include "ui/wrap/slide_wrap.h"
++ #include "ui/wrap/table_layout.h"
++ #include "ui/wrap/vertical_layout.h"
++@@ -618,16 +620,23 @@ private:
++ 	int rowHeight() const;
++ 	void refreshProxyForCalls();
++ 	void refreshProxyRotation();
+++	void refreshProxySlowMode();
++ 
++ 	not_null<ProxiesBoxController*> _controller;
++ 	Core::SettingsProxy &_settings;
++ 	QPointer<Ui::Checkbox> _tryIPv6;
++ 	std::shared_ptr<Ui::RadioenumGroup<ProxyData::Settings>> _proxySettings;
+++	std::shared_ptr<Ui::RadioenumGroup<ProxyData::CHelloType>> _proxyCHelloSettings;
++ 	QPointer<Ui::SlideWrap<Ui::Checkbox>> _proxyForCalls;
++ 	QPointer<Ui::SlideWrap<Ui::Checkbox>> _proxyRotation;
++ 	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _proxyRotationOptions;
++ 	QPointer<Ui::SettingsSlider> _proxyRotationTimeout;
++ 	QPointer<Ui::DividerLabel> _about;
+++	QPointer<Ui::Checkbox> _proxySlowMode;
+++	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _proxySlowModeOptionsLayout;
+++	QPointer<Ui::FixedHeightWidget> _proxySlowModeOptions;
+++	QPointer<Ui::NumberInput> _proxySlowDelayInput;
+++	QPointer<Ui::NumberInput> _proxySlowJitterInput;
++ 	base::unique_qptr<Ui::RpWidget> _noRows;
++ 	object_ptr<Ui::VerticalLayout> _initialWrap;
++ 	QPointer<Ui::VerticalLayout> _wrap;
++@@ -1129,6 +1138,109 @@ void ProxiesBox::setupContent() {
++ 			ProxyData::Settings::Enabled,
++ 			tr::lng_proxy_use_custom(tr::now)),
++ 		st::proxyUsePadding);
+++	// ++ ClientHello customization
+++	inner->add(
+++		object_ptr<Ui::FlatLabel>(
+++			inner,
+++			tr::lng_proxy_chello_about(tr::now),
+++			st::proxyEditTitle),
+++		st::proxyEditTitlePadding);
+++
+++	_proxyCHelloSettings
+++		= std::make_shared<Ui::RadioenumGroup<ProxyData::CHelloType>>(
+++			_settings.proxyCHelloType());
+++
+++	inner->add(
+++		object_ptr<Ui::Radioenum<ProxyData::CHelloType>>(
+++			inner,
+++			_proxyCHelloSettings,
+++			ProxyData::CHelloType::Firefox,
+++			tr::lng_proxy_chello_firefox(tr::now)),
+++		st::proxyUsePadding);
+++	inner->add(
+++		object_ptr<Ui::Radioenum<ProxyData::CHelloType>>(
+++			inner,
+++			_proxyCHelloSettings,
+++			ProxyData::CHelloType::Chrome,
+++			tr::lng_proxy_chello_chrome(tr::now)),
+++		st::proxyUsePadding);
+++	inner->add(
+++		object_ptr<Ui::Radioenum<ProxyData::CHelloType>>(
+++			inner,
+++			_proxyCHelloSettings,
+++			ProxyData::CHelloType::Custom,
+++			tr::lng_proxy_chello_custom(tr::now)),
+++		st::proxyUsePadding);
+++	inner->add(
+++		object_ptr<Ui::Radioenum<ProxyData::CHelloType>>(
+++			inner,
+++			_proxyCHelloSettings,
+++			ProxyData::CHelloType::SafariMac,
+++			tr::lng_proxy_chello_safari_mac(tr::now)),
+++		st::proxyUsePadding);
+++	inner->add(
+++		object_ptr<Ui::Radioenum<ProxyData::CHelloType>>(
+++			inner,
+++			_proxyCHelloSettings,
+++			ProxyData::CHelloType::YandexGost,
+++			tr::lng_proxy_chello_yandex_gost(tr::now)),
+++		st::proxyUsePadding);
+++	inner->add(
+++		object_ptr<Ui::Radioenum<ProxyData::CHelloType>>(
+++			inner,
+++			_proxyCHelloSettings,
+++			ProxyData::CHelloType::RANDOM,
+++			tr::lng_proxy_chello_random(tr::now)),
+++		st::proxyUsePadding);
+++	// -- ClientHello customization
+++	// ++ proxy slow connect controls
+++	_proxySlowMode = inner->add(
+++		object_ptr<Ui::Checkbox>(
+++			inner,
+++			tr::lng_proxy_slow_mode(tr::now),
+++			_settings.proxySlowMode()),
+++		style::margins(
+++			st::proxyTryIPv6Padding.left(),
+++			0,
+++			st::proxyTryIPv6Padding.right(),
+++			st::proxyTryIPv6Padding.top()));
+++
+++	{
+++		_proxySlowModeOptionsLayout = inner->add(
+++			object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+++				inner,
+++				object_ptr<Ui::VerticalLayout>(inner)));
+++
+++		_proxySlowModeOptions = _proxySlowModeOptionsLayout->entity()->add(
+++			object_ptr<Ui::FixedHeightWidget>(
+++				_proxySlowModeOptionsLayout->entity(),
+++				st::connectionPortInputField.heightMin),
+++			st::proxyEditInputPadding);
+++
+++		_proxySlowDelayInput = Ui::CreateChild<Ui::NumberInput>(
+++			_proxySlowModeOptions,
+++			st::connectionPortInputField,
+++			tr::lng_proxy_slow_delay(),
+++			QString::number(_settings.proxySlowDelay()),
+++			9999);
+++
+++		_proxySlowJitterInput = Ui::CreateChild<Ui::NumberInput>(
+++			_proxySlowModeOptions,
+++			st::connectionPortInputField,
+++			tr::lng_proxy_slow_jitter(),
+++			QString::number(_settings.proxySlowJitter()),
+++			9999);
+++
+++		_proxySlowModeOptions->widthValue() | rpl::on_next([=](int width) {
+++			_proxySlowDelayInput->moveToLeft(0,0);
+++			_proxySlowJitterInput->moveToRight(0,0);
+++			_proxySlowDelayInput->resize(width / 2 - st::proxyEditSkip, _proxySlowDelayInput->height());
+++			_proxySlowJitterInput->resize(width / 2 - st::proxyEditSkip, _proxySlowJitterInput->height());
+++		}, _proxySlowModeOptions->lifetime());
+++
+++	}
+++	// -- proxy slow connect controls
+++
++ 	_proxyForCalls = inner->add(
++ 		object_ptr<Ui::SlideWrap<Ui::Checkbox>>(
++ 			inner,
++@@ -1211,6 +1323,33 @@ void ProxiesBox::setupContent() {
++ 		refreshProxyForCalls();
++ 		refreshProxyRotation();
++ 	});
+++	_proxyCHelloSettings->setChangedCallback([=](ProxyData::CHelloType value) {
+++		if (!_controller->setProxyCHelloType(value)) {
+++			_proxyCHelloSettings->setValue(_settings.proxyCHelloType());
+++		}
+++	});
+++	// ++ proxy slow connect
+++	_proxySlowMode->checkedChanges(
+++	) | rpl::on_next([=](bool checked) {
+++		_controller->setProxySlowMode(checked);
+++		refreshProxySlowMode();
+++	}, _proxySlowMode->lifetime());
+++	connect(_proxySlowDelayInput, &Ui::MaskedInputField::changed, [=] {
+++		const auto value = _proxySlowDelayInput->getLastText().toInt();
+++		if(!_controller->setProxySlowDelay(value)) {
+++			_proxySlowDelayInput->setText(QString::number(_settings.proxySlowDelay()));
+++		}
+++	});
+++
+++	connect(_proxySlowJitterInput, &Ui::MaskedInputField::changed, [=] {
+++		const auto value = _proxySlowJitterInput->getLastText().toInt();
+++		if (!_controller->setProxySlowJitter(value)) {
+++			_proxySlowJitterInput->setText(QString::number(_settings.proxySlowJitter()));
+++		}
+++	});
+++	refreshProxySlowMode();
+++	// -- proxy slow connect
+++
++ 	_tryIPv6->checkedChanges(
++ 	) | rpl::on_next([=](bool checked) {
++ 		_controller->setTryIPv6(checked);
++@@ -1245,6 +1384,7 @@ void ProxiesBox::setupContent() {
++ 	refreshProxyRotation();
++ 	_proxyForCalls->finishAnimating();
++ 	_proxyRotation->finishAnimating();
+++	_proxySlowModeOptionsLayout->finishAnimating();
++ 	_proxyRotationOptions->finishAnimating();
++ 
++ 	{
++@@ -1304,6 +1444,14 @@ void ProxiesBox::refreshProxyRotation() {
++ 		anim::type::normal);
++ }
++ 
+++void ProxiesBox::refreshProxySlowMode() {
+++	if (!_proxySlowMode || !_proxySlowModeOptions || !_proxySlowModeOptionsLayout) {
+++		return;
+++	}
+++	_proxySlowModeOptionsLayout->toggle(_proxySlowMode->checked(), anim::type::normal);
+++	// _proxySlowModeOptions->setVisible(_proxySlowMode->checked());
+++}
+++
++ int ProxiesBox::rowHeight() const {
++ 	return st::proxyRowPadding.top()
++ 		+ st::semiboldFont->height
++@@ -2289,6 +2437,52 @@ bool ProxiesBoxController::setProxySettings(ProxyData::Settings value) {
++ 	return true;
++ }
++ 
+++bool ProxiesBoxController::setProxyCHelloType(ProxyData::CHelloType value) {
+++	if (_settings.proxyCHelloType() == value) {
+++		return true;
+++	}
+++	_settings.setProxyCHelloType(value);
+++	MTP::ProxyData::setGlobalClienHelloRulesType(value);
+++	saveDelayed();
+++	return true;
+++}
+++
+++bool ProxiesBoxController::setProxySlowMode(bool value) {
+++	if (_settings.proxySlowMode() == value) {
+++		return true;
+++	}
+++	_settings.setProxySlowMode(value);
+++	MTP::ProxyData::setGlobalSlowMode(value);
+++	saveDelayed();
+++	return true;
+++}
+++
+++bool ProxiesBoxController::setProxySlowDelay(int value) {
+++	if(value < 0) {
+++		return false;
+++	}
+++	if (_settings.proxySlowDelay() == value) {
+++		return true;
+++	}
+++	_settings.setProxySlowDelay(value);
+++	MTP::ProxyData::setGlobalSlowDelay(value);
+++	saveDelayed();
+++	return true;
+++}
+++
+++bool ProxiesBoxController::setProxySlowJitter(int value) {
+++	if(value < 0) {
+++		return false;
+++	}
+++	if (_settings.proxySlowJitter() == value) {
+++		return true;
+++	}
+++	_settings.setProxySlowJitter(value);
+++	MTP::ProxyData::setGlobalSlowJitter(value);
+++	saveDelayed();
+++	return true;
+++}
+++
++ void ProxiesBoxController::setProxyForCalls(bool enabled) {
++ 	if (_settings.useProxyForCalls() == enabled) {
++ 		return;
++diff --git a/Telegram/SourceFiles/boxes/connection_box.h b/Telegram/SourceFiles/boxes/connection_box.h
++index 5de98bc663..87bd5f38e2 100644
++--- a/Telegram/SourceFiles/boxes/connection_box.h
+++++ b/Telegram/SourceFiles/boxes/connection_box.h
++@@ -84,6 +84,10 @@ public:
++ 	object_ptr<Ui::BoxContent> editItemBox(int id);
++ 	object_ptr<Ui::BoxContent> addNewItemBox();
++ 	bool setProxySettings(ProxyData::Settings value);
+++	bool setProxyCHelloType(ProxyData::CHelloType value);
+++	bool setProxySlowMode(bool value);
+++	bool setProxySlowDelay(int value);
+++	bool setProxySlowJitter(int value);
++ 	void setProxyForCalls(bool enabled);
++ 	void setProxyRotationEnabled(bool enabled);
++ 	void setProxyRotationTimeout(int value);
++diff --git a/Telegram/SourceFiles/core/core_settings_proxy.cpp b/Telegram/SourceFiles/core/core_settings_proxy.cpp
++index 495bb0b846..b04434e43d 100644
++--- a/Telegram/SourceFiles/core/core_settings_proxy.cpp
+++++ b/Telegram/SourceFiles/core/core_settings_proxy.cpp
++@@ -13,6 +13,31 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
++ #include <algorithm>
++ 
++ namespace Core {
+++
+++[[nodiscard]] qint32 ProxyCHelloTypeToInt(MTP::ProxyData::CHelloType settings) {
+++	switch(settings) {
+++	case MTP::ProxyData::CHelloType::RANDOM:  return -1;
+++	case MTP::ProxyData::CHelloType::Firefox: return 0;
+++	case MTP::ProxyData::CHelloType::Chrome:  return 1;
+++	case MTP::ProxyData::CHelloType::Custom:  return 2;
+++	case MTP::ProxyData::CHelloType::SafariMac: return 3;
+++	case MTP::ProxyData::CHelloType::YandexGost: return 4;
+++	}
+++	Unexpected("Bad type in ProxyCHelloTypesToInt");
+++}
+++
+++[[nodiscard]] MTP::ProxyData::CHelloType IntToProxyCHelloType(qint32 value) {
+++	switch(value) {
+++	case -1: return MTP::ProxyData::CHelloType::RANDOM;
+++	case 0: return MTP::ProxyData::CHelloType::Firefox;
+++	case 1: return MTP::ProxyData::CHelloType::Chrome;
+++	case 2: return MTP::ProxyData::CHelloType::Custom;
+++	case 3: return MTP::ProxyData::CHelloType::SafariMac;
+++	case 4: return MTP::ProxyData::CHelloType::YandexGost;
+++	}
+++	return MTP::ProxyData::CHelloType::Firefox;
+++}
+++
++ namespace {
++ 
++ [[nodiscard]] qint32 ProxySettingsToInt(MTP::ProxyData::Settings settings) {
++@@ -145,6 +170,12 @@ QByteArray SettingsProxy::serialize() const {
++ 	for (const auto index : _proxyRotationPreferredIndices) {
++ 		stream << qint32(index);
++ 	}
+++	// custom Client Hello
+++	stream << ProxyCHelloTypeToInt(_ch_type);
+++	// proxy slow connect
+++	stream << qint32(_proxySlowMode ? 1 : 0);
+++	stream << qint32(_proxySlowDelay);
+++	stream << qint32(_proxySlowJitter);
++ 	return std::move(stream).result();
++ }
++ 
++@@ -210,6 +241,22 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
++ 			}
++ 		}
++ 	}
+++	qint32 proxyCHtype = ProxyCHelloTypeToInt(_ch_type);
+++	if (!stream.atEnd()) {
+++		stream >> proxyCHtype;
+++	}
+++	qint32 proxySlowMode = qint32(_proxySlowMode ? 1 : 0);
+++	if (!stream.atEnd()) {
+++		stream >> proxySlowMode;
+++	}
+++	qint32 proxySlowDelay = _proxySlowDelay;
+++	if (!stream.atEnd()) {
+++		stream >> proxySlowDelay;
+++	}
+++	qint32 proxySlowJitter = _proxySlowJitter;
+++	if (!stream.atEnd()) {
+++		stream >> proxySlowJitter;
+++	}
++ 
++ 	if (!stream.ok()) {
++ 		LOG(("App Error: "
++@@ -226,7 +273,16 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
++ 	_selected = DeserializeProxyData(selectedProxy);
++ 	_list = std::move(list);
++ 	setProxyRotationPreferredIndices(std::move(preferredIndices));
++-
+++	// custom Client Hello
+++	_ch_type = IntToProxyCHelloType(proxyCHtype);
+++	MTP::ProxyData::setGlobalClienHelloRulesType(_ch_type);
+++	// slow mode
+++	_proxySlowMode = (proxySlowMode == 1);
+++	_proxySlowDelay = qMax(proxySlowDelay, 1);
+++	_proxySlowJitter = qMax(proxySlowJitter, 0);
+++	MTP::ProxyData::setGlobalSlowMode(_proxySlowMode);
+++	MTP::ProxyData::setGlobalSlowDelay(_proxySlowDelay);
+++	MTP::ProxyData::setGlobalSlowJitter(_proxySlowJitter);
++ 	return true;
++ }
++ 
++@@ -310,6 +366,38 @@ void SettingsProxy::setProxyRotationTimeout(int value) {
++ 		: kDefaultProxyRotationTimeout;
++ }
++ 
+++MTP::ProxyData::CHelloType SettingsProxy::proxyCHelloType() const {
+++	return _ch_type;
+++}
+++
+++void SettingsProxy::setProxyCHelloType(MTP::ProxyData::CHelloType value) {
+++	_ch_type = value;
+++}
+++
+++bool SettingsProxy::proxySlowMode() const {
+++	return _proxySlowMode;
+++}
+++
+++void SettingsProxy::setProxySlowMode(bool value) {
+++	_proxySlowMode = value;
+++}
+++
+++int SettingsProxy::proxySlowDelay() const {
+++	return _proxySlowDelay;
+++}
+++
+++void SettingsProxy::setProxySlowDelay(int value) {
+++	_proxySlowDelay = value;
+++}
+++
+++int SettingsProxy::proxySlowJitter() const {
+++	return _proxySlowJitter;
+++}
+++
+++void SettingsProxy::setProxySlowJitter(int value) {
+++	_proxySlowJitter = value;
+++}
+++
++ MTP::ProxyData::Settings SettingsProxy::settings() const {
++ 	return _settings;
++ }
++diff --git a/Telegram/SourceFiles/core/core_settings_proxy.h b/Telegram/SourceFiles/core/core_settings_proxy.h
++index 1f2ec5c516..f165ef39d8 100644
++--- a/Telegram/SourceFiles/core/core_settings_proxy.h
+++++ b/Telegram/SourceFiles/core/core_settings_proxy.h
++@@ -13,6 +13,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
++ 
++ namespace Core {
++ 
+++[[nodiscard]] qint32 ProxyCHelloTypeToInt(MTP::ProxyData::CHelloType settings);
+++[[nodiscard]] MTP::ProxyData::CHelloType IntToProxyCHelloType(qint32 value);
+++
++ class SettingsProxy final {
++ public:
++ 	static constexpr auto kProxyRotationTimeouts = std::array{
++@@ -46,6 +49,18 @@ public:
++ 	[[nodiscard]] int proxyRotationTimeout() const;
++ 	void setProxyRotationTimeout(int value);
++ 
+++	[[nodiscard]] MTP::ProxyData::CHelloType proxyCHelloType() const;
+++	void setProxyCHelloType(MTP::ProxyData::CHelloType value);
+++
+++	[[nodiscard]] bool proxySlowMode() const;
+++	void setProxySlowMode(bool value);
+++
+++	[[nodiscard]] int proxySlowDelay() const;
+++	void setProxySlowDelay(int value);
+++
+++	[[nodiscard]] int proxySlowJitter() const;
+++	void setProxySlowJitter(int value);
+++
++ 	[[nodiscard]] MTP::ProxyData::Settings settings() const;
++ 	void setSettings(MTP::ProxyData::Settings value);
++ 
++@@ -80,6 +95,11 @@ private:
++ 	bool _checkIpWarningShown = false;
++ 	int _proxyRotationTimeout = kDefaultProxyRotationTimeout;
++ 	MTP::ProxyData::Settings _settings = MTP::ProxyData::Settings::System;
+++	MTP::ProxyData::CHelloType _ch_type = MTP::ProxyData::CHelloType::Firefox;
+++	bool _proxySlowMode = false;
+++	int _proxySlowDelay = 250;
+++	int _proxySlowJitter = 150;
+++
++ 	MTP::ProxyData _selected;
++ 	std::vector<MTP::ProxyData> _list;
++ 	std::vector<int> _proxyRotationPreferredIndices;
++diff --git a/Telegram/SourceFiles/mtproto/connection_resolving.cpp b/Telegram/SourceFiles/mtproto/connection_resolving.cpp
++index 571e14eb38..102206f072 100644
++--- a/Telegram/SourceFiles/mtproto/connection_resolving.cpp
+++++ b/Telegram/SourceFiles/mtproto/connection_resolving.cpp
++@@ -9,6 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
++ 
++ #include "mtproto/mtp_instance.h"
++ 
+++#include <range/v3/algorithm/shuffle.hpp>
+++
++ namespace MTP {
++ namespace details {
++ namespace {
++@@ -26,6 +28,7 @@ ResolvingConnection::ResolvingConnection(
++ , _instance(instance)
++ , _timeoutTimer([=] { handleError(kErrorCodeOther); }) {
++ 	setChild(std::move(child));
+++	ranges::shuffle(_proxy.resolvedIPs);
++ 	if (proxy.resolvedExpireAt < crl::now()) {
++ 		const auto host = proxy.host;
++ 		connect(
++@@ -112,6 +115,7 @@ void ResolvingConnection::domainResolved(
++ 			emitError(kErrorCodeOther);
++ 		}
++ 	}
+++	ranges::shuffle(_proxy.resolvedIPs);
++ 	if (_ipIndex < 0) {
++ 		refreshChild();
++ 	}
++diff --git a/Telegram/SourceFiles/mtproto/details/mtproto_tls_socket.cpp b/Telegram/SourceFiles/mtproto/details/mtproto_tls_socket.cpp
++index a3c9628854..e326d72111 100644
++--- a/Telegram/SourceFiles/mtproto/details/mtproto_tls_socket.cpp
+++++ b/Telegram/SourceFiles/mtproto/details/mtproto_tls_socket.cpp
++@@ -8,13 +8,21 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
++ #include "mtproto/details/mtproto_tls_socket.h"
++ 
++ #include "mtproto/details/mtproto_tcp_socket.h"
+++#include "mtproto/mtproto_proxy_data.h"
+++#include "core/core_settings_proxy.h"
++ #include "base/openssl_help.h"
++ #include "base/bytes.h"
++ #include "base/invoke_queued.h"
++ #include "base/random.h"
++ #include "base/unixtime.h"
+++#include <chrono>
+++#include <thread>
+++#include <map>
++ 
++ #include <QtCore/QtEndian>
+++#include <QtCore/QMutex>
+++#include <QtCore/QRandomGenerator>
+++#include <QtCore/QTimer>
++ #include <range/v3/algorithm/reverse.hpp>
++ 
++ namespace MTP::details {
++@@ -35,7 +43,7 @@ const auto kClientHeader = qstr("\x17\x03\x03");
++ using BigNum = openssl::BigNum;
++ using BigNumContext = openssl::Context;
++ 
++-[[nodiscard]] MTPTlsClientHello PrepareClientHelloRules() {
+++[[nodiscard]] MTPTlsClientHello PrepareClientHelloRules_Chrome() {
++ 	using Scope = QVector<MTPTlsBlock>;
++ 	using Permutation = std::vector<Scope>;
++ 	using StackElement = std::variant<Scope, Permutation>;
++@@ -230,6 +238,652 @@ using BigNumContext = openssl::Context;
++ 	return MTP_tlsClientHello(MTP_vector<MTPTlsBlock>(Finish()));
++ }
++ 
+++[[nodiscard]] MTPTlsClientHello PrepareClientHelloRules_Firefox(const bool ext_permutation = false) {
+++	using Scope = QVector<MTPTlsBlock>;
+++	using Permutation = std::vector<Scope>;
+++	using StackElement = std::variant<Scope, Permutation>;
+++	auto stack = std::vector<StackElement>();
+++	const auto pushToBack = [&](MTPTlsBlock &&block) {
+++		Expects(!stack.empty());
+++
+++		if (const auto scope = std::get_if<Scope>(&stack.back())) {
+++			scope->push_back(std::move(block));
+++		} else {
+++			auto &permutation = v::get<Permutation>(stack.back());
+++			Assert(!permutation.empty());
+++			permutation.back().push_back(std::move(block));
+++		}
+++	};
+++	const auto S = [&](QByteArray data) {
+++		pushToBack(MTP_tlsBlockString(MTP_bytes(data)));
+++	};
+++	const auto Z = [&](int length) {
+++		pushToBack(MTP_tlsBlockZero(MTP_int(length)));
+++	};
+++	const auto R = [&](int length) {
+++		pushToBack(MTP_tlsBlockRandom(MTP_int(length)));
+++	};
+++	const auto D = [&] {
+++		pushToBack(MTP_tlsBlockDomain());
+++	};
+++	const auto K = [&] {
+++		pushToBack(MTP_tlsBlockPublicKey());
+++	};
+++	const auto M = [&] {
+++		pushToBack(MTP_tlsBlockM());
+++	};
+++	const auto E = [&] {
+++		pushToBack(MTP_tlsBlockE());
+++	};
+++	const auto P = [&] {
+++		pushToBack(MTP_tlsBlockPadding());
+++	};
+++	const auto OpenScope = [&] {
+++		stack.emplace_back(Scope());
+++	};
+++	const auto CloseScope = [&] {
+++		Expects(stack.size() > 1);
+++		Expects(v::is<Scope>(stack.back()));
+++
+++		const auto blocks = std::move(v::get<Scope>(stack.back()));
+++		stack.pop_back();
+++		pushToBack(MTP_tlsBlockScope(MTP_vector<MTPTlsBlock>(blocks)));
+++	};
+++	const auto OpenPermutation = [&] {
+++		stack.emplace_back(Permutation());
+++	};
+++	const auto ClosePermutation = [&] {
+++		Expects(stack.size() > 1);
+++		Expects(v::is<Permutation>(stack.back()));
+++
+++		const auto list = std::move(v::get<Permutation>(stack.back()));
+++		stack.pop_back();
+++
+++		const auto wrapped = list | ranges::views::transform([](
+++				const QVector<MTPTlsBlock> &elements) {
+++			return MTP_vector<MTPTlsBlock>(elements);
+++		}) | ranges::to<QVector<MTPVector<MTPTlsBlock>>>();
+++
+++		pushToBack(MTP_tlsBlockPermutation(
+++			MTP_vector<MTPVector<MTPTlsBlock>>(wrapped)));
+++	};
+++	const auto StartPermutationElement = [&] {
+++		Expects(stack.size() > 1);
+++		Expects(v::is<Permutation>(stack.back()));
+++
+++		v::get<Permutation>(stack.back()).emplace_back();
+++	};
+++	const auto Finish = [&] {
+++		Expects(stack.size() == 1);
+++		Expects(v::is<Scope>(stack.back()));
+++
+++		return v::get<Scope>(stack.back());
+++	};
+++
+++	stack.emplace_back(Scope());
+++
+++	// content type = 0x16(handshake), version TLS 1.0 (0x0301)
+++	S("\x16\x03\x01"_q);
+++	OpenScope(); // TLS length will be filled LATER
+++	// handshake type = Client Hello
+++	S("\x01\x00"_q);
+++	OpenScope(); // CH length will be filled LATER
+++	// version: TLS 1.2
+++	S("\x03\x03"_q);
+++	// 'random' field - to be filled LATER
+++	Z(32);
+++	// session ID: len
+++	S("\x20"_q);
+++	// session ID: random
+++	R(32);
+++	// cipher suites: len
+++	S("\x00\x20"_q);
+++	// cipher suites: data, 32 bytes
+++	// added: Cipher Suite: TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA (0xc00a)
+++	S(""
+++		"\x13\x01\x13\x03\x13\x02\xc0\x2b\xc0\x2f\xcc\xa9\xcc\xa8\xc0\x2c"
+++		"\xc0\x30\xc0\x0a\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35"
+++		""_q);
+++	// .. + 2 bytes compression methods
+++	S("\x01\x00"_q);
+++	// --- extensions
+++	OpenScope(); // extensions length will be filled LATER
+++	if(ext_permutation) { OpenPermutation(); }
+++	{
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			S("\x00\x00"_q);
+++			OpenScope();
+++			OpenScope();
+++			S("\x00"_q);
+++			OpenScope();
+++			D();
+++			CloseScope();
+++			CloseScope();
+++			CloseScope();
+++		}
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// extended master secret
+++			S("\x00\x17\x00\x00"_q);
+++		}
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// renegotiation info
+++			S("\xff\x01\x00\x01\x00"_q);
+++		}
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// supported groups
+++			S("\x00\x0a\x00\x10\x00\x0e"_q);
+++			// added (FF): 0019, 0100, 0101
+++			S("\x11\xec\x00\x1d\x00\x17\x00\x18\x00\x19\x01\x00\x01\x01"_q);
+++		}
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// EC point formats
+++			S("\x00\x0b\x00\x02\x01\x00"_q);
+++		}
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// session ticket
+++			S("\x00\x23\x00\x00"_q);
+++		}
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// APP layer proto negotiation
+++			S(""
+++				"\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70"
+++				"\x2f\x31\x2e\x31"_q);
+++		}
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// status request
+++			S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
+++		}
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// added (FF): delegated credentials
+++			S("\x00\x22\x00\x0a"_q);
+++			S("\x00\x08"_q); // sign hash algo len
+++			S("\x04\x03\x05\x03\x06\x03\x02\x03"_q);
+++		}
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// signed cert timestamp
+++			S("\x00\x12\x00\x00"_q);
+++		}
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// key share
+++			S("\x00\x33"_q);
+++			OpenScope(); // S("\x04\xef"_q);
+++			OpenScope(); // S("\x04\xed"_q);
+++			S("\x11\xec\x04\xc0"_q); // 11ec - X25519MLKEM768, len = 04c0
+++			M();
+++			K();
+++			S("\x00\x1d\x00\x20"_q); // 001d - x25519, len = 0020
+++			K();
+++			S("\x00\x17\x00\x41"_q); // 0017 - secp256r1, len = 0041, RANDOM !!!
+++			R(65);
+++			CloseScope();
+++			CloseScope();
+++		}
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// supported versions (TLS)
+++			S("\x00\x2b\x00\x05\x04"_q);
+++			S("\x03\x04\x03\x03"_q);
+++		}
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// signature algo's
+++			S("\x00\x0d\x00\x18\x00\x16"_q);
+++			S(""
+++				"\x04\x03\x05\x03\x06\x03\x08\x04\x08\x05\x08\x06\x04\x01"
+++				"\x05\x01\x06\x01\x02\x03\x02\x01"_q);
+++		}
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// PSK key exchange modes
+++			S("\x00\x2d\x00\x02\x01\x01"_q);
+++		}
+++
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// added (FF): record size limit
+++			S("\x00\x1c\x00\x02\x40\x01"_q);
+++		}
+++
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// compress cert
+++			S("\x00\x1b\x00\x03\x02\x00\x02"_q);
+++		}
+++		if(ext_permutation) { StartPermutationElement(); }
+++		{
+++			// encrypted client hello
+++			// length should be exactly 281 - FF
+++			S("\xfe\x0d"_q);
+++			OpenScope();
+++			S("\x00\x00\x01\x00\x01"_q);
+++			R(1);
+++			S("\x00\x20"_q);
+++			R(32);
+++			OpenScope();
+++			E();
+++			CloseScope();
+++			CloseScope();
+++		}
+++	}
+++	if(ext_permutation) { ClosePermutation(); }
+++	P();
+++	CloseScope();
+++	CloseScope();
+++	CloseScope();
+++
+++	return MTP_tlsClientHello(MTP_vector<MTPTlsBlock>(Finish()));
+++}
+++
+++[[nodiscard]] MTPTlsClientHello PrepareClientHelloRules_SafariMac() {
+++	using Scope = QVector<MTPTlsBlock>;
+++	using Permutation = std::vector<Scope>;
+++	using StackElement = std::variant<Scope, Permutation>;
+++	auto stack = std::vector<StackElement>();
+++	const auto pushToBack = [&](MTPTlsBlock &&block) {
+++		Expects(!stack.empty());
+++
+++		if (const auto scope = std::get_if<Scope>(&stack.back())) {
+++			scope->push_back(std::move(block));
+++		} else {
+++			auto &permutation = v::get<Permutation>(stack.back());
+++			Assert(!permutation.empty());
+++			permutation.back().push_back(std::move(block));
+++		}
+++	};
+++	const auto S = [&](QByteArray data) {
+++		pushToBack(MTP_tlsBlockString(MTP_bytes(data)));
+++	};
+++	const auto Z = [&](int length) {
+++		pushToBack(MTP_tlsBlockZero(MTP_int(length)));
+++	};
+++	const auto G = [&](int seed) {
+++		pushToBack(MTP_tlsBlockGrease(MTP_int(seed)));
+++	};
+++	const auto R = [&](int length) {
+++		pushToBack(MTP_tlsBlockRandom(MTP_int(length)));
+++	};
+++	const auto D = [&] {
+++		pushToBack(MTP_tlsBlockDomain());
+++	};
+++	const auto K = [&] {
+++		pushToBack(MTP_tlsBlockPublicKey());
+++	};
+++	const auto M = [&] {
+++		pushToBack(MTP_tlsBlockM());
+++	};
+++	const auto OpenScope = [&] {
+++		stack.emplace_back(Scope());
+++	};
+++	const auto CloseScope = [&] {
+++		Expects(stack.size() > 1);
+++		Expects(v::is<Scope>(stack.back()));
+++
+++		const auto blocks = std::move(v::get<Scope>(stack.back()));
+++		stack.pop_back();
+++		pushToBack(MTP_tlsBlockScope(MTP_vector<MTPTlsBlock>(blocks)));
+++	};
+++	const auto Finish = [&] {
+++		Expects(stack.size() == 1);
+++		Expects(v::is<Scope>(stack.back()));
+++
+++		return v::get<Scope>(stack.back());
+++	};
+++
+++	stack.emplace_back(Scope());
+++
+++	S("\x16\x03\x01"_q);
+++	OpenScope();
+++	S("\x01\x00"_q);
+++	OpenScope();
+++	S("\x03\x03"_q);
+++	Z(32);
+++	S("\x20"_q);
+++	R(32);
+++	// cipher suites
+++	S("\x00\x2a"_q);
+++	G(0);
+++	S(""
+++		"\x13\x02\x13\x03\x13\x01\xc0\x2c\xc0\x2b\xcc\xa9\xc0\x30\xc0\x2f"
+++		"\xcc\xa8\xc0\x0a\xc0\x09\xc0\x14\xc0\x13\x00\x9d\x00\x9c\x00\x35"
+++		"\x00\x2f\xc0\x08\xc0\x12\x00\x0a"
+++		""_q);
+++	// compression methods
+++	S("\x01\x00"_q);
+++
+++	// extensions
+++	OpenScope();
+++	G(2);
+++	S("\x00\x00"_q);
+++	// SNI
+++	{
+++		S("\x00\x00"_q);
+++		OpenScope();
+++		OpenScope();
+++		S("\x00"_q);
+++		OpenScope();
+++		D();
+++		CloseScope();
+++		CloseScope();
+++		CloseScope();
+++	}
+++	// extended master secret
+++	S("\x00\x17\x00\x00"_q);
+++	// renegotiation info
+++	S("\xff\x01\x00\x01\x00"_q);
+++	// supported groups
+++	S("\x00\x0a\x00\x0e\x00\x0c"_q);
+++	G(4);
+++	S("\x11\xec\x00\x1d\x00\x17\x00\x18\x00\x19"_q);
+++	// EC point formats
+++	S("\x00\x0b\x00\x02\x01\x00"_q);
+++	// APP layer proto negotiation
+++	const auto h2 = (QRandomGenerator::global()->bounded(0, 2) == 0);
+++	S(h2
+++		? "\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70"
+++			"\x2f\x31\x2e\x31"_q
+++		: "\x00\x10\x00\x0b\x00\x09\x08\x68\x74\x74\x70\x2f\x31\x2e\x31"_q);
+++
+++	// status request
+++	S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
+++	// signature algo's
+++	S(""
+++		"\x00\x0d\x00\x16\x00\x14\x04\x03\x08\x04\x04\x01\x05\x03"
+++		"\x08\x05\x08\x05\x05\x01\x08\x06\x06\x01\x02\x01"_q);
+++	// signed cert timestamp
+++	S("\x00\x12\x00\x00"_q);
+++	// key_share
+++	S("\x00\x33\x04\xef\x04\xed"_q);
+++	G(4);
+++	S("\x00\x01\x00\x11\xec\x04\xc0"_q);
+++	M();
+++	K();
+++	S("\x00\x1d\x00\x20"_q);
+++	K();
+++	// PSK key exchange modes
+++	S("\x00\x2d\x00\x02\x01\x01"_q);
+++	// supported versions (TLS)
+++	S("\x00\x2b\x00\x07\x06"_q);
+++	G(6);
+++	S("\x03\x04\x03\x03"_q);
+++	// compress cert
+++	S("\x00\x1b\x00\x03\x02\x00\x01"_q);
+++
+++	G(3);
+++	S("\x00\x01\x00"_q);
+++	CloseScope();
+++	CloseScope();
+++	CloseScope();
+++
+++	return MTP_tlsClientHello(MTP_vector<MTPTlsBlock>(Finish()));
+++}
+++
+++[[nodiscard]] MTPTlsClientHello PrepareClientHelloRules_YandexGost() {
+++	using Scope = QVector<MTPTlsBlock>;
+++	using Permutation = std::vector<Scope>;
+++	using StackElement = std::variant<Scope, Permutation>;
+++	auto stack = std::vector<StackElement>();
+++	const auto pushToBack = [&](MTPTlsBlock &&block) {
+++		Expects(!stack.empty());
+++
+++		if (const auto scope = std::get_if<Scope>(&stack.back())) {
+++			scope->push_back(std::move(block));
+++		} else {
+++			auto &permutation = v::get<Permutation>(stack.back());
+++			Assert(!permutation.empty());
+++			permutation.back().push_back(std::move(block));
+++		}
+++	};
+++	const auto S = [&](QByteArray data) {
+++		pushToBack(MTP_tlsBlockString(MTP_bytes(data)));
+++	};
+++	const auto Z = [&](int length) {
+++		pushToBack(MTP_tlsBlockZero(MTP_int(length)));
+++	};
+++	const auto G = [&](int seed) {
+++		pushToBack(MTP_tlsBlockGrease(MTP_int(seed)));
+++	};
+++	const auto R = [&](int length) {
+++		pushToBack(MTP_tlsBlockRandom(MTP_int(length)));
+++	};
+++	const auto D = [&] {
+++		pushToBack(MTP_tlsBlockDomain());
+++	};
+++	const auto K = [&] {
+++		pushToBack(MTP_tlsBlockPublicKey());
+++	};
+++	const auto M = [&] {
+++		pushToBack(MTP_tlsBlockM());
+++	};
+++	const auto E = [&] {
+++		pushToBack(MTP_tlsBlockE());
+++	};
+++	const auto OpenScope = [&] {
+++		stack.emplace_back(Scope());
+++	};
+++	const auto CloseScope = [&] {
+++		Expects(stack.size() > 1);
+++		Expects(v::is<Scope>(stack.back()));
+++
+++		const auto blocks = std::move(v::get<Scope>(stack.back()));
+++		stack.pop_back();
+++		pushToBack(MTP_tlsBlockScope(MTP_vector<MTPTlsBlock>(blocks)));
+++	};
+++	const auto OpenPermutation = [&] {
+++		stack.emplace_back(Permutation());
+++	};
+++	const auto ClosePermutation = [&] {
+++		Expects(stack.size() > 1);
+++		Expects(v::is<Permutation>(stack.back()));
+++
+++		const auto list = std::move(v::get<Permutation>(stack.back()));
+++		stack.pop_back();
+++
+++		const auto wrapped = list | ranges::views::transform([](
+++				const QVector<MTPTlsBlock> &elements) {
+++			return MTP_vector<MTPTlsBlock>(elements);
+++		}) | ranges::to<QVector<MTPVector<MTPTlsBlock>>>();
+++
+++		pushToBack(MTP_tlsBlockPermutation(
+++			MTP_vector<MTPVector<MTPTlsBlock>>(wrapped)));
+++	};
+++	const auto StartPermutationElement = [&] {
+++		Expects(stack.size() > 1);
+++		Expects(v::is<Permutation>(stack.back()));
+++
+++		v::get<Permutation>(stack.back()).emplace_back();
+++	};
+++	const auto Finish = [&] {
+++		Expects(stack.size() == 1);
+++		Expects(v::is<Scope>(stack.back()));
+++
+++		return v::get<Scope>(stack.back());
+++	};
+++
+++	stack.emplace_back(Scope());
+++
+++	S("\x16\x03\x01"_q);
+++	OpenScope();
+++	S("\x01\x00"_q);
+++	OpenScope();
+++	S("\x03\x03"_q);
+++	Z(32);
+++	S("\x20"_q);
+++	R(32);
+++	// cipher suites
+++	S("\x00\x32"_q);
+++	G(0);
+++	S(""
+++		"\x13\x01\x13\x02\x13\x03\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xcc\xa9"
+++		"\xcc\xa8\xc0\x13\xc0\x14\x00\x9c\x00\x9d\x00\x2f\x00\x35"
+++		"\xc1\x00\xc1\x01\xc1\x02\xc1\x03\xc1\x04\xc1\x05\xc1\x06"
+++		"\xff\x85\x00\x81"
+++		""_q);
+++	// compression methods
+++	S("\x01\x00"_q);
+++	// extensions...
+++	OpenScope();
+++	G(2);
+++	S("\x00\x00"_q);
+++	OpenPermutation(); {
+++		StartPermutationElement(); {
+++			// SNI
+++			S("\x00\x00"_q);
+++			OpenScope();
+++			OpenScope();
+++			S("\x00"_q);
+++			OpenScope();
+++			D();
+++			CloseScope();
+++			CloseScope();
+++			CloseScope();
+++		}
+++		StartPermutationElement(); {
+++			// status request
+++			S("\x00\x05\x00\x05\x01\x00\x00\x00\x00"_q);
+++		}
+++		StartPermutationElement(); {
+++			// supported groups
+++			S("\x00\x0a\x00\x0c\x00\x0a"_q);
+++			G(4);
+++			S("\x11\xec\x00\x1d\x00\x17\x00\x18"_q);
+++		}
+++		StartPermutationElement(); {
+++			// EC point formats
+++			S("\x00\x0b\x00\x02\x01\x00"_q);
+++		}
+++		StartPermutationElement(); {
+++			// signature algo's
+++			S(""
+++				"\x00\x0d\x00\x12\x00\x10\x04\x03\x08\x04\x04\x01\x05\x03"
+++				"\x08\x05\x05\x01\x08\x06\x06\x01"_q);
+++		}
+++		StartPermutationElement(); {
+++			// APP layer proto negotiation
+++			const auto h2 = (QRandomGenerator::global()->bounded(0, 2) == 0);
+++			S(h2
+++				? "\x00\x10\x00\x0e\x00\x0c\x02\x68\x32\x08\x68\x74\x74\x70"
+++					"\x2f\x31\x2e\x31"_q
+++				: "\x00\x10\x00\x0b\x00\x09\x08\x68\x74\x74\x70\x2f\x31\x2e\x31"_q);
+++		}
+++		StartPermutationElement(); {
+++			// signed cert timestamp
+++			S("\x00\x12\x00\x00"_q);
+++		}
+++		StartPermutationElement(); {
+++			// extended master secret
+++			S("\x00\x17\x00\x00"_q);
+++		}
+++		StartPermutationElement(); {
+++			// compress cert
+++			S("\x00\x1b\x00\x03\x02\x00\x02"_q);
+++		}
+++		StartPermutationElement(); {
+++			// session ticket
+++			S("\x00\x23\x00\x00"_q);
+++		}
+++		StartPermutationElement(); {
+++			// supported versions (TLS)
+++			S("\x00\x2b\x00\x07\x06"_q);
+++			G(6);
+++			S("\x03\x04\x03\x03"_q);
+++		}
+++		StartPermutationElement(); {
+++			// PSK key exchange modes
+++			S("\x00\x2d\x00\x02\x01\x01"_q);
+++		}
+++		StartPermutationElement(); {
+++			// key_share
+++			S("\x00\x33\x04\xef\x04\xed"_q);
+++			G(4);
+++			S("\x00\x01\x00\x11\xec\x04\xc0"_q);
+++			M();
+++			K();
+++			S("\x00\x1d\x00\x20"_q);
+++			K();
+++		}
+++		if (QRandomGenerator::global()->bounded(0, 2) == 0) {
+++			StartPermutationElement(); {
+++				// unknown, but present in YB
+++				S("\x44\xcd\x00\x05\x00\x03\x02\x68\x32"_q);
+++			}
+++		}
+++		StartPermutationElement(); {
+++			// encrypted client hello
+++			S("\xfe\x0d"_q);
+++			OpenScope();
+++			S("\x00\x00\x01\x00\x01"_q);
+++			R(1);
+++			S("\x00\x20"_q);
+++			R(32);
+++			OpenScope();
+++			E();
+++			CloseScope();
+++			CloseScope();
+++		}
+++		StartPermutationElement(); {
+++			// renegotiation info
+++			S("\xff\x01\x00\x01\x00"_q);
+++		}
+++	} ClosePermutation();
+++	G(3);
+++	S("\x00\x01\x00"_q);
+++	// pre-shared key
+++	S("\x00\x29\x00\x94"_q);
+++	S("\x00\x6f"_q);
+++	S("\x00\x69"_q);
+++	R(105);
+++	R(4);
+++	S("\x00\x21"_q);
+++	S("\x20"_q);
+++	R(32);
+++	CloseScope();
+++	CloseScope();
+++	CloseScope();
+++
+++	return MTP_tlsClientHello(MTP_vector<MTPTlsBlock>(Finish()));
+++}
+++
+++[[nodiscard]] MTPTlsClientHello PrepareClientHelloRules()
+++{
+++	static MTPTlsClientHello chRules_chrome  = PrepareClientHelloRules_Chrome();
+++	static MTPTlsClientHello chRules_firefox = PrepareClientHelloRules_Firefox();
+++	static MTPTlsClientHello chRules_custom  = PrepareClientHelloRules_Firefox(true);
+++	static MTPTlsClientHello chRules_safari  = PrepareClientHelloRules_SafariMac();
+++	static MTPTlsClientHello chRules_yandex  = PrepareClientHelloRules_YandexGost();
+++	auto ch_type = MTP::ProxyData::globalClienHelloRulesType();
+++	if(ProxyData::CHelloType::RANDOM == ch_type) {
+++		// qDebug("--- randomize ClientHello selection");
+++		ch_type = Core::IntToProxyCHelloType(QRandomGenerator::global()->bounded(0, 5));
+++	}
+++	switch(ch_type) {
+++		case ProxyData::CHelloType::Chrome:
+++			// qDebug(">>> using Chrome ClientHello");
+++			return chRules_chrome;
+++		case ProxyData::CHelloType::Custom:
+++			// qDebug(">>> using custom ClientHello");
+++			return chRules_custom;
+++		case ProxyData::CHelloType::SafariMac:
+++			return chRules_safari;
+++		case ProxyData::CHelloType::YandexGost:
+++			return chRules_yandex;
+++		case ProxyData::CHelloType::Firefox:
+++		default:
+++			// qDebug(">>> using FireFox ClientHello");
+++			return chRules_firefox;
+++	}
+++}
+++
++ [[nodiscard]] bytes::vector PrepareGreases() {
++ 	auto result = bytes::vector(kMaxGrease);
++ 	bytes::set_random(result);
++@@ -652,7 +1306,7 @@ void TlsSocket::plainConnected() {
++ 		return;
++ 	}
++ 
++-	static const auto kClientHelloRules = PrepareClientHelloRules();
+++	const auto& kClientHelloRules = PrepareClientHelloRules();
++ 	const auto hello = PrepareClientHello(
++ 		kClientHelloRules,
++ 		domainFromSecret(),
++@@ -838,6 +1492,43 @@ void TlsSocket::connectToHost(const QString &address, int port) {
++ 	Expects(_state == State::NotConnected);
++ 
++ 	_state = State::Connecting;
+++	if(MTP::ProxyData::globalSlowMode()) {
+++		namespace sc = std::chrono;
+++		static auto mutex = QMutex();
+++		static auto slots = std::map<QString, sc::steady_clock::time_point>{};
+++		const auto delay  = MTP::ProxyData::globalSlowDelay();
+++		const auto jitter = MTP::ProxyData::globalSlowJitter();
+++
+++		sc::milliseconds waitFor{0};
+++		{
+++			const QMutexLocker lock(&mutex);
+++			const auto now = sc::steady_clock::now();
+++			const auto extra = QRandomGenerator::global()->bounded(0, jitter);
+++			const auto gap = delay + extra;
+++			auto &slot = slots[address];
+++			if (slot.time_since_epoch().count() != 0) {
+++				if (now < slot) {
+++					waitFor = sc::duration_cast<sc::milliseconds>(
+++						slot - now);
+++				} else {
+++					slot = sc::steady_clock::time_point{};
+++				}
+++			}
+++			if (slot.time_since_epoch().count() == 0) {
+++				slot = now + sc::milliseconds(gap);
+++			} else {
+++				slot += sc::milliseconds(gap);
+++			}
+++		}
+++		if (waitFor.count() > 0) {
+++			const auto _address = address;
+++			const auto _port    = port;
+++			QTimer::singleShot(waitFor.count(), this, [=] {
+++				_socket.connectToHost(_address, _port);
+++			});
+++			return;
+++		}
+++	}
++ 	_socket.connectToHost(address, port);
++ }
++ 
++diff --git a/Telegram/SourceFiles/mtproto/mtproto_proxy_data.cpp b/Telegram/SourceFiles/mtproto/mtproto_proxy_data.cpp
++index f1f2c5402f..fdae22ea90 100644
++--- a/Telegram/SourceFiles/mtproto/mtproto_proxy_data.cpp
+++++ b/Telegram/SourceFiles/mtproto/mtproto_proxy_data.cpp
++@@ -245,4 +245,41 @@ QNetworkProxy ToNetworkProxy(const ProxyData &proxy) {
++ 		proxy.password);
++ }
++ 
+++ProxyData::CHelloType ProxyData::global_ch_type = ProxyData::CHelloType::Firefox;
+++bool ProxyData::global_slow_mode   = false;
+++int  ProxyData::global_slow_delay  = 250;
+++int  ProxyData::global_slow_jitter = 150;
+++
+++void ProxyData::setGlobalClienHelloRulesType(const ProxyData::CHelloType value) {
+++	global_ch_type = value;
+++}
+++
+++ProxyData::CHelloType ProxyData::globalClienHelloRulesType() {
+++	return global_ch_type;
+++}
+++
+++void ProxyData::setGlobalSlowMode(bool value) {
+++	global_slow_mode = value;
+++}
+++
+++bool ProxyData::globalSlowMode() {
+++	return global_slow_mode;
+++}
+++
+++void ProxyData::setGlobalSlowDelay(int value) {
+++	global_slow_delay = value;
+++}
+++
+++int ProxyData::globalSlowDelay() {
+++	return global_slow_delay;
+++}
+++
+++void ProxyData::setGlobalSlowJitter(int value) {
+++	global_slow_jitter = value;
+++}
+++
+++int ProxyData::globalSlowJitter() {
+++	return global_slow_jitter;
+++}
+++
++ } // namespace MTP
++diff --git a/Telegram/SourceFiles/mtproto/mtproto_proxy_data.h b/Telegram/SourceFiles/mtproto/mtproto_proxy_data.h
++index 9aed98a6e0..04b4428e07 100644
++--- a/Telegram/SourceFiles/mtproto/mtproto_proxy_data.h
+++++ b/Telegram/SourceFiles/mtproto/mtproto_proxy_data.h
++@@ -27,6 +27,15 @@ struct ProxyData {
++ 		IncorrectSecret,
++ 		Invalid,
++ 	};
+++	enum class CHelloType
+++	{
+++		Firefox, // JA3 & JA4 matches FF 151
+++		Chrome, // Chrome, vanilla default
+++		Custom,
+++		SafariMac, // Safari macOS 26.4 (with grease/alpn randomization)
+++		YandexGost, // Yandex Browser with GOST cipher suites
+++		RANDOM
+++	};
++ 
++ 	Type type = Type::None;
++ 	QString host;
++@@ -49,6 +58,23 @@ struct ProxyData {
++ 	[[nodiscard]] static Status MtprotoPasswordStatus(
++ 		const QString &password);
++ 
+++	static void setGlobalClienHelloRulesType(const ProxyData::CHelloType ch_type);
+++	[[nodiscard]] static ProxyData::CHelloType globalClienHelloRulesType();
+++
+++	static void setGlobalSlowMode(bool value);
+++	[[nodiscard]] static bool globalSlowMode();
+++
+++	static void setGlobalSlowDelay(int value);
+++	[[nodiscard]] static int globalSlowDelay();
+++
+++	static void setGlobalSlowJitter(int value);
+++	[[nodiscard]] static int globalSlowJitter();
+++
+++private:
+++	static ProxyData::CHelloType global_ch_type;
+++	static bool global_slow_mode;
+++	static int global_slow_delay;
+++	static int global_slow_jitter;
++ };
++ 
++ [[nodiscard]] ProxyData ToDirectIpProxy(
++diff --git a/Telegram/SourceFiles/mtproto/session_private.cpp b/Telegram/SourceFiles/mtproto/session_private.cpp
++index 86be336379..8be55b6157 100644
++--- a/Telegram/SourceFiles/mtproto/session_private.cpp
+++++ b/Telegram/SourceFiles/mtproto/session_private.cpp
++@@ -34,7 +34,7 @@ constexpr auto kIntSize = static_cast<int>(sizeof(mtpPrime));
++ constexpr auto kWaitForBetterTimeout = crl::time(2000);
++ constexpr auto kMinConnectedTimeout = crl::time(1000);
++ constexpr auto kMaxConnectedTimeout = crl::time(8000);
++-constexpr auto kMinReceiveTimeout = crl::time(4000);
+++constexpr auto kMinReceiveTimeout = crl::time(8000);
++ constexpr auto kMaxReceiveTimeout = crl::time(64000);
++ constexpr auto kMarkConnectionOldTimeout = crl::time(192000);
++ constexpr auto kPingDelayDisconnect = 60;
++diff --git a/Telegram/SourceFiles/platform/linux/current_geo_location_linux.cpp b/Telegram/SourceFiles/platform/linux/current_geo_location_linux.cpp
++index fe26b13df9..ad9f88785e 100644
++--- a/Telegram/SourceFiles/platform/linux/current_geo_location_linux.cpp
+++++ b/Telegram/SourceFiles/platform/linux/current_geo_location_linux.cpp
++@@ -5,6 +5,7 @@ the official desktop application for the Telegram messaging service.
++ For license and copyright information please follow this link:
++ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
++ */
+++#include <QtGui/QGuiApplication>
++ #include "platform/linux/current_geo_location_linux.h"
++ 
++ #include "core/current_geo_location.h"
++diff --git a/Telegram/SourceFiles/platform/win/specific_win.cpp b/Telegram/SourceFiles/platform/win/specific_win.cpp
++index 26ed3ad420..7c58cf0657 100644
++--- a/Telegram/SourceFiles/platform/win/specific_win.cpp
+++++ b/Telegram/SourceFiles/platform/win/specific_win.cpp
++@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
++ #include "mainwindow.h"
++ #include "mainwidget.h"
++ #include "history/history_location_manager.h"
+++#include "core/version.h"
++ #include "storage/localstorage.h"
++ #include "core/application.h"
++ #include "window/window_controller.h"
++diff --git a/Telegram/SourceFiles/platform/win/tray_win.cpp b/Telegram/SourceFiles/platform/win/tray_win.cpp
++index d3af931f41..c31ecdb695 100644
++--- a/Telegram/SourceFiles/platform/win/tray_win.cpp
+++++ b/Telegram/SourceFiles/platform/win/tray_win.cpp
++@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
++ #include "core/application.h"
++ #include "lang/lang_keys.h"
++ #include "main/main_session.h"
+++#include "core/version.h"
++ #include "storage/localstorage.h"
++ #include "ui/painter.h"
++ #include "ui/ui_utility.h"
