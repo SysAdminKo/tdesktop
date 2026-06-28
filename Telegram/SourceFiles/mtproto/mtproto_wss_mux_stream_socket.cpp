@@ -34,7 +34,6 @@ MuxStreamSocket::~MuxStreamSocket() {
 	if (!streamId) {
 		return;
 	}
-	closeServerStream(streamId);
 	_hub->UnregisterStream(streamId);
 	if (_bytesSent > 0 || _bytesReceived > 0) {
 		DEBUG_LOG(("WSS mux stream close stream=%1 tunnel=%2 sent=%3 recv=%4"

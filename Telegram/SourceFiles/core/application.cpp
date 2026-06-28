@@ -841,16 +841,11 @@ void Application::setCurrentProxy(
 	my.setSelected(proxy);
 	my.setSettings(settings);
 	const auto now = current();
-	if (now.type == MTP::ProxyData::Type::WebSocket) {
-		MTP::WssMuxHub::Instance().SetProxyActive(true);
-		MTP::WssMuxHub::Instance().Bootstrap(now);
-	} else if (was.type == MTP::ProxyData::Type::WebSocket) {
-		MTP::WssMuxHub::Instance().StopTunnels();
-	}
-	refreshGlobalProxy();
-	_proxyChanges.fire({ was, now });
-	my.connectionTypeChangesNotify();
-	proxyRotationSettingsChanged();
+	refreshGlobalProxy([=, this] {
+		_proxyChanges.fire({ was, now });
+		_private->settings.proxy().connectionTypeChangesNotify();
+		proxyRotationSettingsChanged();
+	});
 }
 
 void Application::proxyRotationSettingsChanged() {
@@ -1830,14 +1825,15 @@ void Application::postponeCall(FnMut<void()> &&callable) {
 	Sandbox::Instance().postponeCall(std::move(callable));
 }
 
-void Application::refreshGlobalProxy() {
+void Application::refreshGlobalProxy(FnMut<void()> &&done) {
 	Sandbox::Instance().refreshGlobalProxy();
 	const auto &proxy = settings().proxy();
-	if (proxy.isEnabled()
-		&& proxy.selected().type == MTP::ProxyData::Type::WebSocket) {
-		MTP::WssMuxHub::Instance().SetProxyActive(true);
-		MTP::WssMuxHub::Instance().Bootstrap(proxy.selected());
-	}
+	const auto wssEnabled = proxy.isEnabled()
+		&& (proxy.selected().type == MTP::ProxyData::Type::WebSocket);
+	MTP::WssMuxHub::Instance().UpdateFromAppSettings(
+		wssEnabled,
+		proxy.selected(),
+		std::move(done));
 }
 
 void QuitAttempt() {

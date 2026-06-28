@@ -27,7 +27,10 @@ public:
 		const std::vector<QString> &ips);
 	void EnsureStarted();
 	void Bootstrap(const ProxyData &proxy);
-	[[nodiscard]] bool HasConnectedTunnels() const;
+	void UpdateFromAppSettings(
+		bool enabled,
+		const ProxyData &selected,
+		FnMut<void()> &&done = nullptr);
 	[[nodiscard]] std::vector<int> TunnelStreamCounts() const;
 	void SetProxyActive(bool active);
 	void StopTunnels();

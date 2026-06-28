@@ -325,7 +325,7 @@ public:
 
 	// Sandbox interface.
 	void postponeCall(FnMut<void()> &&callable);
-	void refreshGlobalProxy();
+	void refreshGlobalProxy(FnMut<void()> &&done = nullptr);
 	void refreshApplicationIcon();
 
 	void quitPreventFinished();
