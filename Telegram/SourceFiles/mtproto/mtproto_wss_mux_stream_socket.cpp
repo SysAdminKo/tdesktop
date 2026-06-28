@@ -29,6 +29,10 @@ MuxStreamSocket::MuxStreamSocket(
 
 MuxStreamSocket::~MuxStreamSocket() {
 	_openTimer.stop();
+	if (_checkSetupId) {
+		_hub->CancelCheckStreamSetup(_checkSetupId);
+		_checkSetupId = 0;
+	}
 	const auto streamId = _streamId;
 	_streamId = 0;
 	if (!streamId) {
@@ -59,6 +63,10 @@ void MuxStreamSocket::closeServerStream(uint32 streamId) {
 
 void MuxStreamSocket::setStreamId(uint32 streamId) {
 	_streamId = streamId;
+}
+
+void MuxStreamSocket::setCheckSetupId(uint64 setupId) {
+	_checkSetupId = setupId;
 }
 
 uint32 MuxStreamSocket::streamId() const {

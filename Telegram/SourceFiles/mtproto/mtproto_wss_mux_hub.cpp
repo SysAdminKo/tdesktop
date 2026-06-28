@@ -184,6 +184,27 @@ struct WssMuxHub::Private : public QObject {
 	std::map<QString, ProxyCheckSession> checkSessions;
 	std::map<uint32, QString> checkStreamKeys;
 
+	QMutex checkSetupMutex;
+	base::flat_set<uint64> pendingCheckSetups;
+	uint64 nextCheckSetupId = 0;
+
+	[[nodiscard]] uint64 addCheckStreamSetup() {
+		QMutexLocker lock(&checkSetupMutex);
+		const auto id = ++nextCheckSetupId;
+		pendingCheckSetups.insert(id);
+		return id;
+	}
+
+	void cancelCheckStreamSetup(uint64 setupId) {
+		QMutexLocker lock(&checkSetupMutex);
+		pendingCheckSetups.remove(setupId);
+	}
+
+	[[nodiscard]] bool consumeCheckStreamSetup(uint64 setupId) {
+		QMutexLocker lock(&checkSetupMutex);
+		return pendingCheckSetups.remove(setupId);
+	}
+
 	[[nodiscard]] ProxyCheckSession *checkSessionByStream(uint32 streamId) {
 		const auto i = checkStreamKeys.find(streamId);
 		if (i == end(checkStreamKeys)) {
@@ -1415,31 +1436,53 @@ std::unique_ptr<details::AbstractSocket> WssMuxHub::AcquireCheckStream(
 		const QString &host,
 		int port,
 		bool protocolForFiles,
-		int tunnelAffinity) {
+		int tunnelAffinity,
+		Fn<void(not_null<details::AbstractSocket*>)> whenRegistered) {
 	Q_UNUSED(host);
 	Q_UNUSED(port);
 	Q_UNUSED(protocolForFiles);
 	auto socket = std::make_unique<details::MuxStreamSocket>(thread, this);
 	const auto raw = socket.get();
-	uint32 streamId = 0;
-	const auto setupOnHub = [&] {
-		streamId = _private->acquireCheckStreamId(proxy);
+	const auto setupId = _private->addCheckStreamSetup();
+	raw->setCheckSetupId(setupId);
+	socket->setTunnelAffinity(tunnelAffinity);
+	InvokeQueued(_private.get(), [this,
+			whenRegistered,
+			raw,
+			setupId,
+			proxy]() mutable {
+		if (!_private->consumeCheckStreamSetup(setupId)) {
+			return;
+		} else if (_private->shuttingDown) {
+			return;
+		}
+		const auto streamId = _private->acquireCheckStreamId(proxy);
 		_private->registerCheckStream(proxy, streamId, raw);
+		raw->invokeQueued([this,
+				whenRegistered,
+				raw,
+				streamId]() mutable {
+			raw->setCheckSetupId(0);
+			raw->setStreamId(streamId);
+			RegisterStream(streamId, raw);
+			whenRegistered(raw);
+		});
+	});
+	return socket;
+}
+
+void WssMuxHub::CancelCheckStreamSetup(uint64 setupId) {
+	if (!_private->hubThread.isRunning()) {
+		return;
+	}
+	const auto cancel = [=] {
+		_private->cancelCheckStreamSetup(setupId);
 	};
 	if (QThread::currentThread() == &_private->hubThread) {
-		setupOnHub();
+		cancel();
 	} else {
-		QEventLoop loop;
-		InvokeQueued(_private.get(), [&] {
-			setupOnHub();
-			loop.quit();
-		});
-		loop.exec();
+		InvokeQueued(_private.get(), cancel);
 	}
-	socket->setStreamId(streamId);
-	socket->setTunnelAffinity(tunnelAffinity);
-	RegisterStream(streamId, raw);
-	return socket;
 }
 
 void WssMuxHub::RegisterStream(

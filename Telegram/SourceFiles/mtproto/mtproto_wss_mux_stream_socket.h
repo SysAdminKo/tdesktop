@@ -36,6 +36,7 @@ public:
 	void handleTunnelDown();
 
 	void setStreamId(uint32 streamId);
+	void setCheckSetupId(uint64 setupId);
 	[[nodiscard]] uint32 streamId() const;
 	void setTunnelAffinity(int affinity);
 	[[nodiscard]] int tunnelAffinity() const;
@@ -58,6 +59,7 @@ private:
 
 	const not_null<WssMuxHub*> _hub;
 	uint32 _streamId = 0;
+	uint64 _checkSetupId = 0;
 	int _tunnelAffinity = -1;
 	int _tunnelIndex = -1;
 	crl::time _openStartedAt = 0;

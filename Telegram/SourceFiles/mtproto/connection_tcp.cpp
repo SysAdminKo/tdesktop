@@ -618,7 +618,11 @@ void TcpConnection::connectToServer(
 				address,
 				port,
 				protocolForFiles,
-				wssTunnelAffinity())
+				wssTunnelAffinity(),
+				[=, address = _address, port = _port](
+						not_null<AbstractSocket*> socket) {
+					socket->connectToHost(address, port);
+				})
 			: [&] {
 			WssMuxHub::Instance().Configure(
 				_proxy,
@@ -680,7 +684,9 @@ void TcpConnection::connectToServer(
 		syncTimeRequest();
 	}, _lifetime);
 
-	_socket->connectToHost(_address, _port);
+	if (!_forProxyCheck || _proxy.type != ProxyData::Type::WebSocket) {
+		_socket->connectToHost(_address, _port);
+	}
 }
 
 crl::time TcpConnection::pingTime() const {

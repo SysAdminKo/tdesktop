@@ -51,7 +51,8 @@ public:
 		const QString &host,
 		int port,
 		bool protocolForFiles,
-		int tunnelAffinity = -1);
+		int tunnelAffinity,
+		Fn<void(not_null<details::AbstractSocket*>)> whenRegistered);
 
 	void RegisterStream(
 		uint32 streamId,
@@ -64,6 +65,8 @@ public:
 		int port);
 	void SendData(uint32 streamId, bytes::const_span data);
 	void RequestClose(uint32 streamId);
+
+	void CancelCheckStreamSetup(uint64 setupId);
 
 private:
 	WssMuxHub();
