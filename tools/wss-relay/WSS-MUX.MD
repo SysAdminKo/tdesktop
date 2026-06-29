@@ -157,10 +157,11 @@ sequenceDiagram
 
 ### 3.8 Закрытие stream
 
-- client `CLOSE` → relay `removeStream`, закрывает upstream TCP;
+- client `CLOSE` / `UnregisterStream` → hub `requestCloseStream` → MUX `CLOSE` на relay, закрытие upstream TCP;
 - upstream read/write error → relay `CLOSE` + `removeStream`;
 - `-stream-idle-timeout` → relay `CLOSE` неактивных streams;
-- WS disconnect → relay `closeAll()` всех streams в tunnel.
+- WS disconnect → relay `closeAll()` всех streams в tunnel;
+- смена tunnel для stream (main pick) → `CLOSE` на предыдущем tunnel перед `OPEN` на новом.
 
 ---
 
@@ -176,17 +177,27 @@ sequenceDiagram
 | [`mtproto_wss_mux_framing.cpp/h`](../../Telegram/SourceFiles/mtproto/details/mtproto_wss_mux_framing.cpp) | Encode/decode, stateful `MuxFrameDecoder` |
 | [`mtproto_websocket_socket.cpp/h`](../../Telegram/SourceFiles/mtproto/details/mtproto_websocket_socket.cpp) | TLS + WS upgrade; MUX vs legacy plain WSS |
 | [`mtproto_wss_connect_gate.cpp/h`](../../Telegram/SourceFiles/mtproto/mtproto_wss_connect_gate.cpp) | Лимит параллельных WSS handshakes |
-| [`proxy_check.cpp/h`](../../Telegram/SourceFiles/mtproto/proxy_check.cpp) | Проверка прокси в UI; для WSS — `EndProxyCheck` |
+| [`proxy_check.cpp/h`](../../Telegram/SourceFiles/mtproto/proxy_check.cpp) | Проверка прокси в UI; WSS → `EndProxyCheck` |
+
+Hub работает на выделенном `QThread` (`hubThread`). Callbacks к `MuxStreamSocket` доставляются через `invokeQueued` на thread соединения (`postStreamEvent`, check-frames).
 
 ### 4.2 Жизненный цикл hub
 
-1. `Core::Application`: при включении WSS-прокси → `WssMuxHub::SetProxyActive(true)` + `Bootstrap(proxy)`.
-2. Hub создаёт `tunnelCount` туннелей; каждый — TLS+WS upgrade к `proxy.host:proxy.port`.
-3. `TcpConnection::connectToServer` → `AcquireStream` → `MuxStreamSocket::connectToHost(dcAddress, dcPort)` → MUX `OPEN`.
+1. `Application::refreshGlobalProxy` → `WssMuxHub::UpdateFromAppSettings(enabled, selected, done)` — единая точка включения/выключения WSS.
+2. При `enabled && Type::WebSocket`: `proxyActive=true`, `resetTunnels` при смене config, `startTunnels`.
+3. `TcpConnection::connectToServer` → `Configure` + `EnsureStarted` + `AcquireStream` → MUX `OPEN`.
 4. После `OPEN_OK` — обычный MTProto поверх `read`/`write`.
-5. При смене/отключении прокси → `StopTunnels()` (сброс туннелей, `WssConnectGate::Clear()`). 401 на upgrade → toast через `SetAuthRejectedHandler`.
+5. Отключение прокси / `StopTunnels()` → `UpdateFromAppSettings(false, …)` (сброс туннелей, `WssConnectGate::Clear()`). 401 → toast через `SetAuthRejectedHandler`.
 
-`SetProxyActive(true)` только разрешает старт туннелей; фактический connect — в `EnsureStarted()` / `Bootstrap()`.
+`Bootstrap(proxy)` — обёртка над `UpdateFromAppSettings(true, proxy)`. `SetProxyActive` — legacy-флаг, основной путь через `UpdateFromAppSettings`.
+
+**DNS / старт туннелей:**
+
+- Если hostname требует resolve и известен ≤1 IP — старт откладывается (`deferTunnelStartUntilResolve`), параллельно `startSystemResolve()`.
+- Fallback через 10s (`kDeferResolveFallback`): `startTunnels(allowHostnameFallback=true)` — connect по hostname без multi-IP.
+- Resolved IPs дедуплицируются (`DedupeIps`); порядок round-robin хранится в `ipPickOrder` (shuffle при обновлении набора).
+- `Configure` из `TcpConnection`: если hub уже `proxyActive` с непустым `config.host`, повторный `Configure` с **другим** endpoint игнорируется — защита от шторма reconnect.
+- `ApplyResolvedIps` — debounce 3s; при >1 IP запускает отложенный `startTunnelsAfterResolve`.
 
 ### 4.2.1 Proxy check (изолированные check-сессии)
 
@@ -194,11 +205,18 @@ sequenceDiagram
 
 | API | Назначение |
 |-----|------------|
-| `BeginProxyCheck(proxy)` | Создаёт/переиспользует check-сессию (1 tunnel на ключ прокси) |
-| `AcquireCheckStream(...)` | Stream для `TcpConnection(forProxyCheck=true)` |
-| `EndProxyCheck(proxy)` | Закрывает check-сессию по ключу `host:port:path:password` |
+| `AcquireCheckStream(..., whenRegistered)` | Lazy-start check-сессии; async assign `streamId` на hub thread → callback → `connectToHost` |
+| `CancelCheckStreamSetup(setupId)` | Отмена pending setup (если checker уничтожен до регистрации) |
+| `EndProxyCheck(proxy)` | Закрывает check-сессию по ключу check-сессии |
 
-Ключ check-сессии: endpoint (SNI или host) + port + path + password. Check-туннель отделён от production `tunnels[]`; после проверки ping отображается в таблице прокси.
+Ключ check-сессии: endpoint (SNI или host) + port + path + password. Check-туннель отделён от production `tunnels[]`.
+
+**Особенности UI:**
+
+- При открытии списка прокси checks **staggered** — задержка +100ms на каждый следующий (не параллельный шторм).
+- `TcpConnection(forProxyCheck=true)` debug tag: `wssmuxcheck` (production: `wssmux`).
+- `connectToHost` для WSS check вызывается только в `whenRegistered`, после async assign `streamId`.
+- Hub **не блокирует UI thread** через `QEventLoop` при proxy check (fix зависания настроек прокси).
 
 ### 4.3 Интеграция с MTProto
 
@@ -206,7 +224,7 @@ sequenceDiagram
 |------|-----------|
 | [`connection_tcp.cpp`](../../Telegram/SourceFiles/mtproto/connection_tcp.cpp) | `ProxyData::Type::WebSocket` → `WssMuxHub::AcquireStream()`; `_address/_port` = **целевой DC**, не прокси |
 | [`connection_resolving.cpp`](../../Telegram/SourceFiles/mtproto/connection_resolving.cpp) | WSS не перебирает IP после первого успешного |
-| [`mtp_instance.cpp`](../../Telegram/SourceFiles/mtproto/mtp_instance.cpp) | Resolved IPs → `ApplyResolvedIps` (debounce 3s, round-robin по туннелям) |
+| [`mtp_instance.cpp`](../../Telegram/SourceFiles/mtproto/mtp_instance.cpp) | Resolved IPs → `ApplyResolvedIps` (debounce 3s, `ipPickOrder` round-robin по туннелям) |
 | [`session_private.cpp`](../../Telegram/SourceFiles/mtproto/session_private.cpp) | Defer media DC до main (до 15s); `setWssTunnelAffinity` для download DC; reassembly stall → rotate endpoint (main, ≥25s); увеличенные receive timeouts для media cluster |
 
 ### 4.4 Tunnel affinity
@@ -278,6 +296,8 @@ tg://wss?server=HOST&port=443&tunnels=6&token=TOKEN
 | `token` | `password` | Bearer token |
 | `tunnels` | `wssMuxTunnels` | 1–9, default 6 |
 | `path` | — | всегда `/ws/mux` (принудительно) |
+
+`sniHost` — поле `ProxyData`, default = `host`; в `tg://wss` и UI не задаётся, только сериализация.
 
 Парсинг: [`connection_box.cpp`](../../Telegram/SourceFiles/boxes/connection_box.cpp), [`mtproto_proxy_data.cpp`](../../Telegram/SourceFiles/mtproto/mtproto_proxy_data.cpp). Персистенция: [`core_settings_proxy.cpp`](../../Telegram/SourceFiles/core/core_settings_proxy.cpp).
 
@@ -420,7 +440,7 @@ Edge терминирует TLS; до relay идёт plain WS на `127.0.0.1:82
 | `mtproto/mtp_instance.cpp` | Resolved IPs → hub |
 | `mtproto/session_private.cpp` | Endpoint selection, download affinity |
 | `core/core_settings_proxy.cpp` | Персистенция proxy |
-| `core/application.cpp` | Bootstrap/stop hub |
+| `core/application.cpp` | `refreshGlobalProxy` → `UpdateFromAppSettings` |
 | `boxes/connection_box.cpp` | UI + tg://wss + proxy check |
 | `mtproto/proxy_check.cpp/h` | Proxy check; WSS → `EndProxyCheck` |
 | `storage/download_manager_mtproto.cpp` | Download warm-up/limits |
@@ -471,7 +491,9 @@ python3 analyze_dc_pcap.py capture.pcap
 | `aa3ca1e0c5` | Media download на дополнительных аккаунтах |
 | `ca86125f59`, `2c31f8b5ac`, `06ccd1e4ed` | Upload/download tuning, warm-up sessions, stabilize media download |
 | `025b1fd393` | Не подключаться к WSS когда прокси выключен |
-| `6a5036e7dd` | Proxy check sessions (изоляция от main hub), Qt6, ping UI, reassembly stall rotation, relay upstream read deadline |
+| `6a5036e7dd` / `a00744fd14` | Proxy check sessions, Qt6, ping UI, reassembly stall rotation, relay upstream read deadline |
+| `43b6eb4320` | Fix зависания настроек прокси (убран blocking `QEventLoop` в hub) |
+| `65bd2ba027`, `25a11b702f` | `UpdateFromAppSettings`, async `AcquireCheckStream`, `ipPickOrder`, `Configure` endpoint guard, staggered proxy checks |
 
 ---
 

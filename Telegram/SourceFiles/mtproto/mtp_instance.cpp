@@ -405,7 +405,18 @@ void Instance::Private::resolveProxyDomain(const QString &host) {
 			applyDomainIps(host, ips, expireAt);
 		});
 	}
-	_domainResolver->resolve(host);
+	const auto isWssHost = [&](const ProxyData &proxy) {
+		return proxy.type == ProxyData::Type::WebSocket
+			&& proxy.tryCustomResolve()
+			&& proxy.host == host;
+	};
+	const auto wssOnly = isWssHost(_proxySettings.selected())
+		|| ranges::any_of(_proxySettings.list(), isWssHost);
+	if (wssOnly) {
+		_domainResolver->resolveSystemOnly(host);
+	} else {
+		_domainResolver->resolve(host);
+	}
 }
 
 void Instance::Private::applyDomainIps(

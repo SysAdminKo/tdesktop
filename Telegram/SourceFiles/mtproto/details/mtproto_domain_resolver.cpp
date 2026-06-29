@@ -193,6 +193,17 @@ void DomainResolver::resolve(const QString &domain) {
 	resolve({ domain, true });
 }
 
+void DomainResolver::resolveSystemOnly(const QString &domain) {
+	const auto key = AttemptKey{ domain, false };
+	_lastTimestamp = crl::now();
+	const auto i = _cache.find(key);
+	if (i != end(_cache) && i->second.expireAt > _lastTimestamp) {
+		checkExpireAndPushResult(domain);
+		return;
+	}
+	trySystemResolve(key, true);
+}
+
 void DomainResolver::resolve(const AttemptKey &key) {
 	if (_attempts.find(key) != end(_attempts)) {
 		return;
@@ -354,7 +365,7 @@ void DomainResolver::requestFinished(
 	checkExpireAndPushResult(key.domain);
 }
 
-void DomainResolver::trySystemResolve(const AttemptKey &key) {
+void DomainResolver::trySystemResolve(const AttemptKey &key, bool force) {
 	if (key.ipv6) {
 		return;
 	}
@@ -362,7 +373,7 @@ void DomainResolver::trySystemResolve(const AttemptKey &key) {
 	if (i != end(_cache) && i->second.expireAt > crl::now()) {
 		checkExpireAndPushResult(key.domain);
 		return;
-	} else if (_systemResolveTried[key.domain]) {
+	} else if (!force && _systemResolveTried[key.domain]) {
 		return;
 	}
 	_systemResolveTried[key.domain] = true;

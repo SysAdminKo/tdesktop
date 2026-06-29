@@ -47,6 +47,7 @@ public:
 		crl::time expireAt)> callback);
 
 	void resolve(const QString &domain);
+	void resolveSystemOnly(const QString &domain);
 
 private:
 	enum class Type {
@@ -83,7 +84,7 @@ private:
 	void sendNextRequest(const AttemptKey &key);
 	void performRequest(const AttemptKey &key, const Attempt &attempt);
 	void checkExpireAndPushResult(const QString &domain);
-	void trySystemResolve(const AttemptKey &key);
+	void trySystemResolve(const AttemptKey &key, bool force = false);
 	void requestFinished(
 		const AttemptKey &key,
 		not_null<QNetworkReply*> reply);

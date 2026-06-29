@@ -1830,6 +1830,12 @@ void Application::refreshGlobalProxy(FnMut<void()> &&done) {
 	const auto &proxy = settings().proxy();
 	const auto wssEnabled = proxy.isEnabled()
 		&& (proxy.selected().type == MTP::ProxyData::Type::WebSocket);
+	if (wssEnabled && proxy.selected().tryCustomResolve()) {
+		const auto host = proxy.selected().host;
+		for (const auto &[index, account] : _domain->accounts()) {
+			account->mtp().resolveProxyDomain(host);
+		}
+	}
 	MTP::WssMuxHub::Instance().UpdateFromAppSettings(
 		wssEnabled,
 		proxy.selected(),

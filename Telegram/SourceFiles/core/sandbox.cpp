@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/local_url_handlers.h"
 #include "core/update_checker.h"
 #include "core/deadlock_detector.h"
+#include "mtproto/mtproto_wss_mux_hub.h"
 #include "base/timer.h"
 #include "base/concurrent_timer.h"
 #include "base/invoke_queued.h"
@@ -641,6 +642,8 @@ void Sandbox::closeApplication() {
 	SetLaunchState(LaunchState::QuitProcessed);
 
 	_application = nullptr;
+
+	MTP::WssMuxHub::Instance().Shutdown();
 
 	_localServer.close();
 	for (const auto &localClient : base::take(_localClients)) {
