@@ -34,6 +34,7 @@ Fn<void()> AuthRejectedHandler;
 constexpr auto kDefaultTunnelCount = 6;
 constexpr auto kDownloadTunnelSlots = 8;
 constexpr auto kReconnectDelay = crl::time(2000);
+constexpr auto kTunnelStreamFailGrace = crl::time(2000);
 constexpr auto kOpenRetryDelay = crl::time(250);
 constexpr auto kIpUpdateDebounce = crl::time(3000);
 constexpr auto kDeferResolveFallback = 10 * crl::time(1000);
@@ -55,12 +56,6 @@ constexpr auto kDeferResolveFallback = 10 * crl::time(1000);
 	ranges::sort(sortedA);
 	ranges::sort(sortedB);
 	return sortedA == sortedB;
-}
-
-[[nodiscard]] bool IpSetContains(
-		const std::vector<QString> &set,
-		const QString &ip) {
-	return ranges::find(set, ip) != end(set);
 }
 
 [[nodiscard]] std::vector<QString> DedupeIps(std::vector<QString> ips) {
@@ -168,6 +163,7 @@ struct WssMuxHub::Private : public QObject {
 	std::map<uint32, int> streamTunnel;
 	std::vector<int> cachedTunnelStreamCounts;
 	std::vector<std::unique_ptr<details::WssMuxTunnel>> tunnels;
+	std::vector<int> tunnelFailGenerations;
 	std::vector<QString> pendingResolvedIPs;
 	bool ipUpdateScheduled = false;
 	bool deferTunnelStartUntilResolve = false;
@@ -602,6 +598,7 @@ struct WssMuxHub::Private : public QObject {
 			}
 		}
 		tunnels.clear();
+		tunnelFailGenerations.clear();
 		ipPickOrder.clear();
 		started = false;
 		deferTunnelStartUntilResolve = false;
@@ -659,10 +656,11 @@ struct WssMuxHub::Private : public QObject {
 		});
 		raw->setStateHandler([=](bool connected) {
 			if (connected) {
+				cancelPendingFailStreamsOnTunnel(index);
 				flushPendingOpens();
 				return;
 			}
-			failStreamsOnTunnel(index);
+			scheduleFailStreamsOnTunnel(index);
 			if (authRejected) {
 				return;
 			} else if (tunnelAuthRejected(index)) {
@@ -866,20 +864,7 @@ struct WssMuxHub::Private : public QObject {
 		return tied[offset];
 	}
 
-	[[nodiscard]] int pickTunnelIndex(int affinity = -1) {
-		if (affinity >= 0) {
-			if (tunnels.empty()) {
-				return -1;
-			}
-			const auto hint = affinity % int(tunnels.size());
-			if (hint >= 0
-				&& hint < int(tunnels.size())
-				&& tunnels[hint]
-				&& tunnels[hint]->isConnected()) {
-				return hint;
-			}
-			return -1;
-		}
+	[[nodiscard]] int pickAnyConnectedTunnelIndex() {
 		const auto reservedEnd = (int(tunnels.size()) > kDownloadTunnelSlots)
 			? std::min(kDownloadTunnelSlots, int(tunnels.size()))
 			: 0;
@@ -894,6 +879,19 @@ struct WssMuxHub::Private : public QObject {
 			return preferred;
 		}
 		return pickLeastLoadedTunnelIndex(0, false);
+	}
+
+	[[nodiscard]] int pickTunnelIndex(int affinity = -1) {
+		if (affinity >= 0 && !tunnels.empty()) {
+			const auto hint = affinity % int(tunnels.size());
+			if (hint >= 0
+				&& hint < int(tunnels.size())
+				&& tunnels[hint]
+				&& tunnels[hint]->isConnected()) {
+				return hint;
+			}
+		}
+		return pickAnyConnectedTunnelIndex();
 	}
 
 	[[nodiscard]] details::WssMuxTunnel *pickTunnel(int affinity = -1) {
@@ -959,6 +957,42 @@ struct WssMuxHub::Private : public QObject {
 			details::MuxFrameType::Close,
 			streamId);
 		tunnels[tunnelIndex]->sendFrame(frame);
+	}
+
+	void ensureTunnelFailGenerations(int count) {
+		if (int(tunnelFailGenerations.size()) < count) {
+			tunnelFailGenerations.resize(count);
+		}
+	}
+
+	void cancelPendingFailStreamsOnTunnel(int tunnelIndex) {
+		if (tunnelIndex < 0) {
+			return;
+		}
+		ensureTunnelFailGenerations(tunnelIndex + 1);
+		++tunnelFailGenerations[tunnelIndex];
+	}
+
+	void scheduleFailStreamsOnTunnel(int tunnelIndex) {
+		if (tunnelIndex < 0) {
+			return;
+		}
+		ensureTunnelFailGenerations(tunnelIndex + 1);
+		const auto generation = ++tunnelFailGenerations[tunnelIndex];
+		const auto weak = QPointer<Private>(this);
+		QTimer::singleShot(kTunnelStreamFailGrace, this, [=] {
+			if (!weak || weak->shuttingDown) {
+				return;
+			} else if (tunnelIndex >= int(weak->tunnelFailGenerations.size())
+				|| generation != weak->tunnelFailGenerations[tunnelIndex]) {
+				return;
+			} else if (tunnelIndex < int(weak->tunnels.size())
+				&& weak->tunnels[tunnelIndex]
+				&& weak->tunnels[tunnelIndex]->isConnected()) {
+				return;
+			}
+			weak->failStreamsOnTunnel(tunnelIndex);
+		});
 	}
 
 	void failStreamsOnTunnel(int tunnelIndex) {

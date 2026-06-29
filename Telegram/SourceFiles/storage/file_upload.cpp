@@ -63,6 +63,7 @@ constexpr auto kWaitForNormalizeTimeout = 8 * crl::time(1000);
 constexpr auto kMaxSessionsCount = 8;
 constexpr auto kFastRequestThreshold = 1 * crl::time(1000);
 constexpr auto kWssFastRequestThreshold = 5 * crl::time(1000);
+constexpr auto kWssSlowRequestThreshold = 30 * crl::time(1000);
 constexpr auto kSlowRequestThreshold = 8 * crl::time(1000);
 constexpr auto kWssInitialUploadSessions = 3;
 constexpr auto kWssWarmUpFileSize = 2 * 1024 * 1024;
@@ -542,8 +543,10 @@ void Uploader::scheduleWarmUpSettle() {
 bool Uploader::isUploadSessionWarmReady(int index) const {
 	if (!_useWssMux || !_warmUpTarget || index >= _warmUpTarget) {
 		return true;
+	} else if (index < kWssWarmUpMinReadySessions) {
+		return _warmUpConnected.contains(index);
 	}
-	return _warmUpConnected.contains(index);
+	return isWarmUpReady();
 }
 
 void Uploader::markUploadSessionWarm(int index) {
@@ -694,7 +697,7 @@ bool Uploader::canAddDcIndex() const {
 	}
 	const auto fast = int(_dcIndicesWithFastRequests.size());
 	if (_useWssMux && count < kWssInitialUploadSessions) {
-		return fast >= count;
+		return true;
 	}
 	return count == fast;
 }
@@ -1011,9 +1014,12 @@ void Uploader::partLoaded(const MTPBool &result, mtpRequestId requestId) {
 	const auto now = crl::now();
 	const auto duration = now - request.sent;
 	const auto fastThreshold = fastRequestThreshold();
+	const auto slowThreshold = _useWssMux
+		? kWssSlowRequestThreshold
+		: kSlowRequestThreshold;
 	const auto fast = (duration < fastThreshold);
 	const auto slowish = !fast;
-	const auto slow = (duration >= kSlowRequestThreshold);
+	const auto slow = (duration >= slowThreshold);
 
 	if (request.dcIndex < int(_sessionTracks.size())) {
 		auto &track = _sessionTracks[request.dcIndex];
@@ -1038,14 +1044,18 @@ void Uploader::partLoaded(const MTPBool &result, mtpRequestId requestId) {
 			_dcIndicesWithFastRequests.clear();
 		}
 		if (slow) {
-			const auto elapsed = (now - _latestDcIndexRemoved);
-			const auto remove = (elapsed >= kWaitForNormalizeTimeout);
-			if (remove && _sentPerDcIndex.size() > 1) {
-				DEBUG_LOG(("Uploader: Slow request, removing dc index."));
-				removeDcIndex();
-				_latestDcIndexRemoved = now;
-			} else {
+			if (_useWssMux) {
 				DEBUG_LOG(("Uploader: Slow request, clear fast records."));
+			} else {
+				const auto elapsed = (now - _latestDcIndexRemoved);
+				const auto remove = (elapsed >= kWaitForNormalizeTimeout);
+				if (remove && _sentPerDcIndex.size() > 1) {
+					DEBUG_LOG(("Uploader: Slow request, removing dc index."));
+					removeDcIndex();
+					_latestDcIndexRemoved = now;
+				} else {
+					DEBUG_LOG(("Uploader: Slow request, clear fast records."));
+				}
 			}
 		} else {
 			DEBUG_LOG(("Uploader: Slow-ish request, clear fast records."));

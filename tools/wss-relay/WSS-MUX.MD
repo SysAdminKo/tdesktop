@@ -198,6 +198,8 @@ Hub работает на выделенном `QThread` (`hubThread`). Callback
 - Resolved IPs дедуплицируются (`DedupeIps`); порядок round-robin хранится в `ipPickOrder` (shuffle при обновлении набора).
 - `Configure` из `TcpConnection`: если hub уже `proxyActive` с непустым `config.host`, повторный `Configure` с **другим** endpoint игнорируется — защита от шторма reconnect.
 - `ApplyResolvedIps` — debounce 3s; при >1 IP запускает отложенный `startTunnelsAfterResolve`.
+- **DNS прокси:** для WSS host с `tryCustomResolve` — только system DNS (`DomainResolver::resolveSystemOnly`), без DoH (`mtp_instance.cpp`).
+- **Shutdown:** `Sandbox::closeApplication()` → `WssMuxHub::Shutdown()` (`BlockingQueuedConnection` + `hubThread.wait()`).
 
 ### 4.2.1 Proxy check (изолированные check-сессии)
 
@@ -224,8 +226,9 @@ Hub работает на выделенном `QThread` (`hubThread`). Callback
 |------|-----------|
 | [`connection_tcp.cpp`](../../Telegram/SourceFiles/mtproto/connection_tcp.cpp) | `ProxyData::Type::WebSocket` → `WssMuxHub::AcquireStream()`; `_address/_port` = **целевой DC**, не прокси |
 | [`connection_resolving.cpp`](../../Telegram/SourceFiles/mtproto/connection_resolving.cpp) | WSS не перебирает IP после первого успешного |
-| [`mtp_instance.cpp`](../../Telegram/SourceFiles/mtproto/mtp_instance.cpp) | Resolved IPs → `ApplyResolvedIps` (debounce 3s, `ipPickOrder` round-robin по туннелям) |
-| [`session_private.cpp`](../../Telegram/SourceFiles/mtproto/session_private.cpp) | Defer media DC до main (до 15s); `setWssTunnelAffinity` для download DC; reassembly stall → rotate endpoint (main, ≥25s); увеличенные receive timeouts для media cluster |
+| [`mtp_instance.cpp`](../../Telegram/SourceFiles/mtproto/mtp_instance.cpp) | Resolved IPs → `ApplyResolvedIps`; WSS proxy host → system DNS only (no DoH) |
+| [`session_private.cpp`](../../Telegram/SourceFiles/mtproto/session_private.cpp) | WSS endpoint pick (`PickWssEndpointCandidateIndex`); defer media DC (до 15s); `setWssTunnelAffinity` для download **и upload**; reassembly stall → rotate endpoint (main, ≥25s); увеличенные receive timeouts для media cluster |
+| [`details/mtproto_domain_resolver.cpp`](../../Telegram/SourceFiles/mtproto/details/mtproto_domain_resolver.cpp) | `resolveSystemOnly` для WSS proxy host |
 
 ### 4.4 Tunnel affinity
 
@@ -239,17 +242,30 @@ Hub работает на выделенном `QThread` (`hubThread`). Callback
 | `kOpenRetryDelay` | 250ms | retry pending opens |
 | `kIpUpdateDebounce` | 3s | debounce DNS update |
 | `kDeferResolveFallback` | 10s | старт без multi-IP resolve |
+| `kTunnelStreamFailGrace` | 2s | grace перед `failStreamsOnTunnel` при кратковременном disconnect |
 
-**Main traffic** (`tunnelAffinity < 0`): `pickTunnel()` выбирает least-loaded среди первых `min(tunnelCount, 8)` туннелей; туннели с активными download-streams исключаются.
+**Main traffic** (`tunnelAffinity < 0`): `pickTunnel()` → `pickAnyConnectedTunnelIndex()`: least-loaded среди первых `min(tunnelCount, 8)` туннелей; туннели с download-streams исключаются из main pick.
 
-**Download traffic** (`tunnelAffinity >= 0`): привязка к `affinity % tunnelCount`.
+**Download/upload traffic** (`tunnelAffinity >= 0`): привязка к `affinity % tunnelCount`; если целевой tunnel down — fallback на любой connected tunnel (`pickAnyConnectedTunnelIndex`).
 
-Формула affinity для download DC ([`session_private.cpp`](../../Telegram/SourceFiles/mtproto/session_private.cpp)):
+Формула affinity для download/upload DC ([`session_private.cpp`](../../Telegram/SourceFiles/mtproto/session_private.cpp)):
 
 ```
-index = (GetDcIdShift(shiftedDcId) - kBaseDownloadDcShift)
-      + BareDcId(shiftedDcId) * kMaxMediaDcCount
+base = isDownloadDcId ? kBaseDownloadDcShift : kBaseUploadDcShift
+index = (GetDcIdShift(shiftedDcId) - base) + BareDcId(shiftedDcId) * kMaxMediaDcCount
 ```
+
+### 4.4.1 WSS endpoint pick (Telegram DC)
+
+При WSS прокси session выбирает **один** TCP endpoint из candidates (`PickWssEndpointCandidateIndex`):
+
+- **upload/download DC:** только IPv4 candidates (если есть); индекс `(shift + _wssPickOffset) % ipv4Count`. При включённой галке IPv6 в настройках прокси upload/download не попадают на v6 endpoint.
+- **main DC:** `(shift + _wssPickOffset) % candidates.size()` (IPv4 и IPv6).
+- `_wssPickOffset` увеличивается при reassembly stall (main) и `restartWssWithNextEndpoint()`.
+
+### 4.4.2 Tunnel disconnect / reconnect
+
+При disconnect tunnel: `scheduleFailStreamsOnTunnel` — grace **2s** (`kTunnelStreamFailGrace`); если tunnel не восстановился — `failStreamsOnTunnel` (MUX `CLOSE` + `handleTunnelDown` на streams). Reconnect до истечения grace отменяет fail (`cancelPendingFailStreamsOnTunnel`). Generation counter (`tunnelFailGenerations`) защищает от гонок пересоздания.
 
 ### 4.5 Connect gate
 
@@ -276,6 +292,9 @@ index = (GetDcIdShift(shiftedDcId) - kBaseDownloadDcShift)
 | Upload fast request threshold | default | 5s |
 | Upload initial sessions (файл ≥ 2 MiB) | 1 | 3 |
 | Upload warm-up settle delay | — | 150ms |
+| Upload slow request threshold | default | 30s |
+| Upload `canAddDcIndex` (первые N сессий) | fast gate (512 KiB) | первые 3 без fast gate |
+| Upload warm-up min ready | — | 1 session (index 0); index ≥1 ждёт `isWarmUpReady()` |
 
 Файлы: [`download_manager_mtproto.cpp`](../../Telegram/SourceFiles/storage/download_manager_mtproto.cpp), [`file_upload.cpp`](../../Telegram/SourceFiles/storage/file_upload.cpp).
 
@@ -416,7 +435,8 @@ Edge терминирует TLS; до relay идёт plain WS на `127.0.0.1:82
 | DATA на unknown stream | — | `CLOSE(stream_id, [1])` |
 | TCP write error (client→upstream) | — | `removeStream` |
 | Upstream read error | stream error | `CLOSE` + `removeStream` |
-| WS disconnect | reconnect tunnels | `closeAll()` |
+| WS disconnect | reconnect tunnels (grace 2s) | `closeAll()` |
+| Tunnel brief disconnect | grace 2s → `failStreamsOnTunnel` или cancel при reconnect | — |
 | Idle stream | — | `CLOSE` по `-stream-idle-timeout` |
 | Tunnel limit | connect error | HTTP 429 |
 
@@ -441,6 +461,8 @@ Edge терминирует TLS; до relay идёт plain WS на `127.0.0.1:82
 | `mtproto/session_private.cpp` | Endpoint selection, download affinity |
 | `core/core_settings_proxy.cpp` | Персистенция proxy |
 | `core/application.cpp` | `refreshGlobalProxy` → `UpdateFromAppSettings` |
+| `core/sandbox.cpp` | `WssMuxHub::Shutdown()` при выходе |
+| `mtproto/details/mtproto_domain_resolver.cpp` | System DNS для WSS proxy |
 | `boxes/connection_box.cpp` | UI + tg://wss + proxy check |
 | `mtproto/proxy_check.cpp/h` | Proxy check; WSS → `EndProxyCheck` |
 | `storage/download_manager_mtproto.cpp` | Download warm-up/limits |
@@ -494,6 +516,8 @@ python3 analyze_dc_pcap.py capture.pcap
 | `6a5036e7dd` / `a00744fd14` | Proxy check sessions, Qt6, ping UI, reassembly stall rotation, relay upstream read deadline |
 | `43b6eb4320` | Fix зависания настроек прокси (убран blocking `QEventLoop` в hub) |
 | `65bd2ba027`, `25a11b702f` | `UpdateFromAppSettings`, async `AcquireCheckStream`, `ipPickOrder`, `Configure` endpoint guard, staggered proxy checks |
+| `02d6cbaf56` | Zombie tunnels: `tunnelFailGenerations`, grace 2s; system DNS (no DoH); `Shutdown` из sandbox |
+| `8ab581b6c1` | Upload: IPv4 endpoint pick, upload tunnel affinity, relaxed `canAddDcIndex`, warm-up fixes |
 
 ---
 

@@ -64,7 +64,7 @@ constexpr auto kSendStateRequestWaiting = crl::time(1000);
 // How much time to wait for some more requests, when sending msg acks.
 constexpr auto kAckSendWaiting = 10 * crl::time(1000);
 
-constexpr auto kMinMuxMediaReceiveTimeout = crl::time(16000);
+constexpr auto kMinMuxMediaReceiveTimeout = crl::time(45000);
 constexpr auto kWssCumulativeStallRotateThreshold = crl::time(25000);
 
 constexpr auto kCutContainerOnSize = 16 * 1024;
@@ -72,6 +72,30 @@ constexpr auto kCutContainerOnSize = 16 * 1024;
 auto SyncTimeRequestDuration = kFastRequestDuration;
 
 using namespace details;
+
+[[nodiscard]] int PickWssEndpointCandidateIndex(
+		ShiftedDcId shiftedDcId,
+		int shift,
+		int pickOffset,
+		const std::vector<QString> &ips) {
+	const auto count = int(ips.size());
+	Assert(count > 0);
+	if (count == 1) {
+		return 0;
+	} else if (isUploadDcId(shiftedDcId) || isDownloadDcId(shiftedDcId)) {
+		auto ipv4 = std::vector<int>();
+		ipv4.reserve(count);
+		for (auto i = 0; i != count; ++i) {
+			if (!qthelp::is_ipv6(ips[i])) {
+				ipv4.push_back(i);
+			}
+		}
+		if (!ipv4.empty()) {
+			return ipv4[(shift + pickOffset) % int(ipv4.size())];
+		}
+	}
+	return (shift + pickOffset) % count;
+}
 
 [[nodiscard]] QString LogIdsVector(const QVector<MTPlong> &ids) {
 	if (!ids.size()) return "[]";
@@ -300,9 +324,12 @@ void SessionPrivate::appendTestConnection(
 		|| (_realDcType == DcType::Cdn);
 	const auto protocolDcId = getProtocolDcId();
 	const auto connection = _testConnections.back().data.get();
-	if (isDownloadDcId(_shiftedDcId)
+	if ((isDownloadDcId(_shiftedDcId) || isUploadDcId(_shiftedDcId))
 		&& _options->proxy.type == ProxyData::Type::WebSocket) {
-		const auto index = (GetDcIdShift(_shiftedDcId) - kBaseDownloadDcShift)
+		const auto base = isDownloadDcId(_shiftedDcId)
+			? kBaseDownloadDcShift
+			: kBaseUploadDcShift;
+		const auto index = (GetDcIdShift(_shiftedDcId) - base)
 			+ BareDcId(_shiftedDcId) * kMaxMediaDcCount;
 		connection->setWssTunnelAffinity(index);
 	}
@@ -1180,8 +1207,16 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 				}
 			}
 			if (!candidates.empty()) {
-				const auto index = (shift + _wssPickOffset)
-					% candidates.size();
+				auto ips = std::vector<QString>();
+				ips.reserve(candidates.size());
+				for (const auto &candidate : candidates) {
+					ips.push_back(candidate.ip);
+				}
+				const auto index = PickWssEndpointCandidateIndex(
+					_shiftedDcId,
+					shift,
+					_wssPickOffset,
+					ips);
 				const auto &chosen = candidates[index];
 				DEBUG_LOG(("WSS pick dc=%1 shift=%2 type=%3 ip=%4 candidates=%5 offset=%6"
 					).arg(bareDc
@@ -1278,7 +1313,7 @@ void SessionPrivate::restart() {
 
 void SessionPrivate::onSentSome(uint64 size) {
 	const auto muxMedia = _options->proxy.type == ProxyData::Type::WebSocket
-		&& isMediaClusterDcId(_shiftedDcId);
+		&& (isMediaClusterDcId(_shiftedDcId) || isUploadDcId(_shiftedDcId));
 	auto remain = static_cast<uint64>(_waitForReceived);
 	if (!_oldConnection) {
 		Assert(remain <= kMaxReceiveTimeout);
@@ -3032,6 +3067,10 @@ void SessionPrivate::handleError(int errorCode) {
 
 	if (errorCode == -404) {
 		destroyTemporaryKey();
+	} else if (_options->proxy.type == ProxyData::Type::WebSocket
+		&& isUploadDcId(_shiftedDcId)) {
+		MTP_LOG(_shiftedDcId, ("Restarting after error in connection, error code: %1...").arg(errorCode));
+		restartWssWithNextEndpoint();
 	} else {
 		MTP_LOG(_shiftedDcId, ("Restarting after error in connection, error code: %1...").arg(errorCode));
 		return restart();
