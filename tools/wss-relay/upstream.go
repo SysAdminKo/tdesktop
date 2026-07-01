@@ -8,7 +8,7 @@ import (
 
 var telegramAllowlist *telegramUpstreamAllowlist
 
-func dialUpstream(addr string) (net.Conn, error) {
+func dialUpstream(addr, clientIP string) (net.Conn, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
@@ -19,19 +19,19 @@ func dialUpstream(addr string) (net.Conn, error) {
 			return nil, fmt.Errorf("upstream lookup %s: %w", host, allowErr)
 		}
 		if !allowed {
-			relayStatistics.incUpstreamBlocked()
+			relayStatistics.incUpstreamBlocked(clientIP)
 			return nil, fmt.Errorf("upstream not allowed: %s", host)
 		}
 	}
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
-		relayStatistics.incUpstreamDialError()
+		relayStatistics.incUpstreamDialError(addr)
 		return nil, err
 	}
 	if telegramAllowlist != nil {
 		if verifyErr := telegramAllowlist.verifyPeer(conn); verifyErr != nil {
 			_ = conn.Close()
-			relayStatistics.incUpstreamBlocked()
+			relayStatistics.incUpstreamBlocked(clientIP)
 			return nil, verifyErr
 		}
 	}
@@ -50,7 +50,7 @@ func rejectDisallowedUpstream(addr string) error {
 	}
 	if !allowed {
 		log.Printf("upstream blocked by telegram allowlist: %s", addr)
-		relayStatistics.incUpstreamBlocked()
+		relayStatistics.incUpstreamBlocked("")
 		return fmt.Errorf("upstream not allowed")
 	}
 	return nil

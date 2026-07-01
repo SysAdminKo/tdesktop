@@ -212,9 +212,9 @@ func (s *muxSession) handleOpen(streamID uint32, payload []byte) {
 
 func (s *muxSession) openStreamAsync(streamID uint32, target string) {
 	dialStarted := time.Now()
-	tcp, err := dialUpstream(target)
+	tcp, err := dialUpstream(target, s.clientIP)
 	dialMs := time.Since(dialStarted).Milliseconds()
-	relayStatistics.recordMuxOpenDial(dialMs)
+	relayStatistics.recordMuxOpenDial(target, dialMs)
 	if dialMs > 100 {
 		log.Printf(
 			"mux open slow stream=%d client=%s target=%s dial_ms=%d",
@@ -226,6 +226,7 @@ func (s *muxSession) openStreamAsync(streamID uint32, target string) {
 	}
 	if err != nil {
 		log.Printf("mux open stream=%d dial %s failed: %v", streamID, target, err)
+		relayStatistics.incMuxOpenFailDial()
 		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailDial})
 		return
 	}
@@ -315,7 +316,7 @@ func (s *muxSession) pumpUpstream(stream *muxStream) {
 			s.removeStream(stream.id)
 			return
 		}
-		relayStatistics.addBytesFromUpstream(s.clientIP, n)
+		relayStatistics.addBytesFromUpstream(s.clientIP, stream.target, n)
 	}
 }
 
@@ -400,7 +401,7 @@ func (s *muxSession) handleData(streamID uint32, payload []byte) {
 		s.removeStream(streamID)
 		return
 	}
-	relayStatistics.addBytesToUpstream(s.clientIP, len(payload))
+	relayStatistics.addBytesToUpstream(s.clientIP, stream.target, len(payload))
 }
 
 func (s *muxSession) handleClose(streamID uint32) {
@@ -433,6 +434,7 @@ func (s *muxSession) readLoop() {
 				active,
 				s.clientIP,
 			)
+			relayStatistics.incTunnelEndedWithStreams()
 		}
 		s.closeAll()
 	}()
@@ -462,6 +464,7 @@ func (s *muxSession) readLoop() {
 		frameType, streamID, payload, err := decodeMuxFrame(data)
 		if err != nil {
 			log.Printf("mux decode error: %v", err)
+			relayStatistics.incMuxDecodeError()
 			return
 		}
 		switch frameType {
@@ -476,6 +479,7 @@ func (s *muxSession) readLoop() {
 		case muxTypePong:
 		default:
 			log.Printf("mux unknown frame type=%d", frameType)
+			relayStatistics.incMuxUnknownFrame()
 		}
 	}
 }
@@ -491,15 +495,16 @@ func handleMux(
 		http.Error(w, "mux path does not accept X-Tg-Target", http.StatusBadRequest)
 		return
 	}
+	clientIP := clientIPFromRequest(r)
 	authLabel, ok := auth.validate(r)
 	if !ok {
+		relayStatistics.incAuthFailure(clientIP)
 		writeUnauthorized(w)
 		return
 	}
-	clientIP := clientIPFromRequest(r)
 	if !limiter.tryAcquire(clientIP) {
 		log.Printf("mux tunnel limit reached for %s", clientIP)
-		relayStatistics.incTunnelLimitRejected()
+		relayStatistics.incTunnelLimitRejected(clientIP)
 		http.Error(w, "too many mux tunnels", http.StatusTooManyRequests)
 		return
 	}
@@ -510,10 +515,12 @@ func handleMux(
 	conn, err := muxWSUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("mux upgrade failed: %v", err)
+		relayStatistics.incWSUpgradeFailure()
 		return
 	}
 	if conn.Subprotocol() != muxSubprotocol {
 		log.Printf("mux bad subprotocol: %q", conn.Subprotocol())
+		relayStatistics.incWSBadSubprotocol()
 		_ = conn.Close()
 		return
 	}

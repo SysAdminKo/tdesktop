@@ -7,17 +7,18 @@ Wants=network-online.target
 Type=simple
 User=nobody
 Group=nobody
-ExecStart=/usr/local/bin/wss-relay \
+WorkingDirectory=/opt/wss-relay
+ExecStart=/opt/wss-relay/bin/wss-relay \
 	-listen 127.0.0.1:8283 \
 	-mux-path /ws/mux \
-	-max-streams 256 \
+	-max-streams 64 \
 	-max-tunnels-per-ip 12 \
 	-stream-idle-timeout 10m \
 	-ws-ping-interval 30s \
 	-ws-read-timeout 90s \
-	-telegram-only=true
-	# -auth-file /etc/wss-relay/tokens
-Restart=on-failure
+	-telegram-only=true \
+	-auth-file /opt/wss-relay/config/tokens
+Restart=always
 RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict

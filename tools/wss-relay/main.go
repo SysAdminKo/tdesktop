@@ -23,7 +23,7 @@ func tuneTCP(conn net.Conn) {
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8283", "HTTP listen address")
 	muxPath := flag.String("mux-path", "/ws/mux", "WebSocket mux path")
-	maxStreams := flag.Int("max-streams", 256, "Max mux streams per tunnel")
+	maxStreams := flag.Int("max-streams", 64, "Max mux streams per tunnel")
 	maxTunnelsPerIP := flag.Int("max-tunnels-per-ip", 12, "Max mux WebSocket tunnels per client IP (0 = unlimited)")
 	streamIdleTimeout := flag.Duration("stream-idle-timeout", 10*time.Minute, "Close mux streams with no traffic for this long (0 = disabled)")
 	wsPingInterval := flag.Duration("ws-ping-interval", 30*time.Second, "WebSocket ping interval per tunnel (0 = disabled)")
@@ -45,6 +45,16 @@ func main() {
 	}
 	telegramAllowlist = allowlist
 
+	relayStatistics.setConfig(statsConfigSnapshot{
+		MaxStreams:           *maxStreams,
+		MaxTunnelsPerIP:      *maxTunnelsPerIP,
+		StreamIdleTimeoutSec: streamIdleTimeout.Seconds(),
+		WSPingIntervalSec:    wsPingInterval.Seconds(),
+		WSReadTimeoutSec:     wsReadTimeout.Seconds(),
+		TelegramOnly:         *telegramOnly,
+		AuthEnabled:          tokenAuth != nil,
+	})
+
 	muxLimiter := newMuxTunnelLimiter(*maxTunnelsPerIP)
 	muxConfig := muxConfig{
 		maxStreams:        *maxStreams,
@@ -62,6 +72,14 @@ func main() {
 			}
 			if r.URL.Path == base+"/json" {
 				handleStatsJSON(w, r)
+				return
+			}
+			if r.URL.Path == base+"/metrics" {
+				handleMetricsHTTP(w, r)
+				return
+			}
+			if r.URL.Path == base+"/restart" {
+				handleStatsRestart(w, r, tokenAuth)
 				return
 			}
 		}

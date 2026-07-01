@@ -58,32 +58,64 @@ const statsPageHTML = `<!DOCTYPE html>
 <style>
 :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; }
 body { margin: 0; background: #0f1115; color: #e8eaed; }
-.wrap { max-width: 1200px; margin: 0 auto; padding: 20px; }
-h1 { margin: 0 0 8px; font-size: 22px; }
-.meta { color: #9aa0a6; font-size: 13px; margin-bottom: 20px; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.wrap { max-width: 1280px; margin: 0 auto; padding: 20px; }
+h1 { margin: 0; font-size: 22px; }
+.head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.actions { display: flex; align-items: center; gap: 10px; }
+.btn { background: #2a2f3a; color: #e8eaed; border: 1px solid #3c4454; border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer; }
+.btn:hover { background: #343b49; }
+.btn:disabled { opacity: .55; cursor: not-allowed; }
+.btn.danger { border-color: #9a6700; color: #fdd663; }
+.action-msg { font-size: 12px; color: #9aa0a6; }
+.action-msg.ok { color: #81c995; }
+.action-msg.bad { color: #f28b82; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.chip { background: #171a21; border: 1px solid #2a2f3a; border-radius: 999px; padding: 5px 12px; font-size: 12px; color: #bdc1c6; }
+.chip strong { color: #e8eaed; font-weight: 600; }
+.chip.ok { border-color: #2e7d52; color: #81c995; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 20px; }
 .card { background: #171a21; border: 1px solid #2a2f3a; border-radius: 10px; padding: 14px; }
-.card .label { color: #9aa0a6; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
-.card .value { font-size: 24px; font-weight: 600; margin-top: 6px; }
-.card .sub { color: #9aa0a6; font-size: 12px; margin-top: 4px; }
-section { margin-top: 24px; }
-section h2 { font-size: 16px; margin: 0 0 10px; }
-table { width: 100%; border-collapse: collapse; background: #171a21; border: 1px solid #2a2f3a; border-radius: 10px; overflow: hidden; }
-th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #2a2f3a; font-size: 13px; }
-th { color: #9aa0a6; font-weight: 600; background: #12151b; }
-tr:last-child td { border-bottom: 0; }
-.num { text-align: right; font-variant-numeric: tabular-nums; }
-.empty { color: #9aa0a6; padding: 16px; }
+.card.ok { border-color: #2e7d52; }
+.card.warn { border-color: #9a6700; }
+.card.bad { border-color: #b3261e; }
+.card .label { color: #9aa0a6; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.card .value { font-size: 22px; font-weight: 600; margin-top: 6px; line-height: 1.2; }
+.card .sub { color: #9aa0a6; font-size: 11px; margin-top: 6px; line-height: 1.35; }
+section { margin-top: 28px; }
+section h2 { font-size: 15px; margin: 0 0 10px; color: #bdc1c6; font-weight: 600; }
+.table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid #2a2f3a; }
+table.stats { width: 100%; border-collapse: collapse; background: #171a21; table-layout: auto; }
+table.stats th, table.stats td { padding: 10px 14px; border-bottom: 1px solid #2a2f3a; font-size: 13px; vertical-align: middle; white-space: nowrap; }
+table.stats th.text, table.stats td.text { text-align: left; }
+table.stats th.num, table.stats td.num { text-align: right; font-variant-numeric: tabular-nums; padding-left: 18px; }
+table.stats th.text:first-child, table.stats td.text:first-child { width: 1%; padding-right: 28px; }
+table.stats thead th { color: #9aa0a6; font-weight: 600; background: #12151b; position: sticky; top: 0; }
+table.stats tbody tr:hover { background: #1c2029; }
+table.stats tr:last-child td { border-bottom: 0; }
+.util-ok { color: #81c995; }
+.util-warn { color: #fdd663; }
+.util-bad { color: #f28b82; }
+.empty { color: #9aa0a6; padding: 16px; background: #171a21; border: 1px solid #2a2f3a; border-radius: 10px; font-size: 13px; }
 </style>
 </head>
 <body>
 <div class="wrap">
+<div class="head">
 <h1>wss-relay monitor</h1>
-<div class="meta" id="meta">loading...</div>
+<div class="actions">
+<button class="btn danger" id="restartBtn" type="button" hidden>Restart relay</button>
+<span class="action-msg" id="actionMsg"></span>
+</div>
+</div>
+<div class="meta" id="meta"></div>
 <div class="grid" id="cards"></div>
 <section>
 <h2>Clients</h2>
 <div id="clients"></div>
+</section>
+<section>
+<h2>Abuse by IP</h2>
+<div id="abuse"></div>
 </section>
 <section>
 <h2>Active upstream targets</h2>
@@ -100,59 +132,240 @@ function fmtBytes(n) {
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
   return (i ? v.toFixed(1) : v) + ' ' + units[i];
 }
-function renderTable(headers, rows) {
-  if (!rows.length) return '<div class="empty">no data</div>';
-  let html = '<table><thead><tr>';
-  for (const h of headers) html += '<th>' + esc(h) + '</th>';
+function fmtUptime(sec) {
+  sec = Math.floor(Number(sec) || 0);
+  if (sec < 60) return sec + 's';
+  const m = Math.floor(sec / 60);
+  if (m < 60) return m + 'm ' + (sec % 60) + 's';
+  const h = Math.floor(m / 60);
+  if (h < 48) return h + 'h ' + (m % 60) + 'm';
+  return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+}
+function fmtLimit(n) {
+  if (n == null || n === '') return '?';
+  return Number(n) === 0 ? '∞ (off)' : String(n);
+}
+function fmtCfg(n) {
+  return (n == null || n === '') ? '?' : String(n);
+}
+function fmtRate(n) {
+  const v = Number(n);
+  if (!v) return '0 B/s';
+  if (v >= 1024 * 1024) return (v / (1024 * 1024)).toFixed(1) + ' MiB/s';
+  if (v >= 1024) return (v / 1024).toFixed(1) + ' KiB/s';
+  return v.toFixed(0) + ' B/s';
+}
+function fmtNum(n, digits) {
+  return Number(n).toFixed(digits == null ? 1 : digits);
+}
+function utilClass(pct) {
+  pct = Number(pct) || 0;
+  if (pct >= 80) return 'util-bad';
+  if (pct >= 50) return 'util-warn';
+  return 'util-ok';
+}
+function cardClass(count) {
+  count = Number(count) || 0;
+  if (count <= 0) return 'ok';
+  if (count < 10) return 'warn';
+  return 'bad';
+}
+function renderTable(columns, rows, emptyText) {
+  if (!rows.length) return '<div class="empty">' + esc(emptyText || 'no data') + '</div>';
+  let html = '<div class="table-wrap"><table class="stats"><thead><tr>';
+  for (const col of columns) {
+    html += '<th class="' + (col.className || 'text') + '">' + esc(col.label) + '</th>';
+  }
   html += '</tr></thead><tbody>';
   for (const row of rows) {
     html += '<tr>';
-    for (const cell of row) html += '<td class="' + (cell.className || '') + '">' + cell.text + '</td>';
+    for (let i = 0; i < columns.length; i++) {
+      const cell = row[i] || { text: '' };
+      const base = columns[i].className || 'text';
+      const extra = cell.className ? ' ' + cell.className : '';
+      html += '<td class="' + base + extra + '">' + cell.text + '</td>';
+    }
     html += '</tr>';
   }
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
   return html;
 }
-function render(data) {
-  document.getElementById('meta').textContent =
-    'updated ' + data.now + ' · uptime ' + Math.floor(data.uptime_sec) + 's';
-  const cards = [
-    ['Mux tunnels', data.mux_tunnels, 'total ' + data.mux_tunnels_total],
-    ['Mux streams', data.mux_streams, 'opened ' + data.mux_streams_opened + ' / closed ' + data.mux_streams_closed + ' (graceful ' + data.mux_streams_closed_graceful + ', idle ' + data.mux_stream_idle_expired + ')'],
-    ['To Telegram', fmtBytes(data.bytes_to_upstream), 'from clients'],
-    ['From Telegram', fmtBytes(data.bytes_from_upstream), 'to clients'],
-    ['Dial', 'avg ' + data.mux_open_dial_ms_avg + 'ms / max ' + data.mux_open_dial_ms_max + 'ms', 'count ' + data.mux_open_count + ' / slow ' + data.mux_open_slow + ' / bad ' + data.mux_open_bad],
-    ['Write wait', 'avg ' + data.mux_write_wait_us_avg + 'µs / max ' + data.mux_write_wait_us_max + 'µs', ''],
-    ['Upstream errors', '' + data.upstream_dial_errors, 'blocked ' + data.upstream_blocked + ' / read stall ' + data.mux_upstream_read_stall],
-    ['429 limits', '' + data.tunnel_limit_rejected, 'open limit ' + data.mux_open_limit],
+function setActionMsg(text, kind) {
+  const el = document.getElementById('actionMsg');
+  el.textContent = text || '';
+  el.className = 'action-msg' + (kind ? ' ' + kind : '');
+}
+function authToken() {
+  return sessionStorage.getItem('wss-relay-token') || '';
+}
+function rememberAuthToken(token) {
+  if (token) sessionStorage.setItem('wss-relay-token', token);
+}
+let restartWaiting = false;
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+async function waitForServiceAfterRestart(btn) {
+  restartWaiting = true;
+  setActionMsg('restart sent, waiting...', 'ok');
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    await sleep(800);
+    try {
+      const resp = await fetch('/stats/json', { cache: 'no-store' });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      render(data);
+      restartWaiting = false;
+      btn.disabled = false;
+      setActionMsg('restarted', 'ok');
+      setTimeout(() => setActionMsg(''), 2000);
+      return;
+    } catch {}
+  }
+  restartWaiting = false;
+  btn.disabled = false;
+  setActionMsg('restart timeout — refresh page', 'bad');
+}
+async function restartRelay(authRequired) {
+  if (!confirm('Restart wss-relay service now?')) return;
+  let token = authToken();
+  if (authRequired && !token) {
+    token = prompt('Bearer token required to restart:');
+    if (!token) return;
+    rememberAuthToken(token);
+  }
+  const btn = document.getElementById('restartBtn');
+  btn.disabled = true;
+  setActionMsg('restarting...', '');
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    const resp = await fetch('/stats/restart', { method: 'POST', headers, cache: 'no-store' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    await waitForServiceAfterRestart(btn);
+  } catch (e) {
+    restartWaiting = false;
+    setActionMsg('restart failed: ' + e, 'bad');
+    btn.disabled = false;
+  }
+}
+function renderMeta(data) {
+  const cfg = data.config || {};
+  const load = data.load || {};
+  const util = load.server_streams_util_pct ?? load.streams_util_pct ?? 0;
+  const chips = [
+    ['Updated', new Date(data.now).toLocaleString()],
+    ['Uptime', fmtUptime(data.uptime_sec)],
+    ['Capacity', (load.streams_capacity || 0) + ' streams'],
+    ['Util', util + '%', utilClass(util)],
+    ['Streams/tunnel', fmtCfg(cfg.max_streams)],
+    ['Tunnels/IP', fmtLimit(cfg.max_tunnels_per_ip)],
+    ['Auth', cfg.auth_enabled ? 'on' : 'off', cfg.auth_enabled ? 'ok' : ''],
   ];
-  document.getElementById('cards').innerHTML = cards.map(([label, value, sub]) =>
-    '<div class="card"><div class="label">' + esc(label) + '</div><div class="value">' + esc(value) + '</div><div class="sub">' + esc(sub) + '</div></div>'
+  document.getElementById('meta').innerHTML = chips.map(([k, v, cls]) =>
+    '<span class="chip' + (cls ? ' ' + cls : '') + '">' + esc(k) + ': <strong>' + esc(v) + '</strong></span>'
+  ).join('');
+}
+function render(data) {
+  const control = data.control || {};
+  const restartBtn = document.getElementById('restartBtn');
+  if (control.restart_enabled) {
+    restartBtn.hidden = false;
+    restartBtn.onclick = () => restartRelay(!!control.auth_required);
+  } else {
+    restartBtn.hidden = true;
+  }
+  const load = data.load || {};
+  const rates = data.rates || {};
+  renderMeta(data);
+  const util = load.server_streams_util_pct ?? load.streams_util_pct ?? 0;
+  const cards = [
+    ['Mux tunnels', data.mux_tunnels + ' (peak ' + data.mux_tunnels_peak + ')', 'total ' + data.mux_tunnels_total + ' · ' + fmtNum(rates.tunnels_opened_per_min, 1) + '/min', ''],
+    ['Mux streams', data.mux_streams + ' (peak ' + data.mux_streams_peak + ')', 'server ' + util + '% · ' + fmtNum(rates.streams_opened_per_min, 1) + '/min', util >= 80 ? 'warn' : ''],
+    ['To Telegram', fmtBytes(data.bytes_to_upstream), fmtRate(rates.bytes_to_upstream_per_sec), ''],
+    ['From Telegram', fmtBytes(data.bytes_from_upstream), fmtRate(rates.bytes_from_upstream_per_sec), ''],
+    ['Dial', data.mux_open_dial_ms_avg + ' / ' + data.mux_open_dial_ms_p95 + ' / ' + data.mux_open_dial_ms_max + ' ms', 'avg / p95 / max · count ' + data.mux_open_count + ' · slow ' + data.mux_open_slow, data.mux_open_slow > 0 ? 'warn' : 'ok'],
+    ['Write wait', data.mux_write_wait_us_avg + ' / ' + data.mux_write_wait_us_p95 + ' / ' + data.mux_write_wait_us_max + ' µs', 'avg / p95 / max', ''],
+    ['Upstream errors', String(data.upstream_dial_errors), 'blocked ' + data.upstream_blocked + ' · stall ' + data.mux_upstream_read_stall, cardClass(data.upstream_dial_errors + data.upstream_blocked)],
+    ['Open fails', String(data.mux_open_fail_dial), 'bad ' + data.mux_open_bad + ' · limit ' + data.mux_open_limit, cardClass(data.mux_open_fail_dial + data.mux_open_bad + data.mux_open_limit)],
+    ['429 limits', String(data.tunnel_limit_rejected), 'max ' + (load.tunnels_per_ip_max || 0) + ' tunnels/ip · avg ' + fmtNum(load.tunnels_per_ip_avg || 0, 1), cardClass(data.tunnel_limit_rejected)],
+    ['WS / auth', String(data.auth_failures), 'upgrade ' + data.ws_upgrade_failures + ' · decode ' + data.mux_decode_errors, cardClass(data.auth_failures + data.ws_upgrade_failures + data.mux_decode_errors)],
+    ['Tunnel drops', String(data.tunnels_ended_with_streams), 'idle ' + data.mux_stream_idle_expired + ' · graceful ' + data.mux_streams_closed_graceful, cardClass(data.tunnels_ended_with_streams)],
+  ];
+  document.getElementById('cards').innerHTML = cards.map(([label, value, sub, cls]) =>
+    '<div class="card' + (cls ? ' ' + cls : '') + '"><div class="label">' + esc(label) + '</div><div class="value">' + esc(value) + '</div><div class="sub">' + esc(sub) + '</div></div>'
   ).join('');
   document.getElementById('clients').innerHTML = renderTable(
-    ['Client IP', 'Tunnels', 'Streams', 'Up', 'Down'],
-    data.clients.map(c => [
-      { text: esc(c.ip) },
-      { text: String(c.active_tunnels), className: 'num' },
-      { text: String(c.active_streams), className: 'num' },
-      { text: fmtBytes(c.bytes_to_upstream), className: 'num' },
-      { text: fmtBytes(c.bytes_from_upstream), className: 'num' },
-    ])
+    [
+      { label: 'Client IP', className: 'text' },
+      { label: 'Tunnels', className: 'num' },
+      { label: 'Streams', className: 'num' },
+      { label: 'Peak', className: 'num' },
+      { label: 'Util', className: 'num' },
+      { label: 'Up/s', className: 'num' },
+      { label: 'Down/s', className: 'num' },
+      { label: 'Total up', className: 'num' },
+      { label: 'Total down', className: 'num' },
+    ],
+    (data.clients || []).map(c => {
+      const u = c.streams_util_pct || 0;
+      return [
+        { text: esc(c.ip) },
+        { text: String(c.active_tunnels) },
+        { text: String(c.active_streams) },
+        { text: String(c.streams_peak || 0) },
+        { text: String(u) + '%', className: utilClass(u) },
+        { text: fmtRate((c.rates && c.rates.bytes_to_upstream_per_sec) || 0) },
+        { text: fmtRate((c.rates && c.rates.bytes_from_upstream_per_sec) || 0) },
+        { text: fmtBytes(c.bytes_to_upstream) },
+        { text: fmtBytes(c.bytes_from_upstream) },
+      ];
+    }),
+    'no active clients'
+  );
+  document.getElementById('abuse').innerHTML = renderTable(
+    [
+      { label: 'Client IP', className: 'text' },
+      { label: 'Auth fail', className: 'num' },
+      { label: '429', className: 'num' },
+      { label: 'Blocked', className: 'num' },
+    ],
+    (data.abuse_by_ip || []).map(a => [
+      { text: esc(a.ip) },
+      { text: String(a.auth_failures) },
+      { text: String(a.tunnel_limit_rejected) },
+      { text: String(a.upstream_blocked) },
+    ]),
+    'no abuse events recorded'
   );
   document.getElementById('upstreams').innerHTML = renderTable(
-    ['Target', 'Streams'],
-    data.upstreams.map(u => [
+    [
+      { label: 'Target', className: 'text' },
+      { label: 'Streams', className: 'num' },
+      { label: 'Up', className: 'num' },
+      { label: 'Down', className: 'num' },
+      { label: 'Dial err', className: 'num' },
+      { label: 'Open avg ms', className: 'num' },
+    ],
+    (data.upstreams || []).map(u => [
       { text: esc(u.target) },
-      { text: String(u.active_streams), className: 'num' },
-    ])
+      { text: String(u.active_streams) },
+      { text: fmtBytes(u.bytes_to_upstream) },
+      { text: fmtBytes(u.bytes_from_upstream) },
+      { text: String(u.dial_errors), className: u.dial_errors ? 'util-bad' : '' },
+      { text: String(u.open_dial_ms_avg || 0) },
+    ]),
+    'no active upstream connections'
   );
 }
 async function refresh() {
+  if (restartWaiting) return;
   try {
     const resp = await fetch('/stats/json', { cache: 'no-store' });
     render(await resp.json());
   } catch (e) {
-    document.getElementById('meta').textContent = 'refresh failed: ' + e;
+    document.getElementById('meta').innerHTML = '<span class="chip bad">refresh failed: ' + esc(e) + '</span>';
   }
 }
 refresh();
