@@ -721,10 +721,13 @@ func (s *relayStats) snapshot() statsSnapshot {
 		result.Upstreams = append(result.Upstreams, entry)
 	}
 	sort.Slice(result.Clients, func(i, j int) bool {
-		if result.Clients[i].ActiveStreams == result.Clients[j].ActiveStreams {
+		if result.Clients[i].ActiveStreams != result.Clients[j].ActiveStreams {
+			return result.Clients[i].ActiveStreams > result.Clients[j].ActiveStreams
+		}
+		if result.Clients[i].ActiveTunnels != result.Clients[j].ActiveTunnels {
 			return result.Clients[i].ActiveTunnels > result.Clients[j].ActiveTunnels
 		}
-		return result.Clients[i].ActiveStreams > result.Clients[j].ActiveStreams
+		return result.Clients[i].IP < result.Clients[j].IP
 	})
 	sort.Slice(result.Upstreams, func(i, j int) bool {
 		if result.Upstreams[i].ActiveStreams == result.Upstreams[j].ActiveStreams {
