@@ -114,6 +114,7 @@ void LoadCloudFile(
 	Fn<bool()> finalCheck,
 	Fn<void(QByteArray)> done,
 	Fn<void(bool)> fail = nullptr,
-	Fn<void()> progress = nullptr);
+	Fn<void()> progress = nullptr,
+	int downloadFrontPartSize = 0);
 
 } // namespace Data

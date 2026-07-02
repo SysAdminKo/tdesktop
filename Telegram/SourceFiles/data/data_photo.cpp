@@ -19,6 +19,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/storage_account.h"
 #include "storage/file_download.h"
 #include "core/application.h"
+#include "base/weak_ptr.h"
+#include "ui/image/image_prepare.h"
 
 namespace {
 
@@ -333,7 +335,14 @@ void PhotoData::load(
 		}
 		return true;
 	};
-	const auto done = [=](QImage result, QByteArray bytes) {
+	const auto fail = [=](bool started) {
+		if (validSize == PhotoSize::Large) {
+			_owner->photoLoadFail(this, started);
+		}
+	};
+	const auto guard = base::make_weak(&session());
+	const auto limit = SideLimit();
+	const auto done = [=](QByteArray bytes) {
 		Expects(_images[valid].loader != nullptr);
 
 		// Find out what progressive photo size have we loaded exactly.
@@ -349,21 +358,39 @@ void PhotoData::load(
 				}
 			}
 		}
-		if (const auto active = activeMediaView()) {
-			active->set(
-				validSize,
-				goodFor,
-				ValidatePhotoImage(std::move(result), _images[valid]),
-				std::move(bytes));
-		}
-		if (validSize == PhotoSize::Large && goodFor == validSize) {
-			_owner->photoLoadDone(this);
-		}
-	};
-	const auto fail = [=](bool started) {
-		if (validSize == PhotoSize::Large) {
-			_owner->photoLoadFail(this, started);
-		}
+		const auto isWeb = v::is<WebFileLocation>(
+			_images[valid].location.file().data);
+		crl::async([=]() mutable {
+			auto image = Images::Read({ .content = bytes }).image;
+			if (!image.isNull()) {
+				if (image.width() > limit || image.height() > limit) {
+					image = image.scaled(
+						limit,
+						limit,
+						Qt::KeepAspectRatio,
+						Qt::SmoothTransformation);
+				}
+				if (isWeb && image.format() == QImage::Format_ARGB32) {
+					image = Images::Opaque(std::move(image));
+				}
+			}
+			crl::on_main(guard, [=, image = std::move(image)]() mutable {
+				if (image.isNull()) {
+					fail(true);
+					return;
+				}
+				if (const auto active = activeMediaView()) {
+					active->set(
+						validSize,
+						goodFor,
+						std::move(image),
+						std::move(bytes));
+				}
+				if (validSize == PhotoSize::Large && goodFor == validSize) {
+					_owner->photoLoadDone(this);
+				}
+			});
+		});
 	};
 	const auto progress = [=] {
 		if (validSize == PhotoSize::Large) {

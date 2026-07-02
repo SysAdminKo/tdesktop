@@ -342,6 +342,7 @@ function render(data) {
   document.getElementById('upstreams').innerHTML = renderTable(
     [
       { label: 'Target', className: 'text' },
+      { label: 'DC', className: 'text' },
       { label: 'Streams', className: 'num' },
       { label: 'Up', className: 'num' },
       { label: 'Down', className: 'num' },
@@ -350,6 +351,7 @@ function render(data) {
     ],
     (data.upstreams || []).map(u => [
       { text: esc(u.target) },
+      { text: esc(u.dc || '—') },
       { text: String(u.active_streams) },
       { text: fmtBytes(u.bytes_to_upstream) },
       { text: fmtBytes(u.bytes_from_upstream) },

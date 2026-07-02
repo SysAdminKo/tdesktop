@@ -74,4 +74,4 @@ settings.local.json
 
 # Custom update server keys (secret)
 tools/Packer/keys/
-tools/Packer/current4.json
+tools/Packer/Release/

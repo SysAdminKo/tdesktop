@@ -352,7 +352,8 @@ void LoadCloudFile(
 		Fn<bool()> finalCheck,
 		Fn<void(QByteArray)> done,
 		Fn<void(bool)> fail,
-		Fn<void()> progress) {
+		Fn<void()> progress,
+		int downloadFrontPartSize) {
 	const auto callback = [=](CloudFile &file) {
 		if (auto bytes = file.loader->bytes(); bytes.isEmpty()) {
 			file.flags |= CloudFile::Flag::Failed;
@@ -373,7 +374,8 @@ void LoadCloudFile(
 		finalCheck,
 		callback,
 		std::move(fail),
-		std::move(progress));
+		std::move(progress),
+		downloadFrontPartSize);
 }
 
 } // namespace Data

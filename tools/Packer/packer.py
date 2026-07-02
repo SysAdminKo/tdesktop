@@ -40,6 +40,9 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.join(BASE_DIR, 'Release')
+
 H_SIG_LEN = 128
 H_SHA_LEN = 20
 H_PROPS_LEN_WIN = 5    # LZMA_PROPS_SIZE
@@ -305,10 +308,14 @@ def main():
     )
 
     out_name = args.output or output_name(args.version, args.platform, args.alpha)
-    with open(out_name, 'wb') as f:
+    out_dir = os.path.dirname(out_name) or OUTPUT_DIR
+    out_base = os.path.basename(out_name)
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, out_base)
+    with open(out_path, 'wb') as f:
         f.write(result)
 
-    print(f"Update file '{out_name}' written successfully ({len(result)} bytes)")
+    print(f"Update file '{out_path}' written successfully ({len(result)} bytes)")
 
     if args.current4:
         import json
@@ -316,11 +323,11 @@ def main():
             args.platform: {
                 "stable": {
                     "released": args.version,
-                    "link": f"/files/{out_name}",
+                    "link": f"/files/{out_base}",
                 }
             }
         }
-        current4_path = os.path.join(os.path.dirname(out_name) or '.', 'current4')
+        current4_path = os.path.join(out_dir, 'current4')
         with open(current4_path, 'w', encoding='utf-8') as f:
             f.write(json.dumps(doc, indent=2) + '\n')
         print(f"current4 -> '{current4_path}'")

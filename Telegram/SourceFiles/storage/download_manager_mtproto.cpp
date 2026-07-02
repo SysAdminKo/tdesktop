@@ -541,7 +541,11 @@ bool DownloadManagerMtproto::trySendNextPart(MTP::DcId dcId, Queue &queue) {
 		return false;
 	}
 	const auto onlyHighestPriority = (balanceData.totalRequested > 0);
-	if (const auto task = queue.nextTask(onlyHighestPriority)) {
+	auto task = queue.nextTask(onlyHighestPriority);
+	if (!task && onlyHighestPriority) {
+		task = queue.nextTask(false);
+	}
+	if (task) {
 		task->loadPart(bestIndex);
 		return true;
 	}

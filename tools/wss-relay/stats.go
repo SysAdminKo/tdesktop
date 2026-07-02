@@ -131,6 +131,7 @@ type abuseSnapshot struct {
 
 type upstreamSnapshot struct {
 	Target            string `json:"target"`
+	DC                string `json:"dc"`
 	ActiveStreams     int    `json:"active_streams"`
 	BytesToUpstream   int64  `json:"bytes_to_upstream"`
 	BytesFromUpstream int64  `json:"bytes_from_upstream"`
@@ -704,6 +705,7 @@ func (s *relayStats) snapshot() statsSnapshot {
 	for target, total := range s.upstreamTotals {
 		entry := upstreamSnapshot{
 			Target:            target,
+			DC:                dcLabelForTarget(target),
 			BytesToUpstream:   total.bytesToUpstream,
 			BytesFromUpstream: total.bytesFromUpstream,
 			DialErrors:        total.dialErrors,

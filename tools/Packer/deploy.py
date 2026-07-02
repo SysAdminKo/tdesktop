@@ -253,13 +253,15 @@ def main():
             tmp_dir, args.version, args.platform,
             args.private_key, args.alpha)
 
-        local_file = os.path.join(BASE_DIR, filename)
+        local_file = filename if os.path.isabs(filename) \
+            else os.path.join(BASE_DIR, filename)
         if not os.path.isfile(local_file):
             print(f"ERROR: packed file not found: {local_file}", file=sys.stderr)
             sys.exit(1)
 
         current4_content = generate_current4(
-            args.version, args.platform, args.base_url, filename)
+            args.version, args.platform, args.base_url,
+            os.path.basename(local_file))
 
         upload(args.host, args.remote_path, local_file,
                current4_content, args.ssh_key)
