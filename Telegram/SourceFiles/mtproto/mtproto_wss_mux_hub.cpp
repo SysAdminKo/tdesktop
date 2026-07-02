@@ -33,11 +33,16 @@ Fn<void()> AuthRejectedHandler;
 
 constexpr auto kDefaultTunnelCount = 6;
 constexpr auto kDownloadTunnelSlots = 8;
+constexpr auto kBaseTunnelCount = 1;
+constexpr auto kStreamsPerTunnelHigh = 8;
+constexpr auto kAffinityLoadSlack = 1;
+constexpr auto kFastTuneDelay = crl::time(250);
 constexpr auto kReconnectDelay = crl::time(2000);
 constexpr auto kTunnelStreamFailGrace = crl::time(2000);
 constexpr auto kOpenRetryDelay = crl::time(250);
 constexpr auto kIpUpdateDebounce = crl::time(3000);
 constexpr auto kDeferResolveFallback = 10 * crl::time(1000);
+constexpr auto kAdaptiveTuneInterval = 5 * crl::time(1000);
 
 [[nodiscard]] bool HostNeedsResolve(const QString &host) {
 	static const auto RegExp = QRegularExpression(
@@ -172,6 +177,8 @@ struct WssMuxHub::Private : public QObject {
 	int nextPickTunnel = 0;
 	std::vector<QString> ipPickOrder;
 	std::deque<PendingOpen> pendingOpens;
+	bool adaptiveTuneScheduled = false;
+	bool fastTuneScheduled = false;
 
 	std::map<QString, ProxyCheckSession> checkSessions;
 	std::map<uint32, QString> checkStreamKeys;
@@ -589,6 +596,7 @@ struct WssMuxHub::Private : public QObject {
 
 	void resetTunnels() {
 		++fallbackGeneration;
+		stopAdaptiveTuning();
 		for (auto i = 0; i != int(tunnels.size()); ++i) {
 			failStreamsOnTunnel(i);
 		}
@@ -701,17 +709,7 @@ struct WssMuxHub::Private : public QObject {
 		}
 		updateIpPickOrder(ips);
 		ips = ipPickOrder;
-		const auto count = config.tunnelCount;
-		if (int(tunnels.size()) != count) {
-			resetTunnels();
-			if (shouldDeferTunnelStart()) {
-				deferTunnelStartUntilResolve = true;
-				scheduleTunnelStartFallback();
-				return;
-			}
-			startTunnels(false);
-			return;
-		}
+		const auto count = int(tunnels.size());
 		for (auto i = 0; i != count; ++i) {
 			const auto &tunnel = tunnels[i];
 			const auto host = tunnel ? tunnel->connectHost() : QString();
@@ -822,6 +820,23 @@ struct WssMuxHub::Private : public QObject {
 		return count;
 	}
 
+	[[nodiscard]] int liveStreamCount() const {
+		auto count = 0;
+		for (const auto &[streamId, tunnel] : streamTunnel) {
+			if (isLiveStream(streamId)) {
+				++count;
+			}
+		}
+		return count;
+	}
+
+	[[nodiscard]] int desiredTunnelCount() const {
+		const auto streams = liveStreamCount();
+		const auto needed = (streams + kStreamsPerTunnelHigh - 1)
+			/ kStreamsPerTunnelHigh;
+		return std::clamp(needed, kBaseTunnelCount, config.tunnelCount);
+	}
+
 	[[nodiscard]] bool tunnelCarriesDownloadStreams(int tunnelIndex) const {
 		for (const auto &[streamId, tunnel] : streamTunnel) {
 			if (tunnel != tunnelIndex || !isLiveStream(streamId)) {
@@ -882,16 +897,22 @@ struct WssMuxHub::Private : public QObject {
 	}
 
 	[[nodiscard]] int pickTunnelIndex(int affinity = -1) {
+		const auto balanced = pickAnyConnectedTunnelIndex();
 		if (affinity >= 0 && !tunnels.empty()) {
 			const auto hint = affinity % int(tunnels.size());
 			if (hint >= 0
 				&& hint < int(tunnels.size())
 				&& tunnels[hint]
 				&& tunnels[hint]->isConnected()) {
-				return hint;
+				if (balanced < 0
+					|| tunnelStreamCount(hint)
+						<= tunnelStreamCount(balanced) + kAffinityLoadSlack) {
+					return hint;
+				}
+				return balanced;
 			}
 		}
-		return pickAnyConnectedTunnelIndex();
+		return balanced;
 	}
 
 	[[nodiscard]] details::WssMuxTunnel *pickTunnel(int affinity = -1) {
@@ -1105,6 +1126,115 @@ struct WssMuxHub::Private : public QObject {
 		hubThread.start();
 	}
 
+	void stopAdaptiveTuning() {
+		adaptiveTuneScheduled = false;
+		fastTuneScheduled = false;
+	}
+
+	void ensureAdaptiveTuning() {
+		if (adaptiveTuneScheduled
+			|| shuttingDown
+			|| !proxyActive
+			|| authRejected) {
+			return;
+		}
+		adaptiveTuneScheduled = true;
+		const auto weak = QPointer<Private>(this);
+		QTimer::singleShot(kAdaptiveTuneInterval, this, [=] {
+			if (!weak) {
+				return;
+			}
+			weak->adaptiveTuneScheduled = false;
+			weak->adaptiveTune();
+		});
+	}
+
+	void addElasticTunnel() {
+		if (int(tunnels.size()) >= config.tunnelCount) {
+			return;
+		} else if (authRejected || !proxyActive) {
+			return;
+		}
+		const auto ips = ipPickOrder;
+		const auto index = int(tunnels.size());
+		const auto tunnelProxy = ProxyForTunnel(config, ips, index);
+		auto tunnel = makeTunnel(index, tunnelProxy);
+		const auto raw = tunnel.get();
+		tunnels.push_back(std::move(tunnel));
+		ensureTunnelFailGenerations(int(tunnels.size()));
+		raw->connectTunnel();
+		refreshCachedTunnelStreamCounts();
+	}
+
+	void maybeRemoveIdleElastic(int keepAtLeast) {
+		for (auto i = kBaseTunnelCount; i < int(tunnels.size()); ) {
+			if (int(tunnels.size()) <= keepAtLeast
+				|| tunnelStreamCount(i) > 0) {
+				++i;
+				continue;
+			}
+			cancelPendingFailStreamsOnTunnel(i);
+			failStreamsOnTunnel(i);
+			if (tunnels[i]) {
+				tunnels[i]->prepareForDestroy();
+			}
+			const auto lastIdx = int(tunnels.size()) - 1;
+			if (i < lastIdx) {
+				cancelPendingFailStreamsOnTunnel(lastIdx);
+				tunnels[i] = std::move(tunnels[lastIdx]);
+				{
+					QMutexLocker lock(&streamsMutex);
+					for (auto &[sid, tidx] : streamTunnel) {
+						if (tidx == lastIdx) {
+							tidx = i;
+						}
+					}
+				}
+			}
+			tunnels.pop_back();
+			refreshCachedTunnelStreamCounts();
+		}
+	}
+
+	void kickAdaptiveTune() {
+		if (fastTuneScheduled
+			|| shuttingDown
+			|| !proxyActive
+			|| authRejected
+			|| int(tunnels.size()) >= config.tunnelCount) {
+			return;
+		}
+		fastTuneScheduled = true;
+		const auto weak = QPointer<Private>(this);
+		QTimer::singleShot(kFastTuneDelay, this, [=] {
+			if (!weak) {
+				return;
+			}
+			weak->fastTuneScheduled = false;
+			weak->adaptiveTune();
+		});
+	}
+
+	void adaptiveTune() {
+		if (shuttingDown || !proxyActive || authRejected) {
+			return;
+		}
+		const auto desired = desiredTunnelCount();
+		while (int(tunnels.size()) < desired) {
+			const auto before = int(tunnels.size());
+			addElasticTunnel();
+			if (int(tunnels.size()) == before) {
+				break;
+			}
+		}
+		if (!pendingOpens.empty()
+			&& int(tunnels.size()) < config.tunnelCount) {
+			addElasticTunnel();
+		}
+		maybeRemoveIdleElastic(desired);
+		ensureAdaptiveTuning();
+	}
+
 	void startTunnels(bool allowHostnameFallback = false) {
 		if (started || shuttingDown || !proxyActive || authRejected) {
 			return;
@@ -1119,7 +1249,7 @@ struct WssMuxHub::Private : public QObject {
 		started = true;
 		updateIpPickOrder(config.resolvedIPs);
 		const auto ips = ipPickOrder;
-		const auto count = config.tunnelCount;
+		const auto count = std::min(config.tunnelCount, kBaseTunnelCount);
 		tunnels.reserve(count);
 		for (auto i = 0; i != count; ++i) {
 			const auto tunnelProxy = ProxyForTunnel(config, ips, i);
@@ -1129,6 +1259,9 @@ struct WssMuxHub::Private : public QObject {
 			raw->connectTunnel();
 		}
 		refreshCachedTunnelStreamCounts();
+		if (config.tunnelCount > kBaseTunnelCount) {
+			ensureAdaptiveTuning();
+		}
 	}
 
 	void requestOpen(uint32 streamId, const QString &host, int port) {
@@ -1209,6 +1342,9 @@ struct WssMuxHub::Private : public QObject {
 			}
 		}
 		refreshCachedTunnelStreamCounts();
+		if (int(tunnels.size()) < desiredTunnelCount()) {
+			kickAdaptiveTune();
+		}
 		if (previousTunnel >= 0
 			&& previousTunnel != tunnel->index()
 			&& previousTunnel < int(tunnels.size())

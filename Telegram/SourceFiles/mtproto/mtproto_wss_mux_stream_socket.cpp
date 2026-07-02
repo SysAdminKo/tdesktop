@@ -14,6 +14,8 @@ namespace {
 
 constexpr auto kOpenTimeout = crl::time(15000);
 constexpr auto kMuxChunkSize = kMuxMaxDataPayload;
+constexpr auto kIdleTimeout = crl::time(120000);
+constexpr auto kIdleCheckInterval = crl::time(30000);
 
 } // namespace
 
@@ -25,10 +27,13 @@ MuxStreamSocket::MuxStreamSocket(
 	_openTimer.moveToThread(thread);
 	_openTimer.setSingleShot(true);
 	connect(&_openTimer, &QTimer::timeout, this, [=] { failOpen(); });
+	_idleTimer.moveToThread(thread);
+	connect(&_idleTimer, &QTimer::timeout, this, [=] { checkIdle(); });
 }
 
 MuxStreamSocket::~MuxStreamSocket() {
 	_openTimer.stop();
+	_idleTimer.stop();
 	if (_checkSetupId) {
 		_hub->CancelCheckStreamSetup(_checkSetupId);
 		_checkSetupId = 0;
@@ -109,6 +114,7 @@ void MuxStreamSocket::connectToHost(const QString &address, int port) {
 	_openStartedAt = crl::now();
 	_readBuffer.clear();
 	_readOffset = 0;
+	_idleTimer.stop();
 	_openTimer.start(kOpenTimeout);
 	_hub->RequestOpen(_streamId, address, port);
 }
@@ -123,6 +129,8 @@ void MuxStreamSocket::handleOpenOk(int tunnelIndex) {
 	_openStartedAt = 0;
 	_state = State::Connected;
 	_openOnServer = true;
+	_lastActivity = crl::now();
+	_idleTimer.start(kIdleCheckInterval);
 	DEBUG_LOG(("WSS mux stream open stream=%1 tunnel=%2 affinity=%3 open_ms=%4 target %5:%6"
 		).arg(_streamId
 		).arg(_tunnelIndex
@@ -142,6 +150,7 @@ void MuxStreamSocket::handleData(bytes::vector data) {
 	if (!_streamId || _state != State::Connected || data.empty()) {
 		return;
 	}
+	_lastActivity = crl::now();
 	_bytesReceived += data.size();
 	const auto offset = _readBuffer.size();
 	_readBuffer.resize(offset + data.size());
@@ -172,6 +181,7 @@ void MuxStreamSocket::handleRemoteClose() {
 	}
 	_openOnServer = false;
 	_openSent = false;
+	_idleTimer.stop();
 	_state = State::NotConnected;
 	_disconnected.fire({});
 }
@@ -181,6 +191,7 @@ void MuxStreamSocket::handleTunnelDown() {
 		return;
 	}
 	closeServerStream();
+	_idleTimer.stop();
 	_state = State::NotConnected;
 	_disconnected.fire({});
 }
@@ -191,8 +202,22 @@ void MuxStreamSocket::failOpen() {
 	}
 	closeServerStream();
 	_openTimer.stop();
+	_idleTimer.stop();
 	_state = State::Error;
 	_error.fire({});
+}
+
+void MuxStreamSocket::checkIdle() {
+	if (_state != State::Connected) {
+		_idleTimer.stop();
+		return;
+	} else if (crl::now() - _lastActivity < kIdleTimeout) {
+		return;
+	}
+	_idleTimer.stop();
+	closeServerStream();
+	_state = State::NotConnected;
+	_disconnected.fire({});
 }
 
 void MuxStreamSocket::sendClose() {
@@ -226,6 +251,7 @@ bool MuxStreamSocket::isGoodStartNonce(bytes::const_span nonce) {
 
 void MuxStreamSocket::timedOut() {
 	sendClose();
+	_idleTimer.stop();
 	_state = State::Error;
 	_error.fire({});
 }
@@ -270,6 +296,7 @@ void MuxStreamSocket::write(bytes::const_span prefix, bytes::const_span buffer) 
 	if (_state != State::Connected) {
 		return;
 	}
+	_lastActivity = crl::now();
 	const auto total = prefix.size() + buffer.size();
 	_bytesSent += total;
 	auto combined = bytes::vector(total);

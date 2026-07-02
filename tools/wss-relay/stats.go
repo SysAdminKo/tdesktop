@@ -394,10 +394,7 @@ func (s *relayStats) muxStreamClosed(clientIP, target string) {
 }
 
 func (s *relayStats) cleanupClientLocked(clientIP string, entry *clientStats) {
-	if entry.activeTunnels == 0 &&
-		entry.activeStreams == 0 &&
-		entry.bytesToUpstream == 0 &&
-		entry.bytesFromUpstream == 0 {
+	if entry.activeTunnels == 0 && entry.activeStreams == 0 {
 		delete(s.clients, clientIP)
 	}
 }

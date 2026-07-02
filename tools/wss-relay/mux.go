@@ -34,6 +34,7 @@ const (
 	muxUpstreamReadStallMinBytes = 32 * 1024
 	muxUpstreamReadStallThreshold  = 3 * time.Second
 	muxUpstreamReadStallResetGap   = 100 * time.Millisecond
+	muxUpstreamWriteTimeout        = 5 * time.Second
 )
 
 type muxStream struct {
@@ -397,6 +398,7 @@ func (s *muxSession) handleData(streamID uint32, payload []byte) {
 	}
 	stream.recvBytes += int64(len(payload))
 	stream.touchActivity()
+	_ = stream.tcp.SetWriteDeadline(time.Now().Add(muxUpstreamWriteTimeout))
 	if _, err := stream.tcp.Write(payload); err != nil {
 		s.removeStream(streamID)
 		return
@@ -426,6 +428,7 @@ func (s *muxSession) readLoop() {
 	}
 	defer func() {
 		s.mu.Lock()
+		s.closed = true
 		active := len(s.streams)
 		s.mu.Unlock()
 		if active > 0 {

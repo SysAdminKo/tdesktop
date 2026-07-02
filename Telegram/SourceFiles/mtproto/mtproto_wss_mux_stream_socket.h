@@ -56,6 +56,7 @@ private:
 	void sendClose();
 	void closeServerStream();
 	void closeServerStream(uint32 streamId);
+	void checkIdle();
 
 	const not_null<WssMuxHub*> _hub;
 	uint32 _streamId = 0;
@@ -74,6 +75,8 @@ private:
 	bool _inRead = false;
 	bool _readyReadScheduled = false;
 	QTimer _openTimer;
+	QTimer _idleTimer;
+	crl::time _lastActivity = 0;
 
 	int64 _bytesSent = 0;
 	int64 _bytesReceived = 0;
