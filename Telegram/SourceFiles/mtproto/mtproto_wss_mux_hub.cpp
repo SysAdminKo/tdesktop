@@ -31,10 +31,10 @@ namespace {
 
 Fn<void()> AuthRejectedHandler;
 
-constexpr auto kDefaultTunnelCount = 6;
+constexpr auto kDefaultTunnelCount = 9;
 constexpr auto kDownloadTunnelSlots = 8;
 constexpr auto kBaseTunnelCount = 1;
-constexpr auto kStreamsPerTunnelHigh = 8;
+constexpr auto kStreamsPerTunnelHigh = 16;
 constexpr auto kAffinityLoadSlack = 1;
 constexpr auto kFastTuneDelay = crl::time(250);
 constexpr auto kReconnectDelay = crl::time(2000);
@@ -1382,9 +1382,9 @@ WssMuxHub::~WssMuxHub() {
 	Shutdown();
 }
 
-void WssMuxHub::Configure(const ProxyData &proxy, int tunnelCount) {
-	WssConnectGate::SetLimit(std::clamp(tunnelCount, 1, 9));
-	const auto config = ConfigFromProxy(proxy, tunnelCount);
+void WssMuxHub::Configure(const ProxyData &proxy) {
+	WssConnectGate::SetLimit(kDefaultTunnelCount);
+	const auto config = ConfigFromProxy(proxy, kDefaultTunnelCount);
 	InvokeQueued(_private.get(), [=, config = config]() mutable {
 		if (!_private->proxyActive) {
 			return;
@@ -1448,10 +1448,10 @@ void WssMuxHub::UpdateFromAppSettings(
 	const auto runBootstrap = enabled
 		&& (selected.type == ProxyData::Type::WebSocket);
 	if (runBootstrap) {
-		WssConnectGate::SetLimit(std::clamp(selected.wssMuxTunnels, 1, 9));
+		WssConnectGate::SetLimit(kDefaultTunnelCount);
 	}
 	const auto config = runBootstrap
-		? ConfigFromProxy(selected, selected.wssMuxTunnels)
+		? ConfigFromProxy(selected, kDefaultTunnelCount)
 		: HubConfig();
 	InvokeQueued(_private.get(), [=,
 			config = config,

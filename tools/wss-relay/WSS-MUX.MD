@@ -18,7 +18,7 @@
 
 ### Решение
 
-WSS-MUX держит **N постоянных WSS-туннелей** (1–9, по умолчанию 6) к прокси. Внутри каждого туннеля мультиплексируются **виртуальные TCP-streams** к Telegram DC. MTProto layer видит обычный сокет; MUX прозрачен.
+WSS-MUX держит **пул постоянных WSS-туннелей** (фиксировано 9, `kDefaultTunnelCount`) к прокси. Внутри каждого туннеля мультиплексируются **виртуальные TCP-streams** к Telegram DC. MTProto layer видит обычный сокет; MUX прозрачен.
 
 ### Стек
 
@@ -236,7 +236,8 @@ Hub работает на выделенном `QThread` (`hubThread`). Callback
 
 | Константа | Значение | Назначение |
 |-----------|----------|------------|
-| `kDefaultTunnelCount` | 6 | default `tunnels` |
+| `kDefaultTunnelCount` | 9 | число туннелей (фиксировано, не настраивается в UI) |
+| `kStreamsPerTunnelHigh` | 16 | порог streams на туннель для affinity-балансировки |
 | `kDownloadTunnelSlots` | 8 | первые 8 туннелей для main traffic |
 | `kReconnectDelay` | 2s | reconnect tunnel |
 | `kOpenRetryDelay` | 250ms | retry pending opens |
@@ -305,7 +306,7 @@ Stream open timeout на клиенте: **15s** (`kOpenTimeout` в `mtproto_wss
 **Ссылка:**
 
 ```
-tg://wss?server=HOST&port=443&tunnels=6&token=TOKEN
+tg://wss?server=HOST&port=443&token=TOKEN
 ```
 
 | Параметр | Поле `ProxyData` | Примечание |
@@ -313,8 +314,9 @@ tg://wss?server=HOST&port=443&tunnels=6&token=TOKEN
 | `server` | `host` | |
 | `port` | `port` | |
 | `token` | `password` | Bearer token |
-| `tunnels` | `wssMuxTunnels` | 1–9, default 6 |
 | `path` | — | всегда `/ws/mux` (принудительно) |
+
+`wssMuxTunnels` принудительно = 9 при чтении/парсинге ([`core_settings_proxy.cpp`](../../Telegram/SourceFiles/core/core_settings_proxy.cpp), [`connection_box.cpp`](../../Telegram/SourceFiles/boxes/connection_box.cpp)); параметр `tunnels` в ссылке и поле ввода в UI больше не используются (число туннелей фиксировано).
 
 `sniHost` — поле `ProxyData`, default = `host`; в `tg://wss` и UI не задаётся, только сериализация.
 
@@ -381,7 +383,7 @@ parseOpenTarget → dialUpstream (async)
 | Flag | Default | Эффект |
 |------|---------|--------|
 | `-max-tunnels-per-ip` | 12 | concurrent WS tunnels per client IP (≈ tunnels×2 для reconnect overlap); 0 = off |
-| `-max-streams` | 256 | streams per tunnel |
+| `-max-streams` | 64 | streams per tunnel |
 | `-stream-idle-timeout` | 10m | close idle streams (zombie cleanup); 0 = off |
 | `-ws-ping-interval` | 30s | WS ping per tunnel; 0 = off |
 | `-ws-read-timeout` | 90s | read deadline; 0 = off |
@@ -403,9 +405,22 @@ Tunnel limit exceeded → HTTP 429 `too many mux tunnels`.
 
 [`client_ip.go`](client_ip.go): `X-Real-IP` → первый hop `X-Forwarded-For` → `RemoteAddr`.
 
-### 5.7 Мониторинг
+### 5.7 Мониторинг и управление
 
-[`stats.go`](stats.go), [`monitor.go`](monitor.go): UI `/stats` (refresh 2s), JSON `/stats/json`. Отключить: `-stats-path=""`.
+[`stats.go`](stats.go), [`monitor.go`](monitor.go), [`metrics.go`](metrics.go), [`control.go`](control.go), [`dc.go`](dc.go). Отключить UI: `-stats-path=""`.
+
+| Endpoint | Назначение |
+|----------|------------|
+| `/stats` | HTML dashboard (refresh 2s), кнопка **Restart relay** |
+| `/stats/json` | JSON snapshot (tunnels, streams, rates, load, per-client, abuse) |
+| `/stats/metrics` | Prometheus text format (`wss_relay_*` gauges/counters) |
+| `POST /stats/restart` | Перезапуск процесса (`os.Exit(0)` → systemd `Restart=always`) |
+
+**Restart authorization** ([`control.go`](control.go)): при включённом auth — тот же Bearer token; без auth — только с `127.0.0.1` / `::1`.
+
+**Метрики** ([`metrics.go`](metrics.go)): активные/пиковые tunnels/streams, throughput (to/from upstream), capacity/utilization (`tunnels × max_streams`), dial latency (avg/p95/max), счётчики ошибок (dial, blocked, tunnel-limit, auth, ws-upgrade, open-fail dial/limit/bad), per-client и abuse-лейблы по IP.
+
+**DC labels** ([`dc.go`](dc.go)): upstream target IP → человекочитаемый ярлык DC-группы (например `DC2/4 Amsterdam`) по CIDR. DC1/3 и DC2/4 делят /24, поэтому ярлык — группа+регион, не точный номер DC.
 
 ---
 
@@ -479,8 +494,12 @@ Edge терминирует TLS; до relay идёт plain WS на `127.0.0.1:82
 | `telegram_allowlist.go` | Telegram CIDR check |
 | `auth.go` | Bearer token auth |
 | `client_ip.go` | Client IP extraction |
-| `stats.go` / `monitor.go` | Monitoring dashboard |
-| `mux_test.go` | Protocol unit tests |
+| `stats.go` / `monitor.go` | Snapshot + HTML dashboard |
+| `metrics.go` | Prometheus `/stats/metrics` |
+| `control.go` | `POST /stats/restart` + authorization |
+| `dc.go` | Upstream IP → DC label по CIDR |
+| `mux_test.go`, `stats_test.go`, `control_test.go`, `dc_test.go` | Unit tests |
+| `deploy.sh` / `deploy.ps1` / `deploy.cmd`, `remote-build.sh` | Деплой + сборка на сервере |
 | `analyze_dc_pcap.py` | Анализ pcap: gaps inbound data client↔DC |
 
 ---
@@ -517,7 +536,10 @@ python3 analyze_dc_pcap.py capture.pcap
 | `43b6eb4320` | Fix зависания настроек прокси (убран blocking `QEventLoop` в hub) |
 | `65bd2ba027`, `25a11b702f` | `UpdateFromAppSettings`, async `AcquireCheckStream`, `ipPickOrder`, `Configure` endpoint guard, staggered proxy checks |
 | `02d6cbaf56` | Zombie tunnels: `tunnelFailGenerations`, grace 2s; system DNS (no DoH); `Shutdown` из sandbox |
-| `8ab581b6c1` | Upload: IPv4 endpoint pick, upload tunnel affinity, relaxed `canAddDcIndex`, warm-up fixes |
+| `eb20e1786d` | Upload: IPv4 endpoint pick, upload tunnel affinity, relaxed `canAddDcIndex`, warm-up fixes (ранее `8ab581b6c1`, ветка переписана) |
+| `160e042fc1` | `-max-streams` → 64; Prometheus `/stats/metrics`, `/stats/restart`, DC labels, dial latency avg/p95; deploy-скрипты (`deploy.*`, `remote-build.sh`) |
+| `b755e1b2b8` | Download queue: медиа с более низким приоритетом занимает свободное место в приоритетной очереди |
+| *(uncommitted)* | Число туннелей фиксировано на 9 (`kDefaultTunnelCount`, UI-поле и параметр `tunnels` убраны); `kStreamsPerTunnelHigh` 8→16; `Configure(proxy)` без `tunnelCount` |
 
 ---
 

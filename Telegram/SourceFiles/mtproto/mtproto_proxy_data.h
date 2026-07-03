@@ -37,7 +37,7 @@ struct ProxyData {
 	QString user, password;
 	QString path;
 	QString sniHost;
-	int wssMuxTunnels = 6;
+	int wssMuxTunnels = 9;
 
 	[[nodiscard]] bool wssMuxEnabled() const {
 		return type == Type::WebSocket;

@@ -67,18 +67,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace {
 
 constexpr auto kSaveSettingsDelayedTimeout = crl::time(1000);
-constexpr auto kDefaultWssMuxTunnels = 6;
-constexpr auto kMinWssMuxTunnels = 1;
-constexpr auto kMaxWssMuxTunnels = 9;
+constexpr auto kWssMuxTunnels = 9;
 
 using ProxyData = MTP::ProxyData;
-
-[[nodiscard]] int ClampWssMuxTunnels(int value) {
-	if (value <= 0) {
-		return kDefaultWssMuxTunnels;
-	}
-	return std::clamp(value, kMinWssMuxTunnels, kMaxWssMuxTunnels);
-}
 
 [[nodiscard]] int ClosestProxyRotationTimeoutSection(int value) {
 	auto result = 0;
@@ -139,7 +130,7 @@ using ProxyData = MTP::ProxyData;
 		+ ((proxy.type == Type::WebSocket && !proxy.path.isEmpty())
 			? "&path=" + qthelp::url_encode(proxy.path) : "")
 		+ ((proxy.type == Type::WebSocket)
-			? "&tunnels=" + QString::number(ClampWssMuxTunnels(proxy.wssMuxTunnels)) : "")
+			? "&tunnels=" + QString::number(kWssMuxTunnels) : "")
 		+ ((proxy.type == Type::WebSocket && !proxy.password.isEmpty())
 			? "&token=" + qthelp::url_encode(proxy.password) : "")
 		+ ((proxy.type == Type::Mtproto && !proxy.password.isEmpty())
@@ -342,7 +333,7 @@ void ShareProxy(
 		proxy.password = fields.value(u"secret"_q);
 	} else if (type == ProxyData::Type::WebSocket) {
 		proxy.password = fields.value(u"token"_q);
-		proxy.wssMuxTunnels = ClampWssMuxTunnels(fields.value(u"tunnels"_q).toInt());
+		proxy.wssMuxTunnels = kWssMuxTunnels;
 		proxy.path = u"/ws/mux"_q;
 	}
 	return proxy;
@@ -697,7 +688,6 @@ private:
 	void setupCredentials(const ProxyData &data);
 	void setupWebSocketAuth(const ProxyData &data);
 	void setupWebSocketPath(const ProxyData &data);
-	void setupWebSocketMuxTunnels(const ProxyData &data);
 	void setupMtprotoCredentials(const ProxyData &data);
 
 	void addLabel(
@@ -724,8 +714,6 @@ private:
 	QPointer<Ui::PasswordInput> _wssToken;
 	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _wsPath;
 	QPointer<Ui::InputField> _path;
-	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _wsMuxTunnels;
-	QPointer<Ui::NumberInput> _tunnels;
 	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _mtprotoCredentials;
 
 };
@@ -1550,8 +1538,7 @@ ProxyData ProxyBox::collectData() {
 	result.port = _port->getLastText().trimmed().toInt();
 	if (result.type == Type::WebSocket) {
 		result.password = _wssToken->getLastText();
-		result.wssMuxTunnels = ClampWssMuxTunnels(
-			_tunnels->getLastText().trimmed().toInt());
+		result.wssMuxTunnels = kWssMuxTunnels;
 		result.path = u"/ws/mux"_q;
 	} else if (result.type == Type::Mtproto) {
 		result.password = _secret->getLastText();
@@ -1705,30 +1692,6 @@ void ProxyBox::setupWebSocketPath(const ProxyData &data) {
 		st::proxyEditInputPadding);
 }
 
-void ProxyBox::setupWebSocketMuxTunnels(const ProxyData &data) {
-	_wsMuxTunnels = _content->add(
-		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
-			_content,
-			object_ptr<Ui::VerticalLayout>(_content)));
-	const auto tunnelsWrap = _wsMuxTunnels->entity();
-	addLabel(tunnelsWrap, tr::lng_proxy_wss_tunnels_label(tr::now));
-	const auto tunnelsField = tunnelsWrap->add(
-		object_ptr<Ui::FixedHeightWidget>(
-			tunnelsWrap,
-			st::connectionUserInputField.heightMin),
-		st::proxyEditInputPadding);
-	_tunnels = Ui::CreateChild<Ui::NumberInput>(
-		tunnelsField,
-		st::connectionUserInputField,
-		tr::lng_proxy_wss_tunnels_ph(),
-		QString::number(ClampWssMuxTunnels(data.wssMuxTunnels)),
-		kMaxWssMuxTunnels);
-	tunnelsField->widthValue(
-	) | rpl::on_next([=](int width) {
-		_tunnels->resize(width, _tunnels->height());
-	}, _tunnels->lifetime());
-}
-
 void ProxyBox::setupMtprotoCredentials(const ProxyData &data) {
 	_mtprotoCredentials = _content->add(
 		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
@@ -1767,7 +1730,6 @@ void ProxyBox::setupControls(const ProxyData &data) {
 	setupTypes();
 	setupSocketAddress(data);
 	setupWebSocketPath(data);
-	setupWebSocketMuxTunnels(data);
 	setupWebSocketAuth(data);
 	setupCredentials(data);
 	setupMtprotoCredentials(data);
@@ -1781,7 +1743,6 @@ void ProxyBox::setupControls(const ProxyData &data) {
 		_credentials->toggle(credentialsShown, anim::type::instant);
 		_wsAuth->toggle(wsAuthShown, anim::type::instant);
 		_wsPath->toggle(pathShown, anim::type::instant);
-		_wsMuxTunnels->toggle(pathShown, anim::type::instant);
 		_mtprotoCredentials->toggle(mtprotoShown, anim::type::instant);
 		_aboutSponsored->toggle(mtprotoShown, anim::type::instant);
 		const auto credentialsPolicy = credentialsShown
@@ -1791,7 +1752,6 @@ void ProxyBox::setupControls(const ProxyData &data) {
 		_password->setFocusPolicy(credentialsPolicy);
 		_wssToken->setFocusPolicy(wsAuthShown ? Qt::StrongFocus : Qt::NoFocus);
 		_path->setFocusPolicy(pathShown ? Qt::StrongFocus : Qt::NoFocus);
-		_tunnels->setFocusPolicy(pathShown ? Qt::StrongFocus : Qt::NoFocus);
 		_secret->setFocusPolicy(
 			mtprotoShown ? Qt::StrongFocus : Qt::NoFocus);
 	};
@@ -1984,7 +1944,6 @@ void ProxiesBoxController::ShowApplyConfirmation(
 			add(proxy.password, tr::lng_proxy_box_password());
 		} else if (type == Type::WebSocket) {
 			add(proxy.path, tr::lng_proxy_path_label());
-			add(QString::number(proxy.wssMuxTunnels), tr::lng_proxy_wss_tunnels_label());
 			add(proxy.password, tr::lng_proxy_wss_token_label());
 		} else if (type == Type::Mtproto) {
 			add(proxy.password, tr::lng_proxy_box_secret());

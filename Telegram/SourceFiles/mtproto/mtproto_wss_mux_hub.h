@@ -21,7 +21,7 @@ public:
 
 	static void SetAuthRejectedHandler(Fn<void()> handler);
 
-	void Configure(const ProxyData &proxy, int tunnelCount);
+	void Configure(const ProxyData &proxy);
 	void ApplyResolvedIps(
 		const QString &host,
 		const std::vector<QString> &ips);

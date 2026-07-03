@@ -624,9 +624,7 @@ void TcpConnection::connectToServer(
 					socket->connectToHost(address, port);
 				})
 			: [&] {
-			WssMuxHub::Instance().Configure(
-				_proxy,
-				_proxy.wssMuxTunnels);
+			WssMuxHub::Instance().Configure(_proxy);
 			WssMuxHub::Instance().EnsureStarted();
 			return WssMuxHub::Instance().AcquireStream(
 				thread(),

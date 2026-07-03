@@ -39,6 +39,8 @@ import struct
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
+from bump_version import parse_version_input, read_current_version
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, 'Release')
@@ -250,8 +252,9 @@ def main():
         description='Pack Telegram Desktop update files')
     parser.add_argument('--path', required=True,
                         help='Directory containing files to pack')
-    parser.add_argument('--version', type=int, required=True,
-                        help='Numeric version (e.g. 1000005)')
+    parser.add_argument('--version', default=None,
+                        help='Version 6009301 or 6.9.301 '
+                             '(default: read from core/version.h)')
     parser.add_argument('--platform', default='win64',
                         choices=['win', 'win64', 'winarm', 'mac', 'armac', 'linux'],
                         help='Target platform')
@@ -268,6 +271,12 @@ def main():
     parser.add_argument('--threads', type=int, default=0,
                         help='Worker threads for file I/O and XZ compression (0 = auto)')
     args = parser.parse_args()
+
+    if args.version is None:
+        args.version, ver_str = read_current_version()
+        print(f"Using version from code: {args.version} (\"{ver_str}\")")
+    else:
+        args.version, _ = parse_version_input(str(args.version))
 
     workers = args.threads or (os.cpu_count() or 1)
 

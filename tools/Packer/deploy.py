@@ -21,7 +21,8 @@ import subprocess
 import sys
 import tempfile
 
-from bump_version import apply_version, bump, parse_version_input
+from bump_version import (
+    apply_version, bump, parse_version_input, read_current_version)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(BASE_DIR, '..', '..'))
@@ -193,7 +194,8 @@ def main():
     parser = argparse.ArgumentParser(
         description='Deploy update to custom update server')
     parser.add_argument('--version', default=None,
-                        help='Pack version: 6009301 or 6.9.301 (overrides --bump)')
+                        help='Pack version 6009301 or 6.9.301 (overrides --bump; '
+                             'default: read from core/version.h)')
     parser.add_argument('--bump', action='store_true',
                         help='Bump patch in source files via bump_version.py')
     parser.add_argument('--set-version', metavar='VERSION',
@@ -230,8 +232,8 @@ def main():
     elif args.version is not None:
         args.version, _ = parse_version_input(str(args.version))
     elif args.set_version is None:
-        print("ERROR: specify --version, --bump, or --set-version", file=sys.stderr)
-        sys.exit(1)
+        args.version, ver_str = read_current_version()
+        print(f"  Using version from code: {args.version} (\"{ver_str}\")")
 
     if args.pack_dir:
         tmp_dir = args.pack_dir

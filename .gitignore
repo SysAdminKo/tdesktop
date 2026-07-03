@@ -75,3 +75,4 @@ settings.local.json
 # Custom update server keys (secret)
 tools/Packer/keys/
 tools/Packer/Release/
+tools/Packer/__pycache__/
