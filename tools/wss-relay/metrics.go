@@ -62,6 +62,10 @@ func handleMetrics(w http.ResponseWriter, snapshot statsSnapshot) {
 	writeMetricCounter("wss_relay_mux_open_bad_total", "Mux open failures (bad request)", float64(snapshot.MuxOpenBad))
 	writeMetricGauge("wss_relay_mux_open_dial_ms_avg", "Average upstream dial latency ms", float64(snapshot.MuxOpenDialMsAvg))
 	writeMetricGauge("wss_relay_mux_open_dial_ms_p95", "p95 upstream dial latency ms", float64(snapshot.MuxOpenDialMsP95))
+	writeMetricCounter("wss_relay_upstream_pool_hits_total", "Upstream opens served from warm pool", float64(snapshot.UpstreamPoolHits))
+	writeMetricCounter("wss_relay_upstream_pool_misses_total", "Upstream opens requiring a cold dial", float64(snapshot.UpstreamPoolMisses))
+	writeMetricCounter("wss_relay_upstream_pool_dial_errors_total", "Warm pool background dial errors", float64(snapshot.UpstreamPoolDialErrors))
+	writeMetricGauge("wss_relay_upstream_pool_hit_pct", "Warm pool hit ratio percent", float64(snapshot.UpstreamPoolHitPct))
 	for _, client := range snapshot.Clients {
 		labels := fmt.Sprintf(`{ip=%q}`, client.IP)
 		b.WriteString("wss_relay_client_active_tunnels")

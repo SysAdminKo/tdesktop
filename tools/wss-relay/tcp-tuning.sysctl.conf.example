@@ -1,0 +1,21 @@
+# WSS relay TCP tuning.
+# Install to: /etc/sysctl.d/99-wss-relay-tcp.conf
+# Apply without reboot: sysctl --system
+#
+# Requires the tcp_bbr module (see tcp-bbr.modules-load.conf.example).
+
+# Raise the cap for explicit SO_RCVBUF/SO_SNDBUF the relay sets per socket.
+# The default 212992 (~208 KiB) silently clamps the relay's 512 KiB buffers.
+net.core.rmem_max = 8388608
+net.core.wmem_max = 8388608
+
+# Autotuning ceilings (min default max) for TCP receive/send buffers.
+net.ipv4.tcp_rmem = 4096 262144 8388608
+net.ipv4.tcp_wmem = 4096 262144 8388608
+
+# BBR needs a pacing-capable qdisc; fq provides it.
+net.core.default_qdisc = fq
+
+# Congestion control: BBR keeps throughput up on long-RTT paths to the DC,
+# where the default cubic collapses on transient loss.
+net.ipv4.tcp_congestion_control = bbr

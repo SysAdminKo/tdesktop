@@ -213,10 +213,10 @@ func (s *muxSession) handleOpen(streamID uint32, payload []byte) {
 
 func (s *muxSession) openStreamAsync(streamID uint32, target string) {
 	dialStarted := time.Now()
-	tcp, err := dialUpstream(target, s.clientIP)
+	tcp, fromPool, err := acquireUpstream(target, s.clientIP)
 	dialMs := time.Since(dialStarted).Milliseconds()
 	relayStatistics.recordMuxOpenDial(target, dialMs)
-	if dialMs > 100 {
+	if !fromPool && dialMs > 100 {
 		log.Printf(
 			"mux open slow stream=%d client=%s target=%s dial_ms=%d",
 			streamID,
@@ -230,6 +230,11 @@ func (s *muxSession) openStreamAsync(streamID uint32, target string) {
 		relayStatistics.incMuxOpenFailDial()
 		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailDial})
 		return
+	}
+	if fromPool {
+		relayStatistics.incUpstreamPoolHit(target)
+	} else {
+		relayStatistics.incUpstreamPoolMiss(target)
 	}
 	stream := &muxStream{
 		id:     streamID,

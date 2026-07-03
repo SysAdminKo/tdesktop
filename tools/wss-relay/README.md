@@ -143,6 +143,35 @@ Relay flags (defaults in `wss-relay.service.example` / deploy output):
 
 On the edge proxy, keep `read_timeout` / `write_timeout` near `2m` (see `Caddyfile.example`) so dead client connections do not keep relay tunnels open for hours.
 
+## Kernel TCP tuning (recommended)
+
+Media over the mux tunnel is throughput-sensitive on the long-RTT hop to the Telegram DC. Two host defaults hurt it:
+
+- `net.core.rmem_max` / `wmem_max` default to ~208 KiB and silently clamp the 512 KiB socket buffers the relay sets, capping the in-flight window.
+- `cubic` congestion control collapses throughput on transient loss over long RTT.
+
+Apply the tuning from the example files:
+
+```bash
+# BBR module (was not loaded by default on some kernels — check with:
+#   sysctl -n net.ipv4.tcp_available_congestion_control)
+cp tcp-bbr.modules-load.conf.example /etc/modules-load.d/tcp_bbr.conf
+modprobe tcp_bbr
+
+# sysctl tuning (buffers + fq qdisc + BBR)
+cp tcp-tuning.sysctl.conf.example /etc/sysctl.d/99-wss-relay-tcp.conf
+sysctl --system
+```
+
+Both files persist across reboots (`sysctl.d` is read on boot, `modules-load.d` loads the module). Verify:
+
+```bash
+sysctl net.core.rmem_max net.core.wmem_max net.core.default_qdisc net.ipv4.tcp_congestion_control
+# expect: 8388608 / 8388608 / fq / bbr
+```
+
+Rollback: remove both files and run `sysctl --system` (or set `net.ipv4.tcp_congestion_control=cubic`, `net.core.default_qdisc=fq_codel`).
+
 Upstream targets are checked before dial (including DNS for hostnames) and again on the connected peer address.
 
 Client IP is taken from `X-Real-IP`, then the first hop in `X-Forwarded-For`, then `RemoteAddr`. Set those headers only from a trusted reverse proxy.

@@ -286,6 +286,7 @@ function render(data) {
     ['To Telegram', fmtBytes(data.bytes_to_upstream), fmtRate(rates.bytes_to_upstream_per_sec), ''],
     ['From Telegram', fmtBytes(data.bytes_from_upstream), fmtRate(rates.bytes_from_upstream_per_sec), ''],
     ['Dial', data.mux_open_dial_ms_avg + ' / ' + data.mux_open_dial_ms_p95 + ' / ' + data.mux_open_dial_ms_max + ' ms', 'avg / p95 / max · count ' + data.mux_open_count + ' · slow ' + data.mux_open_slow, data.mux_open_slow > 0 ? 'warn' : 'ok'],
+    ['Pool hit', (data.upstream_pool_hit_pct || 0) + '%', 'hits ' + (data.upstream_pool_hits || 0) + ' · miss ' + (data.upstream_pool_misses || 0) + ' · dial err ' + (data.upstream_pool_dial_errors || 0), (data.upstream_pool_dial_errors || 0) > 0 ? 'warn' : 'ok'],
     ['Write wait', data.mux_write_wait_us_avg + ' / ' + data.mux_write_wait_us_p95 + ' / ' + data.mux_write_wait_us_max + ' µs', 'avg / p95 / max', ''],
     ['Upstream errors', String(data.upstream_dial_errors), 'blocked ' + data.upstream_blocked + ' · stall ' + data.mux_upstream_read_stall, cardClass(data.upstream_dial_errors + data.upstream_blocked)],
     ['Open fails', String(data.mux_open_fail_dial), 'bad ' + data.mux_open_bad + ' · limit ' + data.mux_open_limit, cardClass(data.mux_open_fail_dial + data.mux_open_bad + data.mux_open_limit)],
@@ -348,6 +349,8 @@ function render(data) {
       { label: 'Down', className: 'num' },
       { label: 'Dial err', className: 'num' },
       { label: 'Open avg ms', className: 'num' },
+      { label: 'Pool hit%', className: 'num' },
+      { label: 'Pool h/m', className: 'num' },
     ],
     (data.upstreams || []).map(u => [
       { text: esc(u.target) },
@@ -357,6 +360,8 @@ function render(data) {
       { text: fmtBytes(u.bytes_from_upstream) },
       { text: String(u.dial_errors), className: u.dial_errors ? 'util-bad' : '' },
       { text: String(u.open_dial_ms_avg || 0) },
+      { text: (u.pool_hit_pct || 0) + '%' },
+      { text: (u.pool_hits || 0) + ' / ' + (u.pool_misses || 0) },
     ]),
     'no active upstream connections'
   );

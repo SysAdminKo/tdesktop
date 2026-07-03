@@ -1,0 +1,7 @@
+# Load the BBR congestion control module at boot.
+# Install to: /etc/modules-load.d/tcp_bbr.conf
+# Load now without reboot: modprobe tcp_bbr
+#
+# Verify BBR is available afterwards:
+#   sysctl -n net.ipv4.tcp_available_congestion_control   # must list "bbr"
+tcp_bbr

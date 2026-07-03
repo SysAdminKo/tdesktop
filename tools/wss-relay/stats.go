@@ -49,6 +49,9 @@ type relayStats struct {
 	muxOpenDialMsMax    atomic.Int64
 	muxOpenSlow              atomic.Int64
 	muxUpstreamReadStall     atomic.Int64
+	upstreamPoolHits         atomic.Int64
+	upstreamPoolMisses       atomic.Int64
+	upstreamPoolDialErrors   atomic.Int64
 	muxWriteWaitUsTotal      atomic.Int64
 	muxWriteWaitCount        atomic.Int64
 	maxMuxWriteWaitUs        atomic.Int64
@@ -97,6 +100,8 @@ type upstreamTotals struct {
 	dialErrors        int64
 	openCount         int64
 	dialMsTotal       int64
+	poolHits          int64
+	poolMisses        int64
 }
 
 type latencySamples struct {
@@ -138,6 +143,9 @@ type upstreamSnapshot struct {
 	DialErrors        int64  `json:"dial_errors"`
 	OpenCount         int64  `json:"open_count"`
 	OpenDialMsAvg     int64  `json:"open_dial_ms_avg"`
+	PoolHits          int64  `json:"pool_hits"`
+	PoolMisses        int64  `json:"pool_misses"`
+	PoolHitPct        int64  `json:"pool_hit_pct"`
 }
 
 type statsConfigSnapshot struct {
@@ -201,6 +209,10 @@ type statsSnapshot struct {
 	MuxOpenDialMsMax         int64                 `json:"mux_open_dial_ms_max"`
 	MuxOpenSlow              int64                 `json:"mux_open_slow"`
 	MuxUpstreamReadStall     int64                 `json:"mux_upstream_read_stall"`
+	UpstreamPoolHits         int64                 `json:"upstream_pool_hits"`
+	UpstreamPoolMisses       int64                 `json:"upstream_pool_misses"`
+	UpstreamPoolHitPct       int64                 `json:"upstream_pool_hit_pct"`
+	UpstreamPoolDialErrors   int64                 `json:"upstream_pool_dial_errors"`
 	MuxWriteWaitUsAvg        int64                 `json:"mux_write_wait_us_avg"`
 	MuxWriteWaitUsP95        int64                 `json:"mux_write_wait_us_p95"`
 	MuxWriteWaitUsMax        int64                 `json:"mux_write_wait_us_max"`
@@ -503,6 +515,34 @@ func (s *relayStats) incMuxUpstreamReadStall() {
 	s.muxUpstreamReadStall.Add(1)
 }
 
+func (s *relayStats) incUpstreamPoolHit(target string) {
+	s.upstreamPoolHits.Add(1)
+	if target == "" {
+		return
+	}
+	s.mu.Lock()
+	if total := s.upstreamTotal(target); total != nil {
+		total.poolHits++
+	}
+	s.mu.Unlock()
+}
+
+func (s *relayStats) incUpstreamPoolMiss(target string) {
+	s.upstreamPoolMisses.Add(1)
+	if target == "" {
+		return
+	}
+	s.mu.Lock()
+	if total := s.upstreamTotal(target); total != nil {
+		total.poolMisses++
+	}
+	s.mu.Unlock()
+}
+
+func (s *relayStats) incUpstreamPoolDialError() {
+	s.upstreamPoolDialErrors.Add(1)
+}
+
 func (s *relayStats) incMuxWriteWait(dur time.Duration) {
 	us := dur.Microseconds()
 	s.muxWriteWaitUsTotal.Add(us)
@@ -593,6 +633,14 @@ func (s *relayStats) snapshot() statsSnapshot {
 	result.MuxOpenDialMsP95 = s.dialMsSamples.percentile(0.95)
 	result.MuxOpenSlow = s.muxOpenSlow.Load()
 	result.MuxUpstreamReadStall = s.muxUpstreamReadStall.Load()
+	poolHits := s.upstreamPoolHits.Load()
+	poolMisses := s.upstreamPoolMisses.Load()
+	result.UpstreamPoolHits = poolHits
+	result.UpstreamPoolMisses = poolMisses
+	result.UpstreamPoolDialErrors = s.upstreamPoolDialErrors.Load()
+	if total := poolHits + poolMisses; total > 0 {
+		result.UpstreamPoolHitPct = poolHits * 100 / total
+	}
 	waitCount := s.muxWriteWaitCount.Load()
 	if waitCount > 0 {
 		result.MuxWriteWaitUsAvg = s.muxWriteWaitUsTotal.Load() / waitCount
@@ -716,6 +764,11 @@ func (s *relayStats) snapshot() statsSnapshot {
 		}
 		if total.openCount > 0 {
 			entry.OpenDialMsAvg = total.dialMsTotal / total.openCount
+		}
+		entry.PoolHits = total.poolHits
+		entry.PoolMisses = total.poolMisses
+		if poolTotal := total.poolHits + total.poolMisses; poolTotal > 0 {
+			entry.PoolHitPct = total.poolHits * 100 / poolTotal
 		}
 		result.Upstreams = append(result.Upstreams, entry)
 	}

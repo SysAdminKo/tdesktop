@@ -26,6 +26,8 @@ func main() {
 	maxStreams := flag.Int("max-streams", 64, "Max mux streams per tunnel")
 	maxTunnelsPerIP := flag.Int("max-tunnels-per-ip", 12, "Max mux WebSocket tunnels per client IP (0 = unlimited)")
 	streamIdleTimeout := flag.Duration("stream-idle-timeout", 10*time.Minute, "Close mux streams with no traffic for this long (0 = disabled)")
+	upstreamPoolSize := flag.Int("upstream-pool-size", 2, "Warm pre-dialed upstream connections kept per DC target (0 = disabled)")
+	upstreamPoolIdle := flag.Duration("upstream-pool-idle", 60*time.Second, "Max age of a warm pooled upstream connection before it is dropped")
 	wsPingInterval := flag.Duration("ws-ping-interval", 30*time.Second, "WebSocket ping interval per tunnel (0 = disabled)")
 	wsReadTimeout := flag.Duration("ws-read-timeout", 90*time.Second, "WebSocket read deadline, extended on traffic/pong (0 = disabled)")
 	telegramOnly := flag.Bool("telegram-only", true, "Allow upstream TCP only to Telegram DC CIDRs")
@@ -44,6 +46,8 @@ func main() {
 		log.Fatal(err)
 	}
 	telegramAllowlist = allowlist
+
+	initUpstreamPool(*upstreamPoolSize, *upstreamPoolIdle)
 
 	relayStatistics.setConfig(statsConfigSnapshot{
 		MaxStreams:           *maxStreams,
@@ -104,7 +108,7 @@ func main() {
 		authInfo = "enabled"
 	}
 	log.Printf(
-		"wss-relay listening on %s mux-path=%s stats=%s auth=%s max-streams=%d max-tunnels-per-ip=%d stream-idle=%s ws-ping=%s ws-read=%s telegram-only=%v",
+		"wss-relay listening on %s mux-path=%s stats=%s auth=%s max-streams=%d max-tunnels-per-ip=%d stream-idle=%s ws-ping=%s ws-read=%s telegram-only=%v upstream-pool=%d/%s",
 		*listen,
 		*muxPath,
 		statsInfo,
@@ -115,6 +119,8 @@ func main() {
 		*wsPingInterval,
 		*wsReadTimeout,
 		*telegramOnly,
+		*upstreamPoolSize,
+		*upstreamPoolIdle,
 	)
 	log.Fatal(http.ListenAndServe(*listen, nil))
 }
