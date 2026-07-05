@@ -704,7 +704,7 @@ void DownloadManagerMtproto::requestSucceeded(
 			).arg(data.requested
 			).arg(data.maxWaitedAmount
 			).arg(dc.totalRequested
-			).arg(tunnelLoadsString(loads))
+			).arg(tunnelLoadsString(loads)
 			).arg(queueWait
 			).arg(duration));
 	}
