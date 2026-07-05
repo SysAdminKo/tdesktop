@@ -213,6 +213,7 @@ type statsSnapshot struct {
 	UpstreamPoolMisses       int64                 `json:"upstream_pool_misses"`
 	UpstreamPoolHitPct       int64                 `json:"upstream_pool_hit_pct"`
 	UpstreamPoolDialErrors   int64                 `json:"upstream_pool_dial_errors"`
+	PoolBuckets              []poolBucketSnapshot  `json:"pool_buckets"`
 	MuxWriteWaitUsAvg        int64                 `json:"mux_write_wait_us_avg"`
 	MuxWriteWaitUsP95        int64                 `json:"mux_write_wait_us_p95"`
 	MuxWriteWaitUsMax        int64                 `json:"mux_write_wait_us_max"`
@@ -640,6 +641,9 @@ func (s *relayStats) snapshot() statsSnapshot {
 	result.UpstreamPoolDialErrors = s.upstreamPoolDialErrors.Load()
 	if total := poolHits + poolMisses; total > 0 {
 		result.UpstreamPoolHitPct = poolHits * 100 / total
+	}
+	if upstreamConnPool != nil {
+		result.PoolBuckets = upstreamConnPool.snapshotBuckets()
 	}
 	waitCount := s.muxWriteWaitCount.Load()
 	if waitCount > 0 {

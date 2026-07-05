@@ -91,48 +91,23 @@ build_binary() {
 }
 
 install_service() {
-	[[ -f "${SRC_DIR}/wss-relay.service.example" ]] \
-		|| fail "missing ${SRC_DIR}/wss-relay.service.example"
-	if [[ -z "${MAX_TUNNELS_PER_IP}" && -f "${SERVICE_FILE}" ]]; then
-		MAX_TUNNELS_PER_IP="$(sed -n 's/.*-max-tunnels-per-ip \([0-9][0-9]*\).*/\1/p' "${SERVICE_FILE}" | head -1)"
+	local template="${SRC_DIR}/wss-relay.service.production"
+	[[ -f "${template}" ]] || template="${SRC_DIR}/wss-relay.service.example"
+	[[ -f "${template}" ]] || fail "missing service unit template in ${SRC_DIR}"
+	if [[ -f "${SERVICE_FILE}" && "${FORCE_SERVICE_INSTALL:-0}" != "1" ]]; then
+		log "Keeping existing ${SERVICE_FILE} (set FORCE_SERVICE_INSTALL=1 to overwrite)"
+		return
 	fi
-	MAX_TUNNELS_PER_IP="${MAX_TUNNELS_PER_IP:-12}"
-	local auth_part=""
-	if [[ -f "${TOKENS_FILE}" ]] \
-		&& grep -qvE '^\s*(#|$)' "${TOKENS_FILE}" 2>/dev/null; then
-		auth_part=$' \\\n\t-auth-file '"${TOKENS_FILE}"
+	sed \
+		-e "s|/opt/wss-relay/bin/wss-relay|${BIN_PATH}|g" \
+		-e "s|127.0.0.1:8283|${LISTEN_ADDR}|g" \
+		-e "s|/opt/wss-relay/config/tokens|${TOKENS_FILE}|g" \
+		-e "s|WorkingDirectory=/opt/wss-relay|WorkingDirectory=${INSTALL_DIR}|g" \
+		"${template}" > "${SERVICE_FILE}"
+	if [[ ! -f "${TOKENS_FILE}" ]] \
+		|| ! grep -qvE '^\s*(#|$)' "${TOKENS_FILE}" 2>/dev/null; then
+		sed -i '/-auth-file/d' "${SERVICE_FILE}"
 	fi
-	cat > "${SERVICE_FILE}" <<EOF
-[Unit]
-Description=WSS mux relay for Telegram Desktop
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=nobody
-Group=nobody
-WorkingDirectory=${INSTALL_DIR}
-ExecStart=${BIN_PATH} \\
-	-listen ${LISTEN_ADDR} \\
-	-mux-path /ws/mux \\
-	-max-streams 64 \\
-	-max-tunnels-per-ip ${MAX_TUNNELS_PER_IP} \\
-	-stream-idle-timeout 10m \\
-	-ws-ping-interval 30s \\
-	-ws-read-timeout 90s \\
-	-telegram-only=true${auth_part}
-Restart=always
-RestartSec=5
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-ReadWritePaths=/tmp
-
-[Install]
-WantedBy=multi-user.target
-EOF
 	systemctl daemon-reload
 	systemctl enable "${SERVICE_NAME}" >/dev/null
 	log "Installed ${SERVICE_FILE}"

@@ -59,7 +59,8 @@ public:
 		MTP::DcId dcId,
 		int index,
 		int amountAtRequestStart,
-		crl::time timeAtRequestStart);
+		crl::time timeAtRequestStart,
+		crl::time queuedAt);
 	void checkSendNextAfterSuccess(MTP::DcId dcId);
 	[[nodiscard]] int chooseSessionIndex(MTP::DcId dcId) const;
 
@@ -185,6 +186,7 @@ public:
 
 	[[nodiscard]] virtual bool readyToRequest() const = 0;
 	void loadPart(int sessionIndex);
+	void markPartWaiting();
 	void removeSession(int sessionIndex);
 
 	void refreshFileReferenceFrom(
@@ -210,6 +212,7 @@ private:
 		int64 offset = 0;
 		mutable int sessionIndex = 0;
 		int requestedInSession = 0;
+		crl::time queuedAt = 0;
 		crl::time sent = 0;
 
 		inline bool operator<(const RequestData &other) const {
@@ -309,6 +312,8 @@ private:
 	base::flat_map<int64, CdnFileHash> _cdnFileHashes;
 	base::flat_map<RequestData, QByteArray> _cdnUncheckedParts;
 	mtpRequestId _cdnHashesRequestId = 0;
+
+	crl::time _partWaitSince = 0;
 
 	rpl::lifetime _nonPremiumLimitSubscription;
 

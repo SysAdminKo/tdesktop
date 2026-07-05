@@ -63,6 +63,7 @@ type muxSession struct {
 	writeMu           sync.Mutex
 	config            muxConfig
 	clientIP          string
+	egressIP          string
 	closed            bool
 	mu                sync.Mutex
 }
@@ -213,7 +214,7 @@ func (s *muxSession) handleOpen(streamID uint32, payload []byte) {
 
 func (s *muxSession) openStreamAsync(streamID uint32, target string) {
 	dialStarted := time.Now()
-	tcp, fromPool, err := acquireUpstream(target, s.clientIP)
+	tcp, fromPool, err := acquireUpstream(target, s.clientIP, s.egressIP)
 	dialMs := time.Since(dialStarted).Milliseconds()
 	relayStatistics.recordMuxOpenDial(target, dialMs)
 	if !fromPool && dialMs > 100 {
@@ -504,6 +505,7 @@ func handleMux(
 		return
 	}
 	clientIP := clientIPFromRequest(r)
+	egressIP := egressIPFromRequest(r)
 	authLabel, ok := auth.validate(r)
 	if !ok {
 		relayStatistics.incAuthFailure(clientIP)
@@ -532,12 +534,19 @@ func handleMux(
 		_ = conn.Close()
 		return
 	}
-	log.Printf("mux tunnel from %s client=%s auth=%s", r.RemoteAddr, clientIP, authLabel)
+	log.Printf(
+		"mux tunnel from %s client=%s egress=%s auth=%s",
+		r.RemoteAddr,
+		clientIP,
+		egressIP,
+		authLabel,
+	)
 	session := &muxSession{
 		conn:     conn,
 		streams:  make(map[uint32]*muxStream),
 		config:   config,
 		clientIP: clientIP,
+		egressIP: egressIP,
 	}
 	session.readLoop()
 }

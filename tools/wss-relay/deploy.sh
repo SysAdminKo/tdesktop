@@ -130,7 +130,7 @@ sync_sources() {
 run_remote() {
 	local mode="$1"
 	remote_exec \
-		"INSTALL_DIR='${INSTALL_DIR}' LISTEN_ADDR='${LISTEN_ADDR}' bash '${REMOTE_SRC}/remote-build.sh' '${mode}'"
+		"INSTALL_DIR='${INSTALL_DIR}' LISTEN_ADDR='${LISTEN_ADDR}' FORCE_SERVICE_INSTALL='${FORCE_SERVICE_INSTALL:-0}' bash '${REMOTE_SRC}/remote-build.sh' '${mode}'"
 }
 
 main() {

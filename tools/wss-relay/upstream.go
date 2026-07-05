@@ -8,7 +8,7 @@ import (
 
 var telegramAllowlist *telegramUpstreamAllowlist
 
-func dialUpstream(addr, clientIP string) (net.Conn, error) {
+func dialUpstream(addr, clientIP, egressIP string) (net.Conn, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
@@ -23,7 +23,14 @@ func dialUpstream(addr, clientIP string) (net.Conn, error) {
 			return nil, fmt.Errorf("upstream not allowed: %s", host)
 		}
 	}
-	conn, err := net.Dial("tcp", addr)
+	dialer := net.Dialer{}
+	if egressIP = resolveEgressIP(egressIP); egressIP != "" {
+		dialer.LocalAddr = &net.TCPAddr{
+			IP:   net.ParseIP(egressIP),
+			Port: 0,
+		}
+	}
+	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		relayStatistics.incUpstreamDialError(addr)
 		return nil, err

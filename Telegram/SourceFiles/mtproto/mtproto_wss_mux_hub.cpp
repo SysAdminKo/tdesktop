@@ -34,7 +34,7 @@ Fn<void()> AuthRejectedHandler;
 constexpr auto kDefaultTunnelCount = 9;
 constexpr auto kDownloadTunnelSlots = 8;
 constexpr auto kBaseTunnelCount = 1;
-constexpr auto kStreamsPerTunnelHigh = 16;
+constexpr auto kStreamsPerTunnelHigh = 4;
 constexpr auto kAffinityLoadSlack = 1;
 constexpr auto kFastTuneDelay = crl::time(250);
 constexpr auto kReconnectDelay = crl::time(2000);

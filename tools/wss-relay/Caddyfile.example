@@ -6,6 +6,8 @@ wss.willdomarket.com {
 
         header_up X-Forwarded-For {remote_host}
 
+        header_up X-Relay-Local-IP {http.request.local.host}
+
         transport http {
             read_timeout 2m
             write_timeout 2m

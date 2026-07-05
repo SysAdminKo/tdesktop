@@ -26,8 +26,14 @@ func main() {
 	maxStreams := flag.Int("max-streams", 64, "Max mux streams per tunnel")
 	maxTunnelsPerIP := flag.Int("max-tunnels-per-ip", 12, "Max mux WebSocket tunnels per client IP (0 = unlimited)")
 	streamIdleTimeout := flag.Duration("stream-idle-timeout", 10*time.Minute, "Close mux streams with no traffic for this long (0 = disabled)")
-	upstreamPoolSize := flag.Int("upstream-pool-size", 2, "Warm pre-dialed upstream connections kept per DC target (0 = disabled)")
+	upstreamPoolMin := flag.Int("upstream-pool-min", 2, "Minimum warm upstream connections per egress/target bucket (0 = disable pool)")
+	upstreamPoolMax := flag.Int("upstream-pool-max", 15, "Maximum warm upstream connections per egress/target bucket")
 	upstreamPoolIdle := flag.Duration("upstream-pool-idle", 60*time.Second, "Max age of a warm pooled upstream connection before it is dropped")
+	upstreamPoolTargetHit := flag.Int("upstream-pool-target-hit", 40, "Target pool hit percent; grow bucket size when below this")
+	upstreamPoolAdjustInterval := flag.Duration("upstream-pool-adjust-interval", 5*time.Second, "Adaptive pool resize interval per bucket")
+	upstreamPoolBucketRetention := flag.Duration("upstream-pool-bucket-retention", 10*time.Minute, "Drop a bucket after this long without client traffic to its egress/target pair")
+	upstreamPoolGlobalMaxIdle := flag.Int("upstream-pool-global-max-idle", 500, "Max total idle upstream connections across all buckets")
+	egressBindIPs := flag.String("egress-bind-ips", "", "Comma-separated local IPs allowed for upstream bind (empty = any from X-Relay-Local-IP)")
 	wsPingInterval := flag.Duration("ws-ping-interval", 30*time.Second, "WebSocket ping interval per tunnel (0 = disabled)")
 	wsReadTimeout := flag.Duration("ws-read-timeout", 90*time.Second, "WebSocket read deadline, extended on traffic/pong (0 = disabled)")
 	telegramOnly := flag.Bool("telegram-only", true, "Allow upstream TCP only to Telegram DC CIDRs")
@@ -47,7 +53,16 @@ func main() {
 	}
 	telegramAllowlist = allowlist
 
-	initUpstreamPool(*upstreamPoolSize, *upstreamPoolIdle)
+	setAllowedEgressIPs(*egressBindIPs)
+	initUpstreamPool(upstreamPoolConfig{
+		minSize:          *upstreamPoolMin,
+		maxSize:          *upstreamPoolMax,
+		maxIdle:          *upstreamPoolIdle,
+		bucketRetention:  *upstreamPoolBucketRetention,
+		targetHitPct:     *upstreamPoolTargetHit,
+		adjustInterval:   *upstreamPoolAdjustInterval,
+		globalMaxIdle:    *upstreamPoolGlobalMaxIdle,
+	})
 
 	relayStatistics.setConfig(statsConfigSnapshot{
 		MaxStreams:           *maxStreams,
@@ -108,7 +123,7 @@ func main() {
 		authInfo = "enabled"
 	}
 	log.Printf(
-		"wss-relay listening on %s mux-path=%s stats=%s auth=%s max-streams=%d max-tunnels-per-ip=%d stream-idle=%s ws-ping=%s ws-read=%s telegram-only=%v upstream-pool=%d/%s",
+		"wss-relay listening on %s mux-path=%s stats=%s auth=%s max-streams=%d max-tunnels-per-ip=%d stream-idle=%s ws-ping=%s ws-read=%s telegram-only=%v upstream-pool=%d..%d idle=%s target-hit=%d%% adjust=%s global-idle=%d egress-bind=%q",
 		*listen,
 		*muxPath,
 		statsInfo,
@@ -119,8 +134,13 @@ func main() {
 		*wsPingInterval,
 		*wsReadTimeout,
 		*telegramOnly,
-		*upstreamPoolSize,
+		*upstreamPoolMin,
+		*upstreamPoolMax,
 		*upstreamPoolIdle,
+		*upstreamPoolTargetHit,
+		*upstreamPoolAdjustInterval,
+		*upstreamPoolGlobalMaxIdle,
+		*egressBindIPs,
 	)
 	log.Fatal(http.ListenAndServe(*listen, nil))
 }

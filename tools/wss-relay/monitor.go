@@ -118,6 +118,10 @@ table.stats tr:last-child td { border-bottom: 0; }
 <div id="abuse"></div>
 </section>
 <section>
+<h2>Upstream pool buckets</h2>
+<div id="pool_buckets"></div>
+</section>
+<section>
 <h2>Active upstream targets</h2>
 <div id="upstreams"></div>
 </section>
@@ -339,6 +343,33 @@ function render(data) {
       { text: String(a.upstream_blocked) },
     ]),
     'no abuse events recorded'
+  );
+  document.getElementById('pool_buckets').innerHTML = renderTable(
+    [
+      { label: 'Egress', className: 'text' },
+      { label: 'Target', className: 'text' },
+      { label: 'Live', className: 'num' },
+      { label: 'Size', className: 'num' },
+      { label: 'Idle', className: 'num' },
+      { label: 'Win 5s %', className: 'num' },
+      { label: 'Win 5s h/m', className: 'num' },
+      { label: 'Total hit%', className: 'num' },
+      { label: 'Total h/m', className: 'num' },
+      { label: 'Last', className: 'text' },
+    ],
+    (data.pool_buckets || []).map(b => [
+      { text: esc(b.egress || 'default') },
+      { text: esc(b.target) },
+      { text: b.active ? 'yes' : 'no' },
+      { text: b.active ? String(b.size) : '—' },
+      { text: b.active ? String(b.idle) : '—' },
+      { text: b.active ? String(b.window_hit_pct || 0) + '%' : '—' },
+      { text: b.active ? (b.window_hits || 0) + ' / ' + (b.window_misses || 0) : '—' },
+      { text: String(b.total_hit_pct || 0) + '%' },
+      { text: (b.total_hits || 0) + ' / ' + (b.total_misses || 0) },
+      { text: b.last_activity ? esc(b.last_activity.slice(11, 19) + 'Z') : '—' },
+    ]),
+    'no pool bucket history'
   );
   document.getElementById('upstreams').innerHTML = renderTable(
     [

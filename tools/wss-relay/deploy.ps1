@@ -26,6 +26,7 @@ Options:
 Environment:
   INSTALL_DIR    Remote install root (default: /opt/wss-relay)
   SSH_OPTS       Extra ssh options (space-separated)
+  FORCE_SERVICE_INSTALL  Set to 1 to overwrite an existing systemd unit
 
 Examples:
   .\deploy.ps1 root@31.76.21.175
@@ -172,7 +173,8 @@ function Invoke-RemoteBuild {
 		[string]$Listen,
 		[string]$Mode
 	)
-	$command = "INSTALL_DIR='$InstallDir' LISTEN_ADDR='$Listen' bash '$RemoteSrc/remote-build.sh' '$Mode'"
+	$forceService = if ($env:FORCE_SERVICE_INSTALL) { $env:FORCE_SERVICE_INSTALL } else { '0' }
+	$command = "INSTALL_DIR='$InstallDir' LISTEN_ADDR='$Listen' FORCE_SERVICE_INSTALL='$forceService' bash '$RemoteSrc/remote-build.sh' '$Mode'"
 	Invoke-Remote -DeployHost $DeployHost -Command $command
 }
 

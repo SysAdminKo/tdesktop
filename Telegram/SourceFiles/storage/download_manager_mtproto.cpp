@@ -426,6 +426,7 @@ void DownloadManagerMtproto::maybeWarmUpSessions(MTP::DcId dcId) {
 
 void DownloadManagerMtproto::enqueue(not_null<Task*> task, int priority) {
 	const auto dcId = task->dcId();
+	task->markPartWaiting();
 	maybeWarmUpSessions(dcId);
 	auto &queue = _queues[dcId];
 	queue.enqueue(task, priority);
@@ -650,7 +651,8 @@ void DownloadManagerMtproto::requestSucceeded(
 		MTP::DcId dcId,
 		int index,
 		int amountAtRequestStart,
-		crl::time timeAtRequestStart) {
+		crl::time timeAtRequestStart,
+		crl::time queuedAt) {
 	using namespace rpl::mappers;
 
 	const auto i = _balanceData.find(dcId);
@@ -688,8 +690,11 @@ void DownloadManagerMtproto::requestSucceeded(
 		const auto loads = MTP::WssMuxHub::Instance().TunnelStreamCounts();
 		const auto shiftedDcId = MTP::downloadDcId(dcId, index);
 		const auto line = (duration >= kWssStallDownloadLogThreshold)
-			? QStringLiteral("Download stall (%1,%2) shiftedDc=%3 duration=%4 parts=%5 requested=%6 max=%7 dc_total=%8 tunnel_loads=[%9]")
-			: QStringLiteral("Download slow (%1,%2) shiftedDc=%3 duration=%4 parts=%5 requested=%6 max=%7 dc_total=%8 tunnel_loads=[%9]");
+			? QStringLiteral("Download stall (%1,%2) shiftedDc=%3 duration=%4 parts=%5 requested=%6 max=%7 dc_total=%8 tunnel_loads=[%9] queue_wait=%10 recv_ms=%11")
+			: QStringLiteral("Download slow (%1,%2) shiftedDc=%3 duration=%4 parts=%5 requested=%6 max=%7 dc_total=%8 tunnel_loads=[%9] queue_wait=%10 recv_ms=%11");
+		const auto queueWait = (queuedAt && timeAtRequestStart > queuedAt)
+			? (timeAtRequestStart - queuedAt)
+			: crl::time(0);
 		DEBUG_LOG((line
 			).arg(dcId
 			).arg(index
@@ -699,7 +704,9 @@ void DownloadManagerMtproto::requestSucceeded(
 			).arg(data.requested
 			).arg(data.maxWaitedAmount
 			).arg(dc.totalRequested
-			).arg(tunnelLoadsString(loads)));
+			).arg(tunnelLoadsString(loads))
+			).arg(queueWait
+			).arg(duration));
 	}
 	if (overloaded) {
 		return;
@@ -955,7 +962,17 @@ void DownloadMtprotoTask::refreshFileReferenceFrom(
 }
 
 void DownloadMtprotoTask::loadPart(int sessionIndex) {
-	makeRequest({ takeNextRequestOffset(), sessionIndex });
+	makeRequest({
+		takeNextRequestOffset(),
+		sessionIndex,
+		0,
+		_partWaitSince,
+	});
+	_partWaitSince = 0;
+}
+
+void DownloadMtprotoTask::markPartWaiting() {
+	_partWaitSince = crl::now();
 }
 
 void DownloadMtprotoTask::removeSession(int sessionIndex) {
@@ -1346,7 +1363,11 @@ auto DownloadMtprotoTask::finishSentRequest(
 			dcId(),
 			result.sessionIndex,
 			result.requestedInSession,
-			result.sent);
+			result.sent,
+			result.queuedAt);
+		if (readyToRequest()) {
+			_partWaitSince = crl::now();
+		}
 	}
 
 	Ensures(ok);
