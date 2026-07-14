@@ -105,6 +105,7 @@ func acquireUpstream(target, clientIP, egressIP string) (net.Conn, bool, error) 
 			return conn, true, nil
 		}
 		upstreamConnPool.recordMiss(egressIP, target)
+		relayStatistics.incUpstreamPoolMiss(target)
 	}
 	conn, err := dialUpstream(target, clientIP, egressIP)
 	if err != nil {
@@ -113,7 +114,6 @@ func acquireUpstream(target, clientIP, egressIP string) (net.Conn, bool, error) 
 	if upstreamConnPool != nil {
 		upstreamConnPool.touch(egressIP, target)
 	}
-	relayStatistics.incUpstreamPoolMiss(target)
 	return conn, false, nil
 }
 

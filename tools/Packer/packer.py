@@ -4,9 +4,15 @@ Packer for Telegram Desktop update files.
 Reproduces the binary format of QDataStream Qt 5.1 + LZMA + RSA-SHA1 signature.
 
 Usage:
-    python3 packer.py --path <build_dir> --version <version_int> \
+    python3 packer.py --path <build_dir> \
         --platform <win64|win|winarm|mac|armac|linux> \
-        --private-key <key.pem> [--output <filename>]
+        --private-key <key.pem> [--version <version>] [--current4]
+
+Minimal example (version from core/version.h, output in Release/):
+
+    cd tools/Packer
+    python packer.py --path ..\\..\\out\\Release --platform win64 ^
+        --private-key keys\\stable_private.pem --current4
 
 Binary structure of the output file:
 

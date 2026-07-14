@@ -31,10 +31,11 @@ const (
 	muxOpenFailBad     = 2
 	muxOpenFailLimit   = 3
 
-	muxUpstreamReadStallMinBytes = 32 * 1024
-	muxUpstreamReadStallThreshold  = 3 * time.Second
-	muxUpstreamReadStallResetGap   = 100 * time.Millisecond
-	muxUpstreamWriteTimeout        = 5 * time.Second
+	muxUpstreamReadStallMinBytes           = 32 * 1024
+	muxUpstreamReadStallRecoverMinBytes  = 8 * 1024
+	muxUpstreamReadStallThreshold          = 3 * time.Second
+	muxUpstreamMaxConsecutiveReadStallsDef = 4
+	muxUpstreamWriteTimeout                = 5 * time.Second
 )
 
 type muxStream struct {
@@ -44,17 +45,19 @@ type muxStream struct {
 	target          string
 	lastActivity    atomic.Int64
 	upstreamBytes   int64
-	lastReadAt      time.Time
-	readStallLogged bool
-	sentBytes       int64
+	lastReadAt              time.Time
+	readStallLogged         bool
+	consecutiveReadStalls   int
+	sentBytes               int64
 	recvBytes       int64
 }
 
 type muxConfig struct {
-	maxStreams        int
-	streamIdleTimeout time.Duration
-	wsPingInterval    time.Duration
-	wsReadTimeout     time.Duration
+	maxStreams                 int
+	streamIdleTimeout          time.Duration
+	wsPingInterval             time.Duration
+	wsReadTimeout              time.Duration
+	maxConsecutiveReadStalls   int
 }
 
 type muxSession struct {
@@ -232,11 +235,6 @@ func (s *muxSession) openStreamAsync(streamID uint32, target string) {
 		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailDial})
 		return
 	}
-	if fromPool {
-		relayStatistics.incUpstreamPoolHit(target)
-	} else {
-		relayStatistics.incUpstreamPoolMiss(target)
-	}
 	stream := &muxStream{
 		id:     streamID,
 		tcp:    tcp,
@@ -276,28 +274,69 @@ func (s *muxSession) openStreamAsync(streamID uint32, target string) {
 	go s.pumpUpstream(stream)
 }
 
+func (st *muxStream) noteUpstreamReadSuccess(now time.Time, readBytes int) {
+	st.lastReadAt = now
+	if readBytes < muxUpstreamReadStallRecoverMinBytes {
+		return
+	}
+	st.consecutiveReadStalls = 0
+	st.readStallLogged = false
+}
+
+func (st *muxStream) trackUpstreamReadWait(maxConsecutive int) bool {
+	if maxConsecutive <= 0 {
+		return false
+	} else if st.upstreamBytes < muxUpstreamReadStallMinBytes || st.lastReadAt.IsZero() {
+		return false
+	}
+	gap := time.Since(st.lastReadAt)
+	if gap < muxUpstreamReadStallThreshold {
+		return false
+	}
+	if !st.readStallLogged {
+		st.readStallLogged = true
+		log.Printf(
+			"mux upstream read stall stream=%d target=%s gap_ms=%d bytes=%d consecutive=1",
+			st.id,
+			st.target,
+			gap.Milliseconds(),
+			st.upstreamBytes,
+		)
+		relayStatistics.incMuxUpstreamReadStall()
+		st.consecutiveReadStalls = 1
+	} else {
+		st.consecutiveReadStalls++
+	}
+	return st.consecutiveReadStalls >= maxConsecutive
+}
+
+func (s *muxSession) rotateUpstreamStream(stream *muxStream, reason string) {
+	log.Printf(
+		"mux upstream read stall rotate stream=%d client=%s target=%s reason=%s consecutive=%d bytes=%d",
+		stream.id,
+		s.clientIP,
+		stream.target,
+		reason,
+		stream.consecutiveReadStalls,
+		stream.upstreamBytes,
+	)
+	relayStatistics.incMuxUpstreamReadStallRotate()
+	s.removeStream(stream.id)
+	_ = s.writeFrame(muxTypeClose, stream.id, nil)
+}
+
 func (s *muxSession) pumpUpstream(stream *muxStream) {
 	buffer := make([]byte, muxMaxDataPayload)
+	maxConsecutive := s.config.maxConsecutiveReadStalls
 	for {
 		select {
 		case <-stream.done:
 			return
 		default:
 		}
-		if stream.upstreamBytes >= muxUpstreamReadStallMinBytes && !stream.lastReadAt.IsZero() {
-			gap := time.Since(stream.lastReadAt)
-			if gap >= muxUpstreamReadStallThreshold && !stream.readStallLogged {
-				stream.readStallLogged = true
-				log.Printf(
-					"mux upstream read stall stream=%d client=%s target=%s gap_ms=%d bytes=%d",
-					stream.id,
-					s.clientIP,
-					stream.target,
-					gap.Milliseconds(),
-					stream.upstreamBytes,
-				)
-				relayStatistics.incMuxUpstreamReadStall()
-			}
+		if stream.trackUpstreamReadWait(maxConsecutive) {
+			s.rotateUpstreamStream(stream, "consecutive_stalls")
+			return
 		}
 		_ = stream.tcp.SetReadDeadline(time.Now().Add(muxUpstreamReadStallThreshold))
 		n, err := stream.tcp.Read(buffer)
@@ -310,12 +349,7 @@ func (s *muxSession) pumpUpstream(stream *muxStream) {
 			return
 		}
 		now := time.Now()
-		if !stream.lastReadAt.IsZero() {
-			if now.Sub(stream.lastReadAt) < muxUpstreamReadStallResetGap {
-				stream.readStallLogged = false
-			}
-		}
-		stream.lastReadAt = now
+		stream.noteUpstreamReadSuccess(now, n)
 		stream.upstreamBytes += int64(n)
 		stream.sentBytes += int64(n)
 		stream.touchActivity()

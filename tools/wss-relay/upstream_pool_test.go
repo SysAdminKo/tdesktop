@@ -175,6 +175,61 @@ func TestSnapshotBucketsKeepsHistoryAfterGC(t *testing.T) {
 	}
 }
 
+func TestPoolBucketAndUpstreamStatsConsistency(t *testing.T) {
+	relayStatistics = newRelayStats()
+	initUpstreamPool(upstreamPoolConfig{
+		minSize:        2,
+		maxSize:        4,
+		maxIdle:        time.Minute,
+		targetHitPct:   40,
+		adjustInterval: time.Hour,
+		globalMaxIdle:  100,
+	})
+	defer func() { upstreamConnPool = nil }()
+
+	target := "149.154.167.91:443"
+	upstreamConnPool.recordHit("203.0.113.1", target)
+	relayStatistics.incUpstreamPoolHit(target)
+	upstreamConnPool.recordMiss("203.0.113.1", target)
+	relayStatistics.incUpstreamPoolMiss(target)
+	upstreamConnPool.recordMiss("203.0.113.2", target)
+	relayStatistics.incUpstreamPoolMiss(target)
+
+	var bucketHits int64
+	var bucketMisses int64
+	for _, bucket := range upstreamConnPool.snapshotBuckets() {
+		if bucket.Target != target {
+			continue
+		}
+		bucketHits += bucket.TotalHits
+		bucketMisses += bucket.TotalMisses
+	}
+
+	statsSnap := relayStatistics.snapshot()
+	if statsSnap.UpstreamPoolHits != bucketHits || statsSnap.UpstreamPoolMisses != bucketMisses {
+		t.Fatalf(
+			"global pool stats mismatch: stats hits=%d misses=%d bucket hits=%d misses=%d",
+			statsSnap.UpstreamPoolHits,
+			statsSnap.UpstreamPoolMisses,
+			bucketHits,
+			bucketMisses,
+		)
+	}
+	if len(statsSnap.Upstreams) != 1 {
+		t.Fatalf("expected one upstream entry, got %+v", statsSnap.Upstreams)
+	}
+	upstream := statsSnap.Upstreams[0]
+	if upstream.PoolHits != bucketHits || upstream.PoolMisses != bucketMisses {
+		t.Fatalf(
+			"per-target pool stats mismatch: upstream hits=%d misses=%d bucket hits=%d misses=%d",
+			upstream.PoolHits,
+			upstream.PoolMisses,
+			bucketHits,
+			bucketMisses,
+		)
+	}
+}
+
 func TestPoolBucketKeyIsolation(t *testing.T) {
 	initUpstreamPool(upstreamPoolConfig{
 		minSize:        2,

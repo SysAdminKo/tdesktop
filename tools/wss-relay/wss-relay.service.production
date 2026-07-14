@@ -16,6 +16,7 @@ ExecStart=/opt/wss-relay/bin/wss-relay \
 	-stream-idle-timeout 10m \
 	-ws-ping-interval 30s \
 	-ws-read-timeout 90s \
+	-upstream-stall-rotate 4 \
 	-telegram-only=true \
 	-upstream-pool-min 2 \
 	-upstream-pool-max 15 \

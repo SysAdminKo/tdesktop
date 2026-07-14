@@ -49,6 +49,7 @@ type relayStats struct {
 	muxOpenDialMsMax    atomic.Int64
 	muxOpenSlow              atomic.Int64
 	muxUpstreamReadStall     atomic.Int64
+	muxUpstreamReadStallRotate atomic.Int64
 	upstreamPoolHits         atomic.Int64
 	upstreamPoolMisses       atomic.Int64
 	upstreamPoolDialErrors   atomic.Int64
@@ -208,7 +209,8 @@ type statsSnapshot struct {
 	MuxOpenDialMsP95         int64                 `json:"mux_open_dial_ms_p95"`
 	MuxOpenDialMsMax         int64                 `json:"mux_open_dial_ms_max"`
 	MuxOpenSlow              int64                 `json:"mux_open_slow"`
-	MuxUpstreamReadStall     int64                 `json:"mux_upstream_read_stall"`
+	MuxUpstreamReadStall       int64                 `json:"mux_upstream_read_stall"`
+	MuxUpstreamReadStallRotate int64                 `json:"mux_upstream_read_stall_rotate"`
 	UpstreamPoolHits         int64                 `json:"upstream_pool_hits"`
 	UpstreamPoolMisses       int64                 `json:"upstream_pool_misses"`
 	UpstreamPoolHitPct       int64                 `json:"upstream_pool_hit_pct"`
@@ -516,6 +518,10 @@ func (s *relayStats) incMuxUpstreamReadStall() {
 	s.muxUpstreamReadStall.Add(1)
 }
 
+func (s *relayStats) incMuxUpstreamReadStallRotate() {
+	s.muxUpstreamReadStallRotate.Add(1)
+}
+
 func (s *relayStats) incUpstreamPoolHit(target string) {
 	s.upstreamPoolHits.Add(1)
 	if target == "" {
@@ -634,6 +640,7 @@ func (s *relayStats) snapshot() statsSnapshot {
 	result.MuxOpenDialMsP95 = s.dialMsSamples.percentile(0.95)
 	result.MuxOpenSlow = s.muxOpenSlow.Load()
 	result.MuxUpstreamReadStall = s.muxUpstreamReadStall.Load()
+	result.MuxUpstreamReadStallRotate = s.muxUpstreamReadStallRotate.Load()
 	poolHits := s.upstreamPoolHits.Load()
 	poolMisses := s.upstreamPoolMisses.Load()
 	result.UpstreamPoolHits = poolHits

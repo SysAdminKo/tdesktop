@@ -36,6 +36,7 @@ func main() {
 	egressBindIPs := flag.String("egress-bind-ips", "", "Comma-separated local IPs allowed for upstream bind (empty = any from X-Relay-Local-IP)")
 	wsPingInterval := flag.Duration("ws-ping-interval", 30*time.Second, "WebSocket ping interval per tunnel (0 = disabled)")
 	wsReadTimeout := flag.Duration("ws-read-timeout", 90*time.Second, "WebSocket read deadline, extended on traffic/pong (0 = disabled)")
+	upstreamStallRotate := flag.Int("upstream-stall-rotate", muxUpstreamMaxConsecutiveReadStallsDef, "Close mux stream after this many consecutive upstream read stalls (0 = log only)")
 	telegramOnly := flag.Bool("telegram-only", true, "Allow upstream TCP only to Telegram DC CIDRs")
 	statsPath := flag.String("stats-path", "/stats", "Live stats UI path (empty to disable)")
 	authFile := flag.String("auth-file", "", "Path to file with sha256 token hashes (one per line)")
@@ -76,10 +77,11 @@ func main() {
 
 	muxLimiter := newMuxTunnelLimiter(*maxTunnelsPerIP)
 	muxConfig := muxConfig{
-		maxStreams:        *maxStreams,
-		streamIdleTimeout: *streamIdleTimeout,
-		wsPingInterval:    *wsPingInterval,
-		wsReadTimeout:     *wsReadTimeout,
+		maxStreams:               *maxStreams,
+		streamIdleTimeout:        *streamIdleTimeout,
+		wsPingInterval:           *wsPingInterval,
+		wsReadTimeout:            *wsReadTimeout,
+		maxConsecutiveReadStalls: *upstreamStallRotate,
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +125,7 @@ func main() {
 		authInfo = "enabled"
 	}
 	log.Printf(
-		"wss-relay listening on %s mux-path=%s stats=%s auth=%s max-streams=%d max-tunnels-per-ip=%d stream-idle=%s ws-ping=%s ws-read=%s telegram-only=%v upstream-pool=%d..%d idle=%s target-hit=%d%% adjust=%s global-idle=%d egress-bind=%q",
+		"wss-relay listening on %s mux-path=%s stats=%s auth=%s max-streams=%d max-tunnels-per-ip=%d stream-idle=%s ws-ping=%s ws-read=%s upstream-stall-rotate=%d telegram-only=%v upstream-pool=%d..%d idle=%s target-hit=%d%% adjust=%s global-idle=%d egress-bind=%q",
 		*listen,
 		*muxPath,
 		statsInfo,
@@ -133,6 +135,7 @@ func main() {
 		*streamIdleTimeout,
 		*wsPingInterval,
 		*wsReadTimeout,
+		*upstreamStallRotate,
 		*telegramOnly,
 		*upstreamPoolMin,
 		*upstreamPoolMax,
