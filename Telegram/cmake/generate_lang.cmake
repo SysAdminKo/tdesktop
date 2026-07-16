@@ -65,10 +65,11 @@ function(generate_lang target_name lang_file src_loc)
     COMMENT "Generating lang subsets (${target_name})"
     DEPENDS
         codegen_lang
-        ${gen_keys}
+        ${gen_timestamp}
         ${lang_sources}
     )
     add_custom_target(${target_name}_lang_subsets DEPENDS ${subsets_timestamp})
     init_target_folder(${target_name}_lang_subsets "(gen)")
+    add_dependencies(${target_name}_lang_subsets ${target_name}_lang)
     add_dependencies(${target_name} ${target_name}_lang_subsets)
 endfunction()
