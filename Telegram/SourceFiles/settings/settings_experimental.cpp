@@ -34,10 +34,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "dialogs/dialogs_entry.h"
 #include "dialogs/dialogs_widget.h"
 #include "dialogs/ui/dialogs_layout.h"
+#include "ffmpeg/ffmpeg_utility.h"
 #include "history/history_item_components.h"
 #include "history/view/controls/compose_controls_common.h"
 #include "history/view/history_view_message.h"
 #include "info/profile/info_profile_actions.h"
+#include "info/profile/tabs/adapters/info_profile_tab_media.h"
+#include "info/profile/tabs/info_profile_tabs_host.h"
 #include "lang/lang_keys.h"
 #include "mainwindow.h"
 #include "mainwidget.h"
@@ -285,6 +288,8 @@ void SetupExperimental(
 	addToggle(Window::kOptionViewProfileInChatsListContextMenu);
 	addToggle(Info::Profile::kOptionShowPeerIdBelowAbout);
 	addToggle(Info::Profile::kOptionShowChannelJoinedBelowAbout);
+	addToggle(Info::Profile::kOptionProfileMediaTabs);
+	addToggle(Info::Profile::kOptionProfileMediaTabsExpanded);
 	addToggle(Ui::kOptionUseSmallMsgBubbleRadius);
 	addToggle(Media::Player::kOptionDisableAutoplayNext);
 	addToggle(Webview::kOptionWebviewDebugEnabled);
@@ -303,7 +308,7 @@ void SetupExperimental(
 		addToggle(kOptionFastButtonsMode);
 	}
 	addToggle(Window::kOptionDisableTouchbar);
-	addToggle(Info::kAlternativeScrollProcessing);
+	addToggle(Info::kClassicProfileScroll);
 	addToggle(kModerateCommonGroups);
 	addToggle(kForceComposeSearchOneColumn);
 	addToggle(ChatHelpers::kOptionUnlimitedRecentStickers);
@@ -311,6 +316,7 @@ void SetupExperimental(
 	addToggle(HistoryView::kOptionUnlimitedMessageWidth);
 	addToggle(HistoryView::Controls::kOptionMacCmdReplyImmediately);
 	addToggle(Ui::kOptionQScroller);
+	addToggle(FFmpeg::kOptionFFmpegMultiThread);
 }
 
 } // namespace
