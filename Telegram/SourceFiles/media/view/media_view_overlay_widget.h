@@ -21,6 +21,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "media/view/media_view_open_common.h"
 #include "media/view/media_view_recognition_selection.h"
 #include "media/media_common.h"
+#include "media/system_media_controls_video.h"
 #include "platform/platform_text_recognition.h"
 
 class History;
@@ -94,10 +95,13 @@ class Pip;
 class OverlayWidget final
 	: public ClickHandlerHost
 	, private PlaybackControls::Delegate
-	, private Stories::Delegate {
+	, private Stories::Delegate
+	, private Media::SystemMediaControlsVideoDelegate {
 public:
 	OverlayWidget();
 	~OverlayWidget();
+
+	void setSystemMediaControls(SystemMediaControlsVideoSink *sink);
 
 	enum class TouchBarItemType {
 		Photo,
@@ -255,6 +259,15 @@ private:
 	void playbackControlsFromFullScreen() override;
 	void playbackControlsToPictureInPicture() override;
 	void playbackControlsRotate() override;
+
+	void smtcPlay() override;
+	void smtcPause() override;
+	void smtcPlayPause() override;
+	void smtcStop() override;
+	void smtcNext() override;
+	void smtcPrevious() override;
+	void smtcSeek(crl::time position) override;
+
 	void playbackPauseResume();
 	void playbackToggleFullScreen();
 	void playbackPauseOnCall();
@@ -429,9 +442,15 @@ private:
 	void findCurrent();
 
 	void updateCursor();
-	void setZoomLevel(int newZoom, bool force = false);
+	void setZoomLevel(
+		int newZoom,
+		bool force = false,
+		std::optional<QPoint> anchor = std::nullopt);
 
 	void updatePlaybackState();
+	void refreshSystemMediaControls();
+	void finishSystemMediaControls();
+	[[nodiscard]] QImage systemMediaControlsThumbnail() const;
 	void seekRelativeTime(crl::time time);
 	void restartAtProgress(float64 progress);
 	void restartAtSeekPosition(crl::time position);
@@ -493,10 +512,13 @@ private:
 	void waitingAnimationCallback();
 	bool updateControlsAnimation(crl::time now);
 
-	void zoomIn();
-	void zoomOut();
+	void zoomIn(std::optional<QPoint> anchor = std::nullopt);
+	void zoomOut(std::optional<QPoint> anchor = std::nullopt);
 	void zoomReset();
-	void zoomUpdate(int32 &newZoom);
+	void zoomUpdate(
+		int32 &newZoom,
+		std::optional<QPoint> anchor = std::nullopt);
+	[[nodiscard]] QPoint zoomAnchor(QPointF globalPosition) const;
 
 	void paintRadialLoading(not_null<Renderer*> renderer);
 	void paintRadialLoadingContent(
@@ -702,6 +724,9 @@ private:
 	std::unique_ptr<PipWrap> _pip;
 	QImage _streamedQualityChangeFrame;
 	crl::time _streamedPosition = 0;
+	SystemMediaControlsVideoSink *_smtcSink = nullptr;
+	DocumentData *_smtcDocument = nullptr;
+	bool _smtcThumbnailSet = false;
 	int _streamedCreated = 0;
 	bool _streamedQualityChangeFinished = false;
 	bool _showAsPip = false;

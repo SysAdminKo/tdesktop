@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/unread_badge.h"
 #include "ui/userpic_view.h"
 #include "ui/layers/box_content.h"
+#include "ui/rows_scroll_cache.h"
 #include "base/timer.h"
 
 namespace style {
@@ -139,6 +140,14 @@ public:
 		int outerWidth,
 		bool selected);
 
+	[[nodiscard]] QRect statusIconRect() const {
+		return _statusIconRect;
+	}
+	void paintStatusIcon(Painter &p, crl::time now, bool paused);
+
+	void rememberUserpicKey();
+	[[nodiscard]] bool userpicKeyChanged();
+
 	virtual QSize rightActionSize() const {
 		return QSize();
 	}
@@ -181,6 +190,9 @@ public:
 		int outerWidth,
 		bool selected,
 		int selectedElement);
+	[[nodiscard]] virtual bool elementsAnimating() const {
+		return false;
+	}
 
 	virtual void refreshName(const style::PeerListItem &st);
 	const Ui::Text::String &name() const {
@@ -318,11 +330,13 @@ private:
 	PeerListRowId _id = 0;
 	PeerData *_peer = nullptr;
 	mutable Ui::PeerUserpicView _userpic;
+	std::pair<uint64, uint64> _userpicKey;
 	std::unique_ptr<Ui::RippleAnimation> _ripple;
 	std::unique_ptr<Ui::RoundImageCheckbox> _checkbox;
 	Ui::Text::String _name;
 	Ui::Text::String _status;
 	Ui::PeerBadge _badge;
+	QRect _statusIconRect;
 	StatusType _statusType = StatusType::Online;
 	crl::time _statusValidTill = 0;
 	base::flat_set<QChar> _nameFirstLetters;
@@ -523,6 +537,11 @@ public:
 			rowRightActionClicked(row);
 		}
 	}
+	virtual void rowElementHovered(
+		not_null<PeerListRow*> row,
+		int element,
+		QRect elementRect) {
+	}
 
 	virtual bool rowTrackPress(not_null<PeerListRow*> row) {
 		return false;
@@ -609,6 +628,10 @@ public:
 	[[nodiscard]] virtual Fn<QImage()> customRowRippleMaskGenerator() {
 		Unexpected("PeerListController::customRowRippleMaskGenerator.");
 	}
+	virtual void customRowAddRipple(
+		not_null<PeerListRow*> row,
+		QPoint point,
+		Fn<void()> updateCallback);
 
 	virtual bool overrideKeyboardNavigation(
 			int direction,
@@ -848,10 +871,12 @@ private:
 
 	void selectByMouse(QPoint globalPosition);
 	void loadProfilePhotos();
+	void invalidateLoadedUserpics();
 	void checkScrollForPreload();
 
 	void updateRow(not_null<PeerListRow*> row, RowIndex hint);
 	void updateRow(RowIndex row);
+	void updateRowStatus(not_null<PeerListRow*> row);
 	int getRowTop(RowIndex row) const;
 	PeerListRow *getRow(RowIndex element);
 	RowIndex findRowIndex(
@@ -870,6 +895,12 @@ private:
 		Fn<void(not_null<Ui::PopupMenu*>)> destroyed = nullptr);
 
 	crl::time paintRow(Painter &p, crl::time now, RowIndex index);
+	void paintRowContent(
+		Painter &p,
+		crl::time now,
+		RowIndex index,
+		bool selected,
+		int activeElement);
 
 	[[nodiscard]] bool sectionsShown() const;
 	void refreshSectionHeaders();
@@ -950,6 +981,8 @@ private:
 	std::vector<std::unique_ptr<PeerListRow>> _searchRows;
 	base::Timer _repaintByStatus;
 	base::unique_qptr<Ui::PopupMenu> _contextMenu;
+
+	Ui::RowsScrollCache _rowsScrollCache;
 
 };
 
