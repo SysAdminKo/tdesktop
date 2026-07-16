@@ -88,6 +88,47 @@ jobs:
 
           sudo sed -i '' '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/ -g//' /opt/homebrew/share/cmake/Modules/Compiler/GNU.cmake
 
+      - name: Free runner disk space.
+        run: |
+          echo "Disk before cleanup:"
+          df -h /
+
+          # Android SDK/NDK is unused by tdesktop and eats several GB.
+          sudo rm -rf "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}" || true
+          sudo rm -rf /usr/local/share/android-sdk || true
+          sudo rm -rf /Users/runner/Library/Android || true
+
+          # Drop unused Xcode installs; never remove the selected toolchain.
+          selected="$(xcode-select -p)"
+          selected_app="$(cd "$selected/../.." && pwd -P)"
+          for app in /Applications/Xcode_*.app; do
+            [ -e "$app" ] || continue
+            resolved="$(cd "$app" && pwd -P)"
+            if [ "$resolved" = "$selected_app" ]; then
+              echo "Keeping selected Xcode: $app"
+              continue
+            fi
+            echo "Removing $app"
+            sudo rm -rf "$app" || true
+          done
+
+          # Simulator runtimes / caches are unused for desktop builds.
+          sudo xcrun simctl delete unavailable || true
+          sudo rm -rf /Library/Developer/CoreSimulator/Caches || true
+          sudo rm -rf /Users/runner/Library/Developer/CoreSimulator || true
+          sudo rm -rf /Users/runner/Library/Developer/Xcode/DerivedData || true
+
+          # Homebrew download cache and other heavy preinstalls.
+          rm -rf "$(brew --cache)" || true
+          sudo rm -rf /Applications/Google\ Chrome*.app || true
+          sudo rm -rf /Applications/Firefox.app || true
+          sudo rm -rf /Applications/Microsoft\ Edge.app || true
+          sudo rm -rf /Users/runner/.dotnet || true
+          sudo rm -rf /Users/runner/.rustup || true
+
+          echo "Disk after cleanup:"
+          df -h /
+
       - name: Libraries cache.
         id: cache-libs
         uses: actions/cache@v6
