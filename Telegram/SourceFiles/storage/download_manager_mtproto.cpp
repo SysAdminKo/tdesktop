@@ -23,7 +23,6 @@ namespace Storage {
 namespace {
 
 constexpr auto kKillSessionTimeout = 15 * crl::time(1000);
-constexpr auto kWssKillSessionTimeout = 3 * 60 * crl::time(1000);
 constexpr auto kStartWaitedInSession = 4 * kDownloadPartSize;
 constexpr auto kMaxWaitedInSession = 16 * kDownloadPartSize;
 constexpr auto kStartSessionsCount = 1;
@@ -206,7 +205,7 @@ bool DownloadManagerMtproto::useWssMux() const {
 }
 
 crl::time DownloadManagerMtproto::killSessionTimeout() const {
-	return useWssMux() ? kWssKillSessionTimeout : kKillSessionTimeout;
+	return kKillSessionTimeout;
 }
 
 void DownloadManagerMtproto::warmUpSessions(MTP::DcId dcId, int count) {

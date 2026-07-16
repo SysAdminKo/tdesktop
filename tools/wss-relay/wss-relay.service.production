@@ -13,7 +13,7 @@ ExecStart=/opt/wss-relay/bin/wss-relay \
 	-mux-path /ws/mux \
 	-max-streams 64 \
 	-max-tunnels-per-ip 0 \
-	-stream-idle-timeout 10m \
+	-stream-idle-timeout 2m \
 	-ws-ping-interval 30s \
 	-ws-read-timeout 90s \
 	-upstream-stall-rotate 4 \

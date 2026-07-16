@@ -35,6 +35,7 @@ constexpr auto kDefaultTunnelCount = 9;
 constexpr auto kDownloadTunnelSlots = 8;
 constexpr auto kBaseTunnelCount = 1;
 constexpr auto kStreamsPerTunnelHigh = 4;
+constexpr auto kStreamsPerTunnelCap = kStreamsPerTunnelHigh;
 constexpr auto kAffinityLoadSlack = 1;
 constexpr auto kFastTuneDelay = crl::time(250);
 constexpr auto kReconnectDelay = crl::time(2000);
@@ -854,7 +855,8 @@ struct WssMuxHub::Private : public QObject {
 
 	[[nodiscard]] int pickLeastLoadedTunnelIndex(
 			int startIndex,
-			bool skipDownloadOccupied) {
+			bool skipDownloadOccupied,
+			bool respectStreamCap) {
 		auto bestCount = int(streamTunnel.size()) + 1;
 		auto tied = std::vector<int>();
 		for (auto i = startIndex; i != int(tunnels.size()); ++i) {
@@ -864,6 +866,9 @@ struct WssMuxHub::Private : public QObject {
 				continue;
 			}
 			const auto count = tunnelStreamCount(i);
+			if (respectStreamCap && count >= kStreamsPerTunnelCap) {
+				continue;
+			}
 			if (count < bestCount) {
 				bestCount = count;
 				tied.clear();
@@ -873,7 +878,9 @@ struct WssMuxHub::Private : public QObject {
 			}
 		}
 		if (tied.empty()) {
-			return -1;
+			return respectStreamCap
+				? pickLeastLoadedTunnelIndex(startIndex, skipDownloadOccupied, false)
+				: -1;
 		}
 		const auto offset = (nextPickTunnel++) % int(tied.size());
 		return tied[offset];
@@ -884,16 +891,16 @@ struct WssMuxHub::Private : public QObject {
 			? std::min(kDownloadTunnelSlots, int(tunnels.size()))
 			: 0;
 		if (reservedEnd > 0) {
-			const auto index = pickLeastLoadedTunnelIndex(reservedEnd, false);
+			const auto index = pickLeastLoadedTunnelIndex(reservedEnd, false, true);
 			if (index >= 0) {
 				return index;
 			}
 		}
-		const auto preferred = pickLeastLoadedTunnelIndex(0, true);
+		const auto preferred = pickLeastLoadedTunnelIndex(0, true, true);
 		if (preferred >= 0) {
 			return preferred;
 		}
-		return pickLeastLoadedTunnelIndex(0, false);
+		return pickLeastLoadedTunnelIndex(0, false, true);
 	}
 
 	[[nodiscard]] int pickTunnelIndex(int affinity = -1) {
@@ -903,7 +910,8 @@ struct WssMuxHub::Private : public QObject {
 			if (hint >= 0
 				&& hint < int(tunnels.size())
 				&& tunnels[hint]
-				&& tunnels[hint]->isConnected()) {
+				&& tunnels[hint]->isConnected()
+				&& tunnelStreamCount(hint) < kStreamsPerTunnelCap) {
 				if (balanced < 0
 					|| tunnelStreamCount(hint)
 						<= tunnelStreamCount(balanced) + kAffinityLoadSlack) {
