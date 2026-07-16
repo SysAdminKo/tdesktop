@@ -1,0 +1,19 @@
+diff --git a/external/cmark_gfm/CMakeLists.txt b/external/cmark_gfm/CMakeLists.txt
+index 20dfca8..b67edca 100644
+--- a/external/cmark_gfm/CMakeLists.txt
++++ b/external/cmark_gfm/CMakeLists.txt
+@@ -62,6 +62,14 @@ block()
+     # configure.
+     set(CMAKE_SUPPRESS_DEVELOPER_ERRORS TRUE)
+     set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS TRUE)
++
++    # CMake 4.4+: reading/writing CMAKE_*_DEPRECATED without CMP0218
++    # set becomes a warning/error under -Werror=dev. Keep OLD so the
++    # suppress/restore logic below still controls deprecation severity.
++    if (POLICY CMP0218)
++        cmake_policy(SET CMP0218 OLD)
++    endif()
++
+     if (DEFINED CACHE{CMAKE_ERROR_DEPRECATED})
+         set(_cmark_gfm_error_deprecated "${CMAKE_ERROR_DEPRECATED}")
+         set(_cmark_gfm_has_error_deprecated TRUE)
