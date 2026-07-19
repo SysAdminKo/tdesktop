@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <rpl/producer.h>
 
 #include <memory>
+#include <optional>
 
 class HistoryItem;
 class PeerData;
@@ -71,22 +72,17 @@ void ShowEditBox(
 void ShowEditFromFieldBox(
 	not_null<Window::SessionController*> controller,
 	not_null<HistoryItem*> item,
-	Api::SendAction action);
+	Api::SendAction action,
+	std::optional<TextWithTags> fieldTextOverride = std::nullopt,
+	Fn<void()> fieldMigratedOverride = nullptr);
+[[nodiscard]] bool ActivateEditWindowFor(
+	not_null<Main::Session*> session,
+	FullMsgId itemId);
 [[nodiscard]] bool IsComposeBoxOpen(
 	not_null<Main::Session*> session,
 	PeerId peerId,
 	MsgId topicRootId,
 	PeerId monoforumPeerId);
-[[nodiscard]] bool SaveOpenComposeDraftThenEdit(
-	not_null<Main::Session*> session,
-	PeerId peerId,
-	MsgId topicRootId,
-	PeerId monoforumPeerId,
-	Fn<void()> onSaved);
-[[nodiscard]] bool RequestCloseOpenEditWindowThenCompose(
-	not_null<Main::Session*> session,
-	not_null<PeerData*> peer,
-	Fn<void()> onClosed);
 [[nodiscard]] rpl::producer<bool> FieldVisibleValue(
 	not_null<Main::Session*> session,
 	PeerId peerId,

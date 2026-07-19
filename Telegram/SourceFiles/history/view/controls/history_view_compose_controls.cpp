@@ -2149,9 +2149,10 @@ std::unique_ptr<Data::Draft> ComposeControls::readThreadFieldDraft() const {
 		return nullptr;
 	}
 	auto result = std::make_unique<Data::Draft>(
-		_field,
+		getTextWithAppliedMarkdown(),
 		_header->getDraftReply(),
 		_header->suggestOptions(),
+		MessageCursor(_field),
 		_preview ? _preview->draft() : Data::WebPageDraft());
 	result->reply.topicRootId = _topicRootId;
 	result->reply.monoforumPeerId = _monoforumPeerId;
@@ -2742,10 +2743,22 @@ void ComposeControls::updateSilentBroadcast() {
 	}
 }
 
+bool ComposeControls::suppressSendAction() const {
+	if (!_history) {
+		return false;
+	}
+	auto &ephemeral = session().ephemeralMessages();
+	return ephemeral.isEphemeralBotReply(replyingToMessage().messageId)
+		|| ephemeral.hasEphemeralCommand(
+			_history->peer,
+			_field->getLastText());
+}
+
 void ComposeControls::fieldChanged() {
 	const auto typing = (!_inlineBot
 		&& !_header->isEditingMessage()
-		&& (_textUpdateEvents & TextUpdateEvent::SendTyping));
+		&& (_textUpdateEvents & TextUpdateEvent::SendTyping)
+		&& !suppressSendAction());
 	updateSendButtonType();
 	_hasSendText = _field->isVisible() && HasSendText(_field);
 	if (updateBotCommandShown() || updateLikeShown()) {
@@ -3020,7 +3033,7 @@ void ComposeControls::applyDraft(FieldHistoryAction fieldHistoryAction) {
 	}
 
 	const auto editDraft = _history->draft(draftKey(DraftType::Edit));
-	const auto richDraft = shouldShowRichDraftPreview()
+	const auto richDraft = (!editDraft && shouldShowRichDraftPreview())
 		? cloudDraft()
 		: nullptr;
 	const auto draft = editDraft
@@ -3171,7 +3184,10 @@ void ComposeControls::cancelForward() {
 rpl::producer<SendActionUpdate> ComposeControls::sendActionUpdates() const {
 	return rpl::merge(
 		_sendActionUpdates.events(),
-		_voiceRecordBar->sendActionUpdates());
+		_voiceRecordBar->sendActionUpdates()
+	) | rpl::filter([=](const SendActionUpdate &update) {
+		return update.cancel || !suppressSendAction();
+	});
 }
 
 void ComposeControls::initTabbedSelector() {
@@ -3765,11 +3781,25 @@ void ComposeControls::initExpandButton() {
 			const auto item = _history->owner().message(
 				_header->editMsgId());
 			if (item && Iv::Editor::CheckRichMessagesPremium(_regularWindow)) {
-				Iv::Editor::ShowEditFromFieldBox(
-					_regularWindow,
-					item,
-					_sendActionFactory());
+				if (hasRichDraftThreadScope()) {
+					Iv::Editor::ShowEditFromFieldBox(
+						_regularWindow,
+						item,
+						_sendActionFactory());
+				} else {
+					Iv::Editor::ShowEditFromFieldBox(
+						_regularWindow,
+						item,
+						_sendActionFactory(),
+						getTextWithAppliedMarkdown(),
+						crl::guard(_wrap.get(), [=] {
+							cancelEditMessage();
+						}));
+				}
 			}
+			return;
+		}
+		if (_mode != Mode::Normal || !hasRichDraftThreadScope()) {
 			return;
 		}
 		Iv::Editor::ShowComposeBox(
@@ -4144,11 +4174,18 @@ void ComposeControls::updateAiButtonVisibility() {
 }
 
 void ComposeControls::updateExpandButtonVisibility() {
+	const auto item = (_history && isEditingMessage())
+		? _history->owner().message(_header->editMsgId())
+		: nullptr;
+	const auto media = item ? item->media() : nullptr;
 	const auto hidden = !_wrap->isVisible()
 		|| _recording.current()
 		|| !_field->isVisible()
+		|| ((_mode != Mode::Normal || !hasRichDraftThreadScope())
+			&& !isEditingMessage())
 		|| !hasEnoughLinesForExpand()
 		|| textExceedsMaxSize()
+		|| (media && !media->webpage())
 		|| !Iv::Editor::CanAuthorRichMessages(&_show->session());
 	if (_expand->isHidden() != hidden) {
 		_expand->setVisible(!hidden);
@@ -4415,7 +4452,8 @@ void ComposeControls::updateAttachBotsMenu() {
 		|| !_features.attachments
 		|| !_history
 		|| !_sendActionFactory
-		|| !_regularWindow) {
+		|| !_regularWindow
+		|| (_mode != Mode::Normal)) {
 		return;
 	}
 	_attachBotsMenu = InlineBots::MakeAttachBotsMenu(
@@ -4566,46 +4604,30 @@ void ComposeControls::updateHeight() {
 void ComposeControls::editMessage(
 		FullMsgId id,
 		const TextSelection &selection) {
-	if (const auto item = session().data().message(id)) {
-		editMessage(item);
-		if (!item->richPage()) {
-			SelectTextInFieldWithMargins(_field, selection);
-		}
+	const auto item = session().data().message(id);
+	if (!item) {
+		return;
+	} else if (Iv::Editor::ActivateEditWindowFor(_session, id)) {
+		return;
+	}
+	editMessage(item);
+	if (!item->richPage()) {
+		SelectTextInFieldWithMargins(_field, selection);
 	}
 }
 
 void ComposeControls::editMessage(not_null<HistoryItem*> item) {
 	Expects(_history != nullptr);
-	Expects(draftKeyCurrent() != Data::DraftKey::None());
 
+	if (draftKey(DraftType::Edit) == Data::DraftKey::None()) {
+		return;
+	}
 	if (item->richPage()) {
 		if (!_regularWindow) {
 			_show->showToast(tr::lng_edit_error(tr::now));
 			return;
 		}
-		const auto window = _regularWindow;
-		const auto openEdit = [=, weak = base::make_weak(window),
-				itemId = item->fullId()] {
-			const auto strong = weak.get();
-			const auto current = strong
-				? strong->session().data().message(itemId)
-				: nullptr;
-			if (strong && current) {
-				Iv::Editor::ShowEditBox(strong, not_null{ current });
-			}
-		};
-		if (isComposeBoxOpen()) {
-			const auto handled = Iv::Editor::SaveOpenComposeDraftThenEdit(
-				_session,
-				_history->peer->id,
-				_topicRootId,
-				_monoforumPeerId,
-				openEdit);
-			if (handled) {
-				return;
-			}
-		}
-		openEdit();
+		Iv::Editor::ShowEditBox(_regularWindow, item);
 		return;
 	} else if (_voiceRecordBar->isActive()) {
 		_show->showBox(Ui::MakeInformBox(tr::lng_edit_caption_voice()));
@@ -4715,8 +4737,10 @@ void ComposeControls::maybeCancelEditMessage() {
 
 void ComposeControls::replyToMessage(FullReplyTo id) {
 	Expects(_history != nullptr);
-	Expects(draftKeyCurrent() != Data::DraftKey::None());
 
+	if (draftKey(DraftType::Normal) == Data::DraftKey::None()) {
+		return;
+	}
 	id.topicRootId = _topicRootId;
 	id.monoforumPeerId = _monoforumPeerId;
 	if (!id) {
