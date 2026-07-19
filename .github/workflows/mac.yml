@@ -5,6 +5,7 @@ on:
     branches:
       - wss-mux
       - ShultZ1400
+      - fix-tcp
     paths-ignore:
       - 'docs/**'
       - '**.md'
@@ -25,6 +26,7 @@ on:
     branches:
       - wss-mux
       - ShultZ1400
+      - fix-tcp
     paths-ignore:
       - 'docs/**'
       - '**.md'
