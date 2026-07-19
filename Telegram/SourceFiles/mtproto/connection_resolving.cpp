@@ -265,3 +265,4 @@ QString ResolvingConnection::tag() const {
 
 } // namespace details
 } // namespace MTP
+
