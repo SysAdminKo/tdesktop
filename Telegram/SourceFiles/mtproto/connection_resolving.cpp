@@ -9,11 +9,27 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/mtp_instance.h"
 
+#include <algorithm>
+#include <map>
+#include <mutex>
+
 namespace MTP {
 namespace details {
 namespace {
 
 constexpr auto kOneConnectionTimeout = 4000;
+
+void RotateResolvedIps(const QString &host, std::vector<QString> &ips) {
+	const auto count = int(ips.size());
+	if (count <= 1) {
+		return;
+	}
+	static auto mutex = std::mutex();
+	static auto next = std::map<QString, int>();
+	const auto locker = std::lock_guard(mutex);
+	const auto shift = next[host]++ % count;
+	std::rotate(begin(ips), begin(ips) + shift, end(ips));
+}
 
 } // namespace
 
@@ -26,6 +42,7 @@ ResolvingConnection::ResolvingConnection(
 , _instance(instance)
 , _timeoutTimer([=] { handleError(kErrorCodeOther); }) {
 	setChild(std::move(child));
+	RotateResolvedIps(_proxy.host, _proxy.resolvedIPs);
 	if (proxy.resolvedExpireAt < crl::now()) {
 		const auto host = proxy.host;
 		connect(
@@ -113,6 +130,7 @@ void ResolvingConnection::domainResolved(
 		}
 	}
 	if (_ipIndex < 0) {
+		RotateResolvedIps(_proxy.host, _proxy.resolvedIPs);
 		refreshChild();
 	}
 }
