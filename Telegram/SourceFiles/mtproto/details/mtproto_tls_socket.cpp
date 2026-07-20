@@ -32,6 +32,7 @@ constexpr auto kLengthSize = sizeof(uint16);
 constexpr auto kMaxServerHelloLength = 65536;
 constexpr auto kSlowConnectDelay = 1150;
 constexpr auto kSlowConnectJitter = 150;
+constexpr auto kSlowConnectMaxWait = 2000;
 const auto kServerHelloPart1 = qstr("\x16\x03\x03");
 const auto kServerHelloPart3 = qstr("\x14\x03\x03\x00\x01\x01\x17\x03\x03");
 constexpr auto kServerHelloDigestPosition = 11;
@@ -864,31 +865,27 @@ void TlsSocket::connectToHost(const QString &address, int port) {
 	namespace sc = std::chrono;
 	static auto mutex = QMutex();
 	static auto slots = std::map<QString, sc::steady_clock::time_point>();
-	const auto delay = kSlowConnectDelay;
-	const auto jitter = kSlowConnectJitter;
 
 	sc::milliseconds waitFor{ 0 };
 	{
 		const QMutexLocker lock(&mutex);
 		const auto now = sc::steady_clock::now();
-		const auto extra = QRandomGenerator::global()->bounded(0, jitter);
-		const auto gap = delay + extra;
+		const auto gap = sc::milliseconds(
+			kSlowConnectDelay
+				+ QRandomGenerator::global()->bounded(0, kSlowConnectJitter));
 		auto &slot = slots[address];
-		if (slot.time_since_epoch().count() != 0) {
-			if (now < slot) {
-				waitFor = sc::duration_cast<sc::milliseconds>(slot - now);
-			} else {
-				slot = sc::steady_clock::time_point{};
-			}
+		if (slot <= now) {
+			slot = now;
 		}
-		if (slot.time_since_epoch().count() == 0) {
-			slot = now + sc::milliseconds(gap);
-		} else {
-			slot += sc::milliseconds(gap);
+		waitFor = sc::duration_cast<sc::milliseconds>(slot - now);
+		if (waitFor > sc::milliseconds(kSlowConnectMaxWait)) {
+			waitFor = sc::milliseconds(kSlowConnectMaxWait);
+			slot = now + waitFor;
 		}
+		slot += gap;
 	}
 	if (waitFor.count() > 0) {
-		QTimer::singleShot(waitFor.count(), this, [=] {
+		QTimer::singleShot(int(waitFor.count()), this, [=] {
 			_socket.connectToHost(address, port);
 		});
 		return;

@@ -28,6 +28,7 @@ public:
 	crl::time fullConnectTimeout() const override;
 	void sendData(mtpBuffer &&buffer) override;
 	void disconnectFromServer() override;
+	void timedOut() override;
 	void connectToServer(
 		const QString &address,
 		int port,
@@ -45,6 +46,7 @@ private:
 	void setChild(ConnectionPointer &&child);
 	bool refreshChild();
 	void emitError(int errorCode);
+	void quarantineCurrentIp();
 
 	void domainResolved(
 		const QString &host,
@@ -59,6 +61,7 @@ private:
 	ConnectionPointer _child;
 	bool _connected = false;
 	int _ipIndex = -1;
+	crl::time _connectedAt = 0;
 	QString _address;
 	int _port = 0;
 	bytes::vector _protocolSecret;
