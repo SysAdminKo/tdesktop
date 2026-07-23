@@ -210,7 +210,8 @@ Ui::RpWidget *ContentWidget::doSetInnerWidget(
 		const auto bottom = top + height;
 		_innerDesiredHeight = desired;
 		_innerWrap->setVisibleTopBottom(top, bottom);
-		_scrollTillBottomChanges.fire_copy(std::max(desired - bottom, 0));
+		_scrollTillBottomChanges.fire_copy(
+			std::max(desired + _innerTopReserve - bottom, 0));
 	}, _innerWrap->lifetime());
 
 	rpl::combine(
@@ -269,7 +270,7 @@ int ContentWidget::scrollTillBottom(int forHeight) const {
 		- _scrollTopSkip.current()
 		- _scrollBottomSkip.current();
 	const auto scrollBottom = _scroll->scrollTop() + scrollHeight;
-	const auto desired = _innerDesiredHeight;
+	const auto desired = _innerDesiredHeight + _innerTopReserve;
 	return std::max(desired - scrollBottom, 0);
 }
 
@@ -462,6 +463,23 @@ bool ContentWidget::processChosenSticker(ChatHelpers::FileChosen &&) {
 	return false;
 }
 
+bool ContentWidget::processScrollKey(not_null<QKeyEvent*> e) {
+	const auto key = e->key();
+	const auto modifiers = e->modifiers()
+		& ~(Qt::KeypadModifier | Qt::GroupSwitchModifier);
+	const auto scrollKey = (key == Qt::Key_Up)
+		|| (key == Qt::Key_Down)
+		|| (key == Qt::Key_PageUp)
+		|| (key == Qt::Key_PageDown);
+	if ((modifiers != Qt::NoModifier)
+		|| !scrollKey
+		|| _scroll->isHidden()) {
+		return false;
+	}
+	_scroll->keyPressEvent(e);
+	return true;
+}
+
 void ContentWidget::refreshSearchField(bool shown) {
 	auto search = _controller->searchFieldController();
 	if (search && shown) {
@@ -470,6 +488,7 @@ void ContentWidget::refreshSearchField(bool shown) {
 			st::infoLayerMediaSearch);
 		_searchWrap = std::move(rowView.wrap);
 		_searchField = rowView.field;
+		_searchField->customUpDown(true);
 
 		const auto view = _searchWrap.get();
 		widthValue(

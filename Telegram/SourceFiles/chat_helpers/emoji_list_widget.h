@@ -130,6 +130,9 @@ public:
 
 	void afterShown() override;
 	void beforeHiding() override;
+	[[nodiscard]] bool canConsumeHorizontalScroll(
+		QPoint position,
+		int delta) override;
 
 	void showSet(uint64 setId);
 	[[nodiscard]] uint64 currentSet(int yOffset) const;
@@ -149,6 +152,8 @@ public:
 	[[nodiscard]] rpl::producer<> escapes() const;
 
 	void provideRecent(const std::vector<EmojiStatusId> &customRecentList);
+
+	void setMarkedCustomIds(base::flat_set<DocumentId> ids);
 
 	void setSearchRightReserved(int value);
 
@@ -211,6 +216,7 @@ private:
 		DocumentData *thumbnailDocument = nullptr;
 		QString title;
 		std::vector<CustomOne> list;
+		mutable std::unique_ptr<Ui::Text::CustomEmoji> shortcutIcon;
 		mutable std::unique_ptr<Ui::RippleAnimation> ripple;
 		bool painted = false;
 		bool expanded = false;
@@ -381,6 +387,7 @@ private:
 	[[nodiscard]] base::unique_qptr<Ui::PopupMenu> fillSetContextMenu(
 		const CustomSet &set);
 
+	[[nodiscard]] bool customMarked(int section, int index) const;
 	[[nodiscard]] EmojiPtr lookupOverEmoji(const OverEmoji *over) const;
 	[[nodiscard]] ResolvedCustom lookupCustomEmoji(
 		const OverEmoji *over) const;
@@ -526,6 +533,8 @@ private:
 	int _customSingleSize = 0;
 	bool _allowWithoutPremium = false;
 	Ui::RoundRect _overBg;
+	Ui::RoundRect _markedBg;
+	base::flat_set<DocumentId> _markedCustomIds;
 	QImage _searchExpandCache;
 
 	std::unique_ptr<StickerPremiumMark> _premiumMark;

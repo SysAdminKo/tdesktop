@@ -571,12 +571,6 @@ void TabsHost::activateTab(const QString &id, bool animated) {
 		if (raw->parentWidget() != _body) {
 			raw->setParent(_body);
 		}
-		_body->widthValue(
-		) | rpl::on_next([raw](int newWidth) {
-			if (!raw->isHidden()) {
-				raw->resizeToWidth(newWidth);
-			}
-		}, raw->lifetime());
 		raw->heightValue(
 		) | rpl::on_next([this, raw](int) {
 			if (!raw->isHidden()) {
@@ -585,7 +579,7 @@ void TabsHost::activateTab(const QString &id, bool animated) {
 		}, raw->lifetime());
 	}
 	raw->show();
-	raw->resizeToWidth(_body->width());
+	active->resizeToWidth(_body->width());
 	_body->resize(_body->width(), raw->height());
 
 	_activeTab = active;
@@ -684,12 +678,19 @@ void TabsHost::paintEvent(QPaintEvent *e) {
 }
 
 void TabsHost::pushViewportToActive() {
-	if (const auto active = _activeTab.current()) {
-		active->setTopOverlay((_visibleTop >= 0) ? _stripHeight : 0);
-		active->setVisibleRegion(
-			_visibleTop - _stripHeight,
-			_visibleBottom - _stripHeight);
+	const auto active = _activeTab.current();
+	if (!active) {
+		return;
 	}
+	if (_body->width() < st::infoMediaTabsMinBodyWidth) {
+		_viewportPushPending = true;
+		return;
+	}
+	_viewportPushPending = false;
+	active->setTopOverlay((_visibleTop >= 0) ? _stripHeight : 0);
+	active->setVisibleRegion(
+		_visibleTop - _stripHeight,
+		_visibleBottom - _stripHeight);
 }
 
 rpl::producer<MediaTabContent*> TabsHost::activeTabValue() const {
@@ -768,6 +769,14 @@ void TabsHost::setScrolledToTop(bool scrolledToTop) {
 
 int TabsHost::resizeGetHeight(int newWidth) {
 	_body->resizeToWidth(std::max(newWidth, 1));
+	if (const auto active = _activeTab.current()) {
+		active->resizeToWidth(_body->width());
+		syncBodyNow();
+	}
+	if (_viewportPushPending && _body->width() >= st::infoMediaTabsMinBodyWidth) {
+		_viewportPushPending = false;
+		InvokeQueued(this, [this] { pushViewportToActive(); });
+	}
 	if (!ranges::contains(_tabsShown, true)) {
 		return 0;
 	}
@@ -782,8 +791,10 @@ int TabsHost::resizeGetHeight(int newWidth) {
 	_body->moveToLeft(0, bodyTop);
 
 	const auto natural = bodyTop + _body->height();
-	if (_searching && !_scrolledToTop && (natural < _visibleBottom)) {
-		_keepMinHeight = std::max(_keepMinHeight, _visibleBottom);
+	const auto span = _visibleBottom - _visibleTop;
+	_searchContentFits = _searching && !_scrolledToTop && (natural < span);
+	if (_searchContentFits) {
+		_keepMinHeight = span;
 	} else if (_keepMinHeight
 		&& ((natural >= _keepMinHeight)
 			|| (natural >= _visibleBottom)

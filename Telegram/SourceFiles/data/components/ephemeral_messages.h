@@ -47,6 +47,10 @@ public:
 	[[nodiscard]] bool hasEphemeralCommand(
 		not_null<PeerData*> peer,
 		const QString &text) const;
+	[[nodiscard]] bool wouldSendMedia(
+		not_null<PeerData*> peer,
+		FullReplyTo replyTo,
+		const QString &caption) const;
 	[[nodiscard]] bool isEphemeralBotReply(FullMsgId replyToId) const;
 	[[nodiscard]] bool trySend(const Api::MessageToSend &message);
 	void send(
@@ -54,7 +58,8 @@ public:
 		not_null<UserData*> bot,
 		TextWithEntities text,
 		int32 replyToEphemeralId = 0,
-		MsgId topicRootId = 0);
+		MsgId topicRootId = 0,
+		FullReplyTo realReply = {});
 	[[nodiscard]] bool sendMedia(
 		not_null<HistoryItem*> item,
 		const MTPInputMedia &media,
@@ -93,6 +98,7 @@ private:
 		bool hasMedia,
 		int32 replyToEphemeralId,
 		MsgId topicRootId,
+		FullReplyTo realReply = {},
 		FullMsgId destroyOnResult = {},
 		Data::FileOrigin origin = {},
 		Fn<MTPInputMedia()> rebuildMedia = nullptr);

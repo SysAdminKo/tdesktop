@@ -208,6 +208,8 @@ public:
 		-> rpl::producer<ChatSearchTab>;
 	[[nodiscard]] auto changeSearchFilterRequests() const
 		-> rpl::producer<ChatTypeFilter>;
+	[[nodiscard]] rpl::producer<bool> changeSearchFromArchiveRequests() const;
+	[[nodiscard]] rpl::producer<> resetSearchRestrictionsRequests() const;
 	[[nodiscard]] rpl::producer<> cancelSearchRequests() const;
 	[[nodiscard]] rpl::producer<> cancelSearchFromRequests() const;
 	[[nodiscard]] rpl::producer<> changeSearchFromRequests() const;
@@ -487,6 +489,7 @@ private:
 	[[nodiscard]] int communityRowCount() const;
 	[[nodiscard]] Row *communityRowAt(int index) const;
 	[[nodiscard]] int communityRowAbsoluteTop(int index) const;
+	[[nodiscard]] bool communityModeShown() const;
 
 	void paintCollapsedRows(
 		Painter &p,
@@ -741,6 +744,8 @@ private:
 	std::unique_ptr<ChatSearchIn> _searchIn;
 	rpl::event_stream<ChatSearchTab> _changeSearchTabRequests;
 	rpl::event_stream<ChatTypeFilter> _changeSearchFilterRequests;
+	rpl::event_stream<bool> _changeSearchFromArchiveRequests;
+	rpl::event_stream<> _resetSearchRestrictionsRequests;
 	rpl::event_stream<> _cancelSearchRequests;
 	rpl::event_stream<> _cancelSearchFromRequests;
 	rpl::event_stream<> _changeSearchFromRequests;

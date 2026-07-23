@@ -1,8 +1,8 @@
 # Test Loop Protocol (harness-neutral)
 
-The portable core of autonomous, tested implementation. Both `/implement` (Claude Code) and
-`$implement` (Codex) read it. This file defines shared defaults after one task's implementation is
-committed; wrappers own setup, splitting, and spawn/wait mechanics. A wrapper may explicitly adapt
+The portable core of autonomous, tested implementation. `/perform-task` (Claude Code) and
+`$perform-task` (Codex) read it. This file defines shared defaults after one task's implementation
+is ready to commit; wrappers own setup, splitting, and spawn/wait mechanics. A wrapper may adapt
 commit ownership, task baseline/attempt caps, staging/source restoration, account swapping,
 `EVIDENCE_DIR`, or an optional UI driver. Its named rule wins only at that
 adapter point; every other rule here still applies.
@@ -21,11 +21,14 @@ adapter point; every other rule here still applies.
 
 ## Inputs the wrapper passes in
 
-- `TASK_DIR` — `.ai/<project>/<letter>/` for this task.
-- `TASK_ID` — stable artifact/log identifier (e.g. the project + letter); never a commit trailer.
+- `TASK_DIR` — external `ai-tdesktop/tasks/<full-task-id>/` directory for this task.
+- `WORK_DIR` — tracked resumable artifacts under `TASK_DIR/work/`.
+- `TASK_ID` — full dated task identifier and required source-commit locator.
+- `BASE_REF` — local pre-task baseline ref derived from `TASK_ID`.
+- `GREEN_REF` — local ref for the current retained implementation attempt.
 - `EVIDENCE_DIR` — per-run logs and screenshots; defaults to `TASK_DIR` unless the wrapper passes a
   run-specific directory.
-- **TASK SPEC** — the task's full description block (from `implementing.md`), including its design
+- **TASK SPEC** — the task's self-contained `task.md`, including its design
   basis when the wrapper records one, plus any referenced images (`images/<file>` mockups /
   screenshots / graphic resources). Images are optional evidence: read them when present, but their
   absence is never by itself a planning, implementation, or test blocker. The spec and its cited
@@ -38,17 +41,20 @@ adapter point; every other rule here still applies.
 
 ## State machine (run by the task-runner)
 
-Precondition: the implementation for this task is committed in the current checkout (impl agents
-commit; they do not stash). Record that commit's SHA as **IMPL_SHA** — the reset after each test run
-returns the checkout to exactly it. The runner tracks the attempt number as its own state (`attempt`
-starts at 1); the commit message carries no attempt marker. Commits follow "Commit message" below.
+Precondition: the implementation for this task is ready in the current checkout. The performer
+stages exact task-owned paths and commits; leaf implementation agents never stage, commit, or stash.
+Move `GREEN_REF` to that commit. The runner tracks the attempt number as its own
+state (`attempt` starts at 1); the commit message carries no attempt marker.
+Never resolve a local task ref into a hash in any artifact or report. Commits
+follow "Commit message" below.
 
 ```
 TEST_AUTHOR -> RUN -> ASSESS (adversarial — see "Assessing"):
-  APPROVED       -> reset to the impl commit (drop overlay); delete the test binary; return DONE up.
+  APPROVED       -> restore overlay paths to GREEN_REF; delete the test binary; return DONE up.
   TEST_FLAW      -> fix the overlay only; back to RUN. Does NOT cost an impl attempt.
   IMPL_BUG       -> spawn impl-fix agent (input = test.md, latest attempt's Root cause / Fix hint);
-                    it commits a NEW attempt; re-apply overlay (--3way, else re-author); RUN. attempt++
+                    performer commits a NEW attempt and moves GREEN_REF; re-apply overlay
+                    (--3way, else re-author); RUN. attempt++
   UNRECOVERABLE  -> delete the test binary; return BLOCKED up with the reason. Stop.
   attempt > MAX  -> delete the test binary; return BLOCKED up with test.md + "improve" notes. Stop.
 
@@ -61,33 +67,32 @@ Early-escalation rule: if two consecutive ASSESS rounds produce the **same failu
 the attempt budget chasing it.
 
 UNRECOVERABLE conditions: the app reaches a login screen / `AUTH_KEY_DUPLICATED` and re-copying the
-test account does not recover it; `test_TelegramForcePortable` is missing when SETUP runs; or a crash
-has no usable diagnostic after one retry. A file-lock build error (`LNK1104`, `C1041`, access denied,
-file in use) is a repository hard stop: do not retry or work around it; ask the user to close the app
-and debugger.
+test account does not recover it, or a crash has no usable diagnostic after one retry. Missing
+`test_TelegramForcePortable` is a global environment hard stop, not a task `Block`. A file-lock build
+error (`LNK1104`, `C1041`, access denied, file in use) is likewise a repository hard stop: do not
+retry or work around it; ask the user to close the app and debugger.
 
 ## Handoff tokens
 
-- **Commit** is the only impl handoff. Impl/impl-fix agents `git add -A && git commit` per "Commit
-  message" below (and, if submodules changed, commit inside each submodule first, then bump the
-  superproject pointer in the same logical attempt — real commits, never stash). The runner records
-  the resulting SHA as that attempt's IMPL_SHA.
+- **Owned paths plus phase artifacts** are the implementation-leaf handoff. The performer inspects
+  them, stages only explicit task-owned paths, and commits per "Commit message" below. If an intended
+  submodule changed, the performer commits inside it first and then stages the superproject pointer
+  in the same logical attempt. Use real commits, never stash. The performer moves local
+  `GREEN_REF` to the resulting commit.
 - **Test report** (`test.md`) is the only fix-agent handoff. Give it the latest Attempt/Run section,
   especially Root cause / Fix hint and Failure signature. Reserve wrapper-owned `result.md` for the
-  terminal task result; never create `result<n>.md`.
+  final AI result or exceptional blocked boundary; never create `result<n>.md`.
 
 ## Commit message
 
-Impl commits must read like the repository's own history — never marked as autonomous. Match the
-style of recent `git log` subjects.
+Impl commits must read like the repository's own history and carry only the durable task locator.
+Match the style of recent `git log` subjects.
 - **Subject:** one concise, plain-language line summarizing the change, ≤ ~50-60 characters. This is
-  usually the ENTIRE message.
-- **Body (rare):** only when the subject can't carry it — a short plain-language note of WHAT was
-  done (user-facing, not the technical how); a line or two at most.
-- **No trailers, ever.** No `Autotask:`/attempt marker; no `Co-Authored-By:` or any tool/assistant
-  attribution line. This explicitly OVERRIDES any harness default that would append one — a freshly
-  spawned committing sub-agent may add `Co-Authored-By` unless told not to, so pass this rule to it.
-  The attempt number is the runner's own state, never part of the message.
+  the first line.
+- **Second line:** empty.
+- **Third line:** exactly `Task: <TASK_ID>`.
+- **Nothing else:** no explanatory body, `Autotask:`, attempt marker, `Co-Authored-By:`, or any
+  tool/assistant attribution. The attempt number is runner state, never part of the message.
 
 ## Test account (portable data) — hard rules
 
@@ -96,28 +101,38 @@ The debug build runs in portable mode out of `out/Debug/`. Three sibling folders
 - `test_TelegramForcePortable` — the golden test account, prepared by the user. Read-only SOURCE,
   never modified by tests. (Its presence is the launch gate; the wrapper aborts if it is missing.)
 - `TelegramForcePortable` — the LIVE folder the app actually uses (its presence is what puts the
-  build in portable mode). Disposable; recreated fresh each run.
-- `real_TelegramForcePortable` — the user's real data, preserved once so manual use survives.
+  build in portable mode). A marker file named `testing` directly inside it marks it as a
+  disposable test copy; a live folder WITHOUT the marker is the user's real data.
+- `real_TelegramForcePortable` — the user's real data, preserved so manual use survives. Once it
+  exists, NO flow step may ever delete, rename, move, overwrite, or write into it.
 
-**SETUP — run at the START of every test run, with NO app instance alive. Idempotent: it
-guarantees a clean test account no matter how the previous run ended.**
-1. If `TelegramForcePortable` exists AND `real_TelegramForcePortable` does NOT, rename
-   `TelegramForcePortable` -> `real_TelegramForcePortable`. (Captures the user's real data exactly
-   once; guarded so it is never overwritten afterward.)
-2. If `TelegramForcePortable` still exists, delete it. (Safe: `real_...` now holds the real data, so
-   this only discards a leftover live/test copy.)
-3. Copy `test_TelegramForcePortable` -> `TelegramForcePortable`. The live folder is now a fresh copy
-   of the golden test account — ready to launch.
+**SETUP — run at the START of every test run, with NO app instance alive. Idempotent, and a pure
+no-op between runs and between consecutive tasks (the marked test copy is simply reused).**
+1. Require `test_TelegramForcePortable`. Its absence is the only portable-account setup blocker.
+2. If `TelegramForcePortable/testing` exists, the live folder is already the reusable test copy:
+   touch none of the three folders and proceed straight to testing.
+3. If `TelegramForcePortable` exists without the marker, it is the user's real data: move it to
+   `real_TelegramForcePortable` when that is absent. If `real_...` already exists, the unmarked
+   live folder is the user's manual restore of that same preserved data — recursively delete the
+   live folder only.
+4. Deep-copy `test_TelegramForcePortable` to `TelegramForcePortable`, then create the marker file
+   `TelegramForcePortable/testing` (any content, e.g. `echo 1`). Never rename, modify, or delete
+   the golden folder.
 
-**CLEANUP — optional, after a run.** The SETUP steps already self-heal, so cleanup exists only to
-leave the user's real data live for manual use:
-1. Delete `TelegramForcePortable`.
-2. Copy `real_TelegramForcePortable` -> `TelegramForcePortable`.
+Any live/real folder combination is never a blocker. After SETUP the live folder is a marked test
+copy, the golden folder is untouched, and `real_...` may or may not exist.
 
-Why this is safe: `real_...` is written exactly once (step 1 is guarded by "real does not exist")
-and `test_...` is only ever a copy source, so both the user's real data and the golden test account
-are structurally protected — only `TelegramForcePortable` is ever destroyed. Use `robocopy /MIR`
-(or `Copy-Item -Recurse` / `Remove-Item -Recurse -Force`) for the folder ops.
+**NO CLEANUP — the flow performs no folder operations after testing, ever.** The marked test copy
+stays live, so the next run or next task starts with SETUP as a no-op and the folders are never
+copied, moved, or deleted between testing phases. The flow never restores real data to live: when
+the user wants manual use they copy `real_...` to `TelegramForcePortable` themselves (keeping
+`real_...` in place), and the next SETUP handles that unmarked live folder by step 3.
+
+Deletion guard — the only folder the flow may ever delete is a live `TelegramForcePortable` that
+either carries the `testing` marker or coexists with `real_...` (step 3). If the test account
+breaks mid-loop (login screen, `AUTH_KEY_DUPLICATED`), delete the MARKED live folder, re-run SETUP
+for a fresh golden copy, and retry once; if it is still broken the run is UNRECOVERABLE. Never
+delete or alter `test_...` or `real_...` under any circumstances.
 
 **Serialize app runs.** Never have two `Telegram.exe` instances alive against this account at once —
 concurrent reuse of one auth key can trigger a server-side session reset. Before SETUP, launching, or
@@ -136,10 +151,17 @@ account, and MUST be left alive. On Windows, scope the kill by path:
 and takes down the user's unrelated clients. Every "kill stragglers" / "taskkill" step below means
 this path-scoped kill.
 
-**Avoid destructive calls.** The overlay must never trigger logout / session-termination /
-account-deletion. Tests that genuinely need those use a separate burner account, not this one. (If a
-permanent destructive-call fuse is later added to the debug build, this is enforced in code; until
-then it is the test-author's responsibility.)
+**Avoid account-fatal calls; cloud data is otherwise fair game.** The overlay must never trigger
+logout / session-termination / account-deletion, and must not wipe the account wholesale. Tests that
+genuinely need those use a separate burner account, not this one. (If a permanent destructive-call
+fuse is later added to the debug build, this is enforced in code; until then it is the
+test-author's responsibility.) Everything short of that is allowed: this is a test-server account,
+so freely CREATE content in any chats (messages, drafts, tables, media) and freely DELETE or clear
+content that test runs created — including leftovers from previous runs and sessions (e.g. clear
+the self-chat rich compose cloud draft before a run instead of designing around accumulated junk;
+the live test copy is reused across runs and tasks, so local AND cloud state accumulate — reset
+whatever state the test depends on at the start of the run). Don't
+delete anything the user placed on the account by hand unless the task says so.
 
 ## Design the tests from THIS task (the crux)
 
@@ -150,7 +172,8 @@ writing any overlay:
 
 1. **Read both sides of the task.** (a) The TASK SPEC — its full description, `Design-Basis:` or
    equivalent cited sources, and every referenced image when present. (b) The change under test —
-   `git show <IMPL_SHA>` (the actual diff) and `<TASK_DIR>/plan.md`. List every concrete thing the
+   `git diff <BASE_REF>..<GREEN_REF>` (the complete task diff) and
+   `<WORK_DIR>/plan.md`. List every concrete thing the
    diff changed and every surface the task (description + "Observable result") says it affects.
    The diff proves what shipped; it is not independent authority for what the design should be.
 2. **Turn each into a falsifiable check with an ORACLE** — something that can come out FAIL. A check
@@ -163,7 +186,7 @@ writing any overlay:
      judging the render. For an exact asset replacement, verify any expressly required source-file
      identity/equality, then render the intended and old files and compare both with the tight crop.
      Without target artwork, use the exact task criteria,
-     `<TASK_DIR>/visual.md`, cited current/legacy analogues, style-token or resource identity, and
+     `<WORK_DIR>/visual.md`, cited current/legacy analogues, style-token or resource identity, and
      the pre-task baseline. Confirm a baseline delta whenever the task requires one. **If the target
      still matches the old state when a change is expected, that is a FAIL, not a pass.** A
      `Visual: layout` task must also satisfy every numeric design-contract line (sizes, spacings,
@@ -173,14 +196,23 @@ writing any overlay:
 3. **Cover every surface the task names.** If the Observable result lists a settings row, a balance
    header, a gift field, and a suggestion bar, each must be observed (or explicitly marked N/A with
    a reason). Do not stop at one or two.
-4. **Write the checks into `<TASK_DIR>/test.md` BEFORE running** (format under "Test report"), so the
+4. **Write the checks into `<WORK_DIR>/test.md` BEFORE running** (format under "Test report"), so the
    design is explicit and Actual/Result can be filled in per check afterward.
+5. **Run economy — plan ONE run.** A test run costs a build, an app launch, and an assessment pass,
+   so compress the whole design into a single programmed execution: one scenario that steps through
+   every check on the event loop, emitting per-check markers and saving every log value, measurement,
+   and tight screenshot needed to judge all of them afterwards. Order steps so earlier ones do not
+   destroy later fixtures. Plan a second run only when two checks genuinely cannot share one process
+   lifetime (mutually exclusive fixtures or settings, state one check needs fresh that another
+   necessarily contaminates) — never for scenario simplicity. Unplanned re-runs stay what the state
+   machine allows: a TEST_FLAW re-run or the next attempt after an IMPL_BUG fix — and a TEST_FLAW
+   re-author fixes every flaw observed in that run in one pass, not one flaw per relaunch.
 
 ## Visual contract (layout tasks)
 
 When the wrapper marks a task `Visual: layout`, "looks right" is not a vibe — it is a small
 computation, and the test MEASURES it. The wrapper's design-spec phase writes the contract to
-`<TASK_DIR>/visual.md`; impl builds to it; this loop verifies it. (Tasks marked `Visual: appearance`
+`<WORK_DIR>/visual.md`; impl builds to it; this loop verifies it. (Tasks marked `Visual: appearance`
 use the ordinary visual/asset check above. Unmarked non-visual tasks use their applicable text or
 behavior checks; only legacy unclassified visual changes use the visual/asset branch.)
 
@@ -231,7 +263,13 @@ How TEST verifies it (numbers over eyes):
 
 The overlay is ad-hoc, authored fresh against the CURRENT implementation, injected at the
 highest level that still exercises the change (often a direct data-layer call like
-`item->applyEdition(...)` rather than a faked MTP response). It must:
+`item->applyEdition(...)` rather than a faked MTP response). It is also the complete runtime driver
+of first resort: prefer programmatically triggering every required action and judging the saved logs
+and captures afterwards over any external desktop driver, whether or not one is available. Drive the
+whole task-specific flow inside the Debug binary by invoking application actions or posting Qt input events on the event loop, waiting for
+observable state, logging assertions, capturing the rendered target in-process, and quitting. A
+locked macOS session does not reduce required coverage and is never a testing blocker. The overlay
+must:
 
 - Live entirely inside `#ifdef _DEBUG` blocks.
 - Pick a **test strategy** and record it in the spec:
@@ -248,6 +286,10 @@ highest level that still exercises the change (often a direct data-layer call li
   it) so the target is unambiguously in frame at usable resolution. A full-window grab that leaves
   the target clipped, off-screen, or thumbnail-sized is NOT acceptable evidence — if the target
   isn't clearly captured, that is a TEST_FLAW (re-frame), never a pass.
+- When the desktop is locked or an OS screenshot is unavailable, capture from inside the process
+  with `QWidget::grab()` or a renderer-owned image after layout and paint have completed. A widget or
+  test-window grab plus logged geometry is primary visual evidence; never wait for unlock merely to
+  obtain a desktop screenshot.
 - **Lay down the oracle's references.** Save every applicable independent reference beside the
   crop. Exact asset work saves OLD and intended-NEW art as `<name>_{old,new}.png`. Without target
   artwork, save the baseline/reference-component crop when available and log the contract anchors,
@@ -299,19 +341,23 @@ actually land; likewise for screenshots.
 
 ### Git mechanics for the overlay (no stash)
 
-- After building, save the overlay as a patch: `git diff > <TASK_DIR>/test-overlay.patch`.
-  Then **reset the checkout back to the implementation commit** so it stays impl-only:
-  `git reset --hard <IMPL_SHA>` (and `git submodule update --init --recursive` if the overlay
-  touched submodules). The overlay never enters an impl commit.
+- Before authoring, inventory every tracked overlay path in `<WORK_DIR>/test-overlay.paths`; no
+  unrelated or untracked source path may be used. After building, save the overlay with
+  `git diff --binary HEAD > <WORK_DIR>/test-overlay.patch` and verify the patch is nonempty and
+  reapplicable. Restore only the inventoried overlay paths to `GREEN_REF`; never hard-reset the
+  repository. The overlay never enters an impl commit.
 - Next round, re-apply on top of the new implementation: `git apply --3way
-  <TASK_DIR>/test-overlay.patch`. This succeeds ~90% of the time when the tail change was small.
-- On conflict, **re-author the conflicting hunk from the latest Attempt/Run in `test.md`** (which
+  <WORK_DIR>/test-overlay.patch`. This succeeds ~90% of the time when the tail change was small.
+- On conflict, **re-author the conflicting hunk from the latest Attempt/Run in `<WORK_DIR>/test.md`** (which
   records injection point, fake values, and assertions) rather than fighting conflict markers.
   Scenario steps that only call public APIs should live in their own block so they never conflict;
   only true in-situ injections land inside impl files.
 
 ## Build & run discipline
 
+- On macOS, a locked graphical session disables external UI driving only. Launch `EXE` normally,
+  run the in-binary overlay flow, collect its logs and widget/window grabs, assess them, and clean up.
+  Do not try to unlock the session and do not return BLOCKED because the lock screen is present.
 - Build with `BUILD`. A single changed TU compiles fast; only the overlay-touched files + link
   rebuild between rounds. Proactive path-scoped cleanup may run before the build. If the build reports
   `LNK1104`, `C1041`, access denied, or file in use, follow `AGENTS.md`: stop immediately, do not
@@ -328,8 +374,8 @@ actually land; likewise for screenshots.
   `<EVIDENCE_DIR>/test_log.txt` every ~5s -> on each `SCREENSHOT:` read the image and judge it -> detect
   `TEST_COMPLETE` (success) or process death (crash) or no new output for the watchdog cap, or the
   hard deadline elapsing (hang) -> path-scoped kill of any straggler (Test account → "Serialize app
-  runs") -> optional CLEANUP -> save the overlay (`git diff > <TASK_DIR>/test-overlay.patch`) ->
-  THEN `git reset --hard <IMPL_SHA>` (back to impl-only — the patch must be saved before this reset).
+  runs") -> save the binary overlay patch -> restore only inventoried overlay
+  paths to `GREEN_REF` (the patch must be saved before this restore).
 
     On Windows, launch and capture both streams like:
 
@@ -400,10 +446,10 @@ the same signature → BLOCKED (early-escalation rule).
 
 ### Leave no test binary behind
 
-The on-disk `EXE` (`out/Debug/Telegram.exe`) always contains the compiled overlay after a test run —
-`git reset --hard` only reverts the source, not the built binary. So when the loop reaches a TERMINAL
-verdict (APPROVED, BLOCKED, UNRECOVERABLE, or attempt cap), after the final path-scoped kill and
-`git reset --hard <IMPL_SHA>`, **delete the built `EXE`** so no overlay-laden test binary is left for
+The on-disk `EXE` (`out/Debug/Telegram.exe`) always contains the compiled overlay after a test run.
+Restoring source does not rewrite the binary. When the loop reaches a TERMINAL verdict (APPROVED,
+BLOCKED, UNRECOVERABLE, or attempt cap), after the final path-scoped kill and exact-path source
+restore, **delete the built `EXE`** so no overlay-laden test binary is left for
 the user to launch by mistake:
 
     Remove-Item -Force "$EXE"
@@ -437,7 +483,7 @@ correct.
 - APPROVED requires every derived check to PASS with evidence; else IMPL_BUG (real defect) or
   TEST_FLAW (the test was wrong, not the code).
 
-## Test report (`<TASK_DIR>/test.md`) — human-readable, append per attempt
+## Test report (`<WORK_DIR>/test.md`) — human-readable, append per attempt
 
 The file the human opens to see how testing went. The test-author writes checks before running;
 ASSESS fills Actual / Result and the verdict. Create one `## Attempt` per implementation commit and
@@ -447,7 +493,7 @@ starts the next Attempt. Never overwrite history.
 ```
 # Test report — <project>/<letter>: <title>
 
-## Attempt <n> — commit <sha>
+## Attempt <n>
 
 ### Run <m> — strategy <...> — driver <overlay|hybrid> — verdict <APPROVED|TEST_FLAW|IMPL_BUG|UNRECOVERABLE>
 - Evidence directory: <EVIDENCE_DIR>
@@ -481,4 +527,4 @@ DISCOVERED: <none|present in result.md|inline concise follow-ups when the wrappe
 NOTES: <one or two lines, or none>
 ```
 
-Detailed reasoning stays in `.ai/` artifacts. The chat reply is only this block.
+Detailed reasoning stays in external AI task artifacts. The chat reply is only this block.
