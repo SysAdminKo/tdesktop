@@ -629,6 +629,10 @@ bool TcpConnection::isConnected() const {
 	return (_status == Status::Ready);
 }
 
+bool TcpConnection::hostConnectStarted() const {
+	return _socket && _socket->hostConnectStarted();
+}
+
 int32 TcpConnection::debugState() const {
 	return _socket ? _socket->debugState() : -1;
 }

@@ -23,6 +23,7 @@ public:
 	bool isGoodStartNonce(bytes::const_span nonce) override;
 	void timedOut() override;
 	bool isConnected() override;
+	bool hostConnectStarted() const override;
 	bool hasBytesAvailable() override;
 	int64 read(bytes::span buffer) override;
 	void write(bytes::const_span prefix, bytes::const_span buffer) override;
@@ -58,6 +59,7 @@ private:
 	const bytes::vector _secret;
 	QTcpSocket _socket;
 	State _state = State::NotConnected;
+	bool _hostConnectStarted = false;
 	QByteArray _incoming;
 	int _incomingGoodDataOffset = 0;
 	int _incomingGoodDataLimit = 0;

@@ -32,7 +32,6 @@ constexpr auto kLengthSize = sizeof(uint16);
 constexpr auto kMaxServerHelloLength = 65536;
 constexpr auto kSlowConnectDelay = 1150;
 constexpr auto kSlowConnectJitter = 150;
-constexpr auto kSlowConnectMaxWait = 2000;
 const auto kServerHelloPart1 = qstr("\x16\x03\x03");
 const auto kServerHelloPart3 = qstr("\x14\x03\x03\x00\x01\x01\x17\x03\x03");
 constexpr auto kServerHelloDigestPosition = 11;
@@ -866,6 +865,11 @@ void TlsSocket::connectToHost(const QString &address, int port) {
 	static auto mutex = QMutex();
 	static auto slots = std::map<QString, sc::steady_clock::time_point>();
 
+	const auto startHostConnect = [=] {
+		_hostConnectStarted = true;
+		_socket.connectToHost(address, port);
+	};
+
 	sc::milliseconds waitFor{ 0 };
 	{
 		const QMutexLocker lock(&mutex);
@@ -878,19 +882,17 @@ void TlsSocket::connectToHost(const QString &address, int port) {
 			slot = now;
 		}
 		waitFor = sc::duration_cast<sc::milliseconds>(slot - now);
-		if (waitFor > sc::milliseconds(kSlowConnectMaxWait)) {
-			waitFor = sc::milliseconds(kSlowConnectMaxWait);
-			slot = now + waitFor;
-		}
 		slot += gap;
 	}
 	if (waitFor.count() > 0) {
-		QTimer::singleShot(int(waitFor.count()), this, [=] {
-			_socket.connectToHost(address, port);
-		});
+		QTimer::singleShot(int(waitFor.count()), this, startHostConnect);
 		return;
 	}
-	_socket.connectToHost(address, port);
+	startHostConnect();
+}
+
+bool TlsSocket::hostConnectStarted() const {
+	return _hostConnectStarted;
 }
 
 bool TlsSocket::isGoodStartNonce(bytes::const_span nonce) {

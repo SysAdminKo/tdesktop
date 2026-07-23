@@ -282,6 +282,10 @@ void ResolvingConnection::handleError(int errorCode) {
 		}
 		emitError(errorCode);
 	} else if (!_proxy.resolvedIPs.empty()) {
+		if (!hostConnectStarted()) {
+			emitError(errorCode);
+			return;
+		}
 		quarantineCurrentIp();
 		if (!refreshChild()) {
 			emitError(errorCode);
@@ -346,7 +350,7 @@ void ResolvingConnection::sendData(mtpBuffer &&buffer) {
 }
 
 void ResolvingConnection::disconnectFromServer() {
-	if (!_connected) {
+	if (!_connected && hostConnectStarted()) {
 		quarantineCurrentIp();
 	}
 	_address = QString();
@@ -361,7 +365,7 @@ void ResolvingConnection::disconnectFromServer() {
 }
 
 void ResolvingConnection::timedOut() {
-	if (!_connected) {
+	if (!_connected && hostConnectStarted()) {
 		quarantineCurrentIp();
 	}
 	if (_child) {
@@ -395,6 +399,10 @@ void ResolvingConnection::connectToServer(
 
 bool ResolvingConnection::isConnected() const {
 	return _child ? _child->isConnected() : false;
+}
+
+bool ResolvingConnection::hostConnectStarted() const {
+	return _child && _child->hostConnectStarted();
 }
 
 int32 ResolvingConnection::debugState() const {
