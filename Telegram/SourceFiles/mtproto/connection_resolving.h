@@ -36,6 +36,7 @@ public:
 		int16 protocolDcId,
 		bool protocolForFiles) override;
 	bool isConnected() const override;
+	bool hostConnectStarted() const override;
 
 	int32 debugState() const override;
 

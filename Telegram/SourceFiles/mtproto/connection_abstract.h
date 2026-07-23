@@ -91,6 +91,9 @@ public:
 	virtual void timedOut() {
 	}
 	[[nodiscard]] virtual bool isConnected() const = 0;
+	[[nodiscard]] virtual bool hostConnectStarted() const {
+		return true;
+	}
 	[[nodiscard]] virtual bool usingHttpWait() {
 		return false;
 	}

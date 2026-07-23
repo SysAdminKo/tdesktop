@@ -54,6 +54,9 @@ public:
 	[[nodiscard]] virtual bool isGoodStartNonce(bytes::const_span nonce) = 0;
 	virtual void timedOut() = 0;
 	[[nodiscard]] virtual bool isConnected() = 0;
+	[[nodiscard]] virtual bool hostConnectStarted() const {
+		return true;
+	}
 	[[nodiscard]] virtual bool hasBytesAvailable() = 0;
 	[[nodiscard]] virtual int64 read(bytes::span buffer) = 0;
 	virtual void write(

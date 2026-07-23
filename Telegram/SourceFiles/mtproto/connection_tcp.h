@@ -37,6 +37,7 @@ public:
 		bool protocolForFiles) override;
 	void timedOut() override;
 	bool isConnected() const override;
+	bool hostConnectStarted() const override;
 
 	int32 debugState() const override;
 
