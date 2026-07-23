@@ -69,12 +69,6 @@ jobs:
           submodules: recursive
           path: ${{ env.REPO_NAME }}
 
-      - name: Patch cmark-gfm for CMake 4.4 CMP0218.
-        run: |
-          cd $REPO_NAME
-          git apply --directory=cmake --check patches/cmake-cmark-gfm-cmp0218.patch
-          git apply --directory=cmake patches/cmake-cmark-gfm-cmp0218.patch
-
       - name: First set up.
         run: |
           sudo chown -R `whoami`:admin /usr/local/share

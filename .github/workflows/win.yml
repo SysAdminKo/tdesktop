@@ -221,7 +221,7 @@ jobs:
 
       - name: Free up some disk space.
         shell: bash
-        run: find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' ')' -type f ')' -o -empty ')' -delete
+        run: find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name 'Makefile' -o -name '*.pc' -o -name '*.pc.in' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' ')' -type f ')' -o -empty ')' -delete
 
       - name: Patch Qt6 TLS backend for WSS.
         if: env.ONLY_CACHE == 'false' && matrix.qt == 'qt6'
@@ -230,14 +230,6 @@ jobs:
         run: |
           git apply --directory=cmake --check patches/cmake-qt6-win-openssl-tls.patch
           git apply --directory=cmake patches/cmake-qt6-win-openssl-tls.patch
-
-      - name: Patch cmark-gfm for CMake 4.4 CMP0218.
-        if: env.ONLY_CACHE == 'false'
-        shell: bash
-        working-directory: ${{ env.TBUILD }}/${{ env.REPO_NAME }}
-        run: |
-          git apply --directory=cmake --check patches/cmake-cmark-gfm-cmp0218.patch
-          git apply --directory=cmake patches/cmake-cmark-gfm-cmp0218.patch
 
       - name: Telegram Desktop build.
         if: env.ONLY_CACHE == 'false'
