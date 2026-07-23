@@ -34,7 +34,7 @@ namespace {
 
 constexpr auto kIntSize = static_cast<int>(sizeof(mtpPrime));
 constexpr auto kWaitForBetterTimeout = crl::time(2000);
-constexpr auto kMinConnectedTimeout = crl::time(1000);
+constexpr auto kMinConnectedTimeout = crl::time(3000);
 constexpr auto kMaxConnectedTimeout = crl::time(8000);
 constexpr auto kMinReceiveTimeout = crl::time(4000);
 constexpr auto kMaxReceiveTimeout = crl::time(64000);

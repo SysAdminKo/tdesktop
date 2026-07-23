@@ -14,7 +14,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/random.h"
 #include "base/unixtime.h"
 
+#include <QtCore/QMutex>
+#include <QtCore/QRandomGenerator>
+#include <QtCore/QTimer>
 #include <QtCore/QtEndian>
+#include <chrono>
+#include <map>
 #include <range/v3/algorithm/reverse.hpp>
 
 namespace MTP::details {
@@ -25,6 +30,9 @@ constexpr auto kClientHelloLimit = 2048;
 constexpr auto kHelloDigestLength = 32;
 constexpr auto kLengthSize = sizeof(uint16);
 constexpr auto kMaxServerHelloLength = 65536;
+constexpr auto kSlowConnectDelay = 1150;
+constexpr auto kSlowConnectJitter = 150;
+constexpr auto kSlowConnectMaxWait = 2000;
 const auto kServerHelloPart1 = qstr("\x16\x03\x03");
 const auto kServerHelloPart3 = qstr("\x14\x03\x03\x00\x01\x01\x17\x03\x03");
 constexpr auto kServerHelloDigestPosition = 11;
@@ -854,6 +862,34 @@ void TlsSocket::connectToHost(const QString &address, int port) {
 	Expects(_state == State::NotConnected);
 
 	_state = State::Connecting;
+	namespace sc = std::chrono;
+	static auto mutex = QMutex();
+	static auto slots = std::map<QString, sc::steady_clock::time_point>();
+
+	sc::milliseconds waitFor{ 0 };
+	{
+		const QMutexLocker lock(&mutex);
+		const auto now = sc::steady_clock::now();
+		const auto gap = sc::milliseconds(
+			kSlowConnectDelay
+				+ QRandomGenerator::global()->bounded(0, kSlowConnectJitter));
+		auto &slot = slots[address];
+		if (slot <= now) {
+			slot = now;
+		}
+		waitFor = sc::duration_cast<sc::milliseconds>(slot - now);
+		if (waitFor > sc::milliseconds(kSlowConnectMaxWait)) {
+			waitFor = sc::milliseconds(kSlowConnectMaxWait);
+			slot = now + waitFor;
+		}
+		slot += gap;
+	}
+	if (waitFor.count() > 0) {
+		QTimer::singleShot(int(waitFor.count()), this, [=] {
+			_socket.connectToHost(address, port);
+		});
+		return;
+	}
 	_socket.connectToHost(address, port);
 }
 
