@@ -1189,6 +1189,11 @@ depends:patches/ffmpeg.patch
 winarm:
     SET "ARCH_PARAM=--arch=aarch64"
 win:
+    if not exist ..\\nv-codec-headers\\Makefile (
+        if exist ..\\nv-codec-headers rmdir /Q /S ..\\nv-codec-headers
+        if exist ..\\nv-codec-headers exit /b 1
+        git clone -b n12.1.14.0 https://github.com/FFmpeg/nv-codec-headers.git ..\\nv-codec-headers
+    )
 depends:patches/build_ffmpeg_win.sh
     bash --login ../patches/build_ffmpeg_win.sh
 mac:
