@@ -17,7 +17,7 @@ namespace MTP {
 namespace details {
 namespace {
 
-constexpr auto kOneConnectionTimeout = 6000;
+constexpr auto kOneConnectionTimeout = crl::time(6000);
 constexpr auto kIpQuarantineDuration = 10 * crl::time(1000) * 60;
 constexpr auto kEarlyDisconnectQuarantine = 30 * crl::time(1000);
 
