@@ -6,6 +6,7 @@
 #include "base/random.h"
 #include "crl/crl.h"
 #include "mtproto/mtproto_wss_connect_gate.h"
+#include "mtproto/mtproto_wss_plain.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QPointer>
@@ -21,6 +22,9 @@ constexpr auto kMuxSubprotocol = "tdesktop-mux/1";
 constexpr auto kIdleBeforePing = crl::time(2000);
 constexpr auto kOutgoingQuietBeforePing = crl::time(1500);
 constexpr auto kPingCheckInterval = crl::time(1000);
+constexpr auto kPlainIdleBeforePing = 30 * crl::time(1000);
+constexpr auto kPlainOutgoingQuietBeforePing = 15 * crl::time(1000);
+constexpr auto kPlainPingCheckInterval = 5 * crl::time(1000);
 constexpr auto kReadPumpInterval = crl::time(25);
 constexpr auto kHandshakeTimeout = crl::time(15000);
 constexpr auto kErrorAuthRejected = 889;
@@ -50,16 +54,21 @@ WebSocketSocket::WebSocketSocket(
 
 	_socket.moveToThread(thread);
 	_socket.setProxy(QNetworkProxy::NoProxy);
-	_socket.setSocketOption(QAbstractSocket::LowDelayOption, 1);
-	_socket.setSocketOption(
-		QAbstractSocket::SendBufferSizeSocketOption,
-		kFilesSendBufferSize);
-	_socket.setSocketOption(
-		QAbstractSocket::ReceiveBufferSizeSocketOption,
-		kFilesReceiveBufferSize);
+	if constexpr (!kWssPlainTransfer) {
+		_socket.setSocketOption(QAbstractSocket::LowDelayOption, 1);
+		_socket.setSocketOption(
+			QAbstractSocket::SendBufferSizeSocketOption,
+			kFilesSendBufferSize);
+		_socket.setSocketOption(
+			QAbstractSocket::ReceiveBufferSizeSocketOption,
+			kFilesReceiveBufferSize);
+	}
 
 	_pingTimer.moveToThread(thread);
-	_pingTimer.setInterval(kPingCheckInterval);
+	const auto pingInterval = (kWssPlainTransfer && _muxTunnelMode)
+		? kPlainPingCheckInterval
+		: kPingCheckInterval;
+	_pingTimer.setInterval(pingInterval);
 	_pingTimer.setSingleShot(false);
 	connect(&_pingTimer, &QTimer::timeout, this, [=] { sendPing(); });
 
@@ -484,6 +493,7 @@ void WebSocketSocket::processIncoming() {
 			const auto payload = _reader.payload();
 			if (_muxTunnelMode) {
 				handleMuxPayload(payload);
+				gotPayload = true;
 			} else {
 				const auto offset = _readBuffer.size();
 				_readBuffer.resize(offset + payload.size());
@@ -509,7 +519,7 @@ void WebSocketSocket::processIncoming() {
 	}
 	if (gotPayload) {
 		_lastIncomingAt = crl::now();
-		if (!_inRead) {
+		if (!_muxTunnelMode && !_inRead) {
 			scheduleReadyRead();
 		}
 	}
@@ -543,9 +553,15 @@ void WebSocketSocket::sendPing() {
 	}
 	pollIncoming();
 	const auto now = crl::now();
-	if (now - _lastIncomingAt < kIdleBeforePing) {
+	const auto idleBefore = (kWssPlainTransfer && _muxTunnelMode)
+		? kPlainIdleBeforePing
+		: kIdleBeforePing;
+	const auto quietBefore = (kWssPlainTransfer && _muxTunnelMode)
+		? kPlainOutgoingQuietBeforePing
+		: kOutgoingQuietBeforePing;
+	if (now - _lastIncomingAt < idleBefore) {
 		return;
-	} else if (now - _lastOutgoingAt < kOutgoingQuietBeforePing) {
+	} else if (now - _lastOutgoingAt < quietBefore) {
 		return;
 	}
 	const auto frame = EncodeClientPingFrame({});

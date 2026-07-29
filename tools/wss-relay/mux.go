@@ -32,43 +32,90 @@ const (
 	muxOpenFailLimit   = 3
 
 	muxUpstreamReadStallMinBytes           = 32 * 1024
-	muxUpstreamReadStallRecoverMinBytes  = 8 * 1024
+	muxUpstreamReadStallRecoverMinBytes    = 8 * 1024
 	muxUpstreamReadStallThreshold          = 3 * time.Second
 	muxUpstreamMaxConsecutiveReadStallsDef = 4
 	muxUpstreamWriteTimeout                = 5 * time.Second
+	muxWSWriteTimeout                      = 10 * time.Second
+	muxClientWriteBufferBytes              = 16 * 1024
+	muxClientWriteBufferLowLatencyBytes    = 4 * 1024
+	muxPumpReadChunkBytes                  = 8 * 1024
+	muxPumpReadChunkLowLatencyBytes        = 2 * 1024
+	muxCtrlDrainPollInterval               = 2 * time.Millisecond
+	muxWriteDataQueueSize                  = 256
+	muxWriteCtrlQueueSize                  = 64
+	muxMaxQueuedDataPerStream              = 2
+	muxMaxQueuedDataPerStreamLowLatency    = 1
+	muxMaxQueuedDataPerStreamPlain         = 4
+	muxFairnessPollInterval                = 5 * time.Millisecond
+	muxToDCQueueSize                       = 32
+	muxSlowWriteQueueLog                   = 250 * time.Millisecond
+	muxSlowFairnessWaitLog                 = 100 * time.Millisecond
+	muxUpstreamReadGapLog                  = 500 * time.Millisecond
+	muxSlowToDCWriteLog                    = 100 * time.Millisecond
+	muxSlowToDCEnqueueLog                  = 100 * time.Millisecond
+	muxSlowDataChEnqueueLog                = 100 * time.Millisecond
+	muxSlowWSWriteLog                      = 250 * time.Millisecond
+	muxSlowWriteFrameLog                   = 100 * time.Millisecond
 )
 
+type muxWriteJob struct {
+	messageType   int
+	data          []byte
+	done          chan error
+	enqueuedAt    time.Time
+	queuedCounter *atomic.Int32
+	accountBytes  int
+	sentCounter   *atomic.Int64
+	statsClient   string
+	statsTarget   string
+	streamID      uint32
+}
+
 type muxStream struct {
-	id              uint32
-	tcp             net.Conn
-	done            chan struct{}
-	target          string
-	lastActivity    atomic.Int64
-	upstreamBytes   int64
-	lastReadAt              time.Time
-	readStallLogged         bool
-	consecutiveReadStalls   int
-	sentBytes               int64
-	recvBytes       int64
+	id                    uint32
+	tcp                   net.Conn
+	done                  chan struct{}
+	toDC                  chan []byte
+	target                string
+	opening               bool
+	lastActivity          atomic.Int64
+	upstreamBytes         int64
+	lastReadAt            time.Time
+	readStallLogged       bool
+	consecutiveReadStalls int
+	sentBytes             atomic.Int64
+	recvBytes             int64
+	queuedDataFrames      atomic.Int32
+	lastUpstreamReadAt    time.Time
+	upstreamGapLogCount   int
+	lastWriteFrameMs      int64
+	lastDataChWaitMs      int64
+	consecutiveReadTimeouts int
+	toDCEnqueueBlockLogs  int
 }
 
 type muxConfig struct {
-	maxStreams                 int
-	streamIdleTimeout          time.Duration
-	wsPingInterval             time.Duration
-	wsReadTimeout              time.Duration
-	maxConsecutiveReadStalls   int
+	maxStreams               int
+	streamIdleTimeout        time.Duration
+	wsPingInterval           time.Duration
+	wsReadTimeout            time.Duration
+	maxConsecutiveReadStalls int
+	lowLatencyTest           bool
+	plain                    bool
 }
 
 type muxSession struct {
-	conn              *websocket.Conn
-	streams           map[uint32]*muxStream
-	writeMu           sync.Mutex
-	config            muxConfig
-	clientIP          string
-	egressIP          string
-	closed            bool
-	mu                sync.Mutex
+	conn        *websocket.Conn
+	streams     map[uint32]*muxStream
+	ctrlCh      chan muxWriteJob
+	dataCh      chan muxWriteJob
+	pendingData *muxWriteJob
+	config      muxConfig
+	clientIP    string
+	egressIP    string
+	closed      bool
+	mu          sync.Mutex
 }
 
 func (st *muxStream) touchActivity() {
@@ -133,19 +180,341 @@ func parseOpenTarget(payload []byte) (string, error) {
 	return net.JoinHostPort(host, fmt.Sprintf("%d", port)), nil
 }
 
-func (s *muxSession) writeFrame(frameType byte, streamID uint32, payload []byte) error {
-	waitStart := time.Now()
-	s.writeMu.Lock()
-	relayStatistics.incMuxWriteWait(time.Since(waitStart))
-	defer s.writeMu.Unlock()
+func (s *muxSession) enqueueWrite(
+	messageType int,
+	data []byte,
+	wait bool,
+	stream *muxStream,
+	isData bool,
+	accountBytes int,
+) error {
+	job := muxWriteJob{
+		messageType: messageType,
+		data:        data,
+		enqueuedAt:  time.Now(),
+	}
+	if wait {
+		job.done = make(chan error, 1)
+	}
+	if isData && stream != nil {
+		limit := int32(muxMaxQueuedDataPerStream)
+		if s.config.lowLatencyTest {
+			limit = muxMaxQueuedDataPerStreamLowLatency
+		} else if s.config.plain {
+			limit = muxMaxQueuedDataPerStreamPlain
+		}
+		fairWaitStart := time.Time{}
+		for {
+			if stream.queuedDataFrames.Load() < limit {
+				break
+			}
+			if fairWaitStart.IsZero() {
+				fairWaitStart = time.Now()
+			}
+			select {
+			case <-stream.done:
+				return io.ErrClosedPipe
+			case <-time.After(muxFairnessPollInterval):
+			}
+			s.mu.Lock()
+			closed := s.closed
+			s.mu.Unlock()
+			if closed {
+				return io.ErrClosedPipe
+			}
+		}
+		if !fairWaitStart.IsZero() {
+			waited := time.Since(fairWaitStart)
+			if waited >= muxSlowFairnessWaitLog {
+				log.Printf(
+					"mux data fairness wait stream=%d client=%s target=%s wait_ms=%d queued=%d",
+					stream.id,
+					s.clientIP,
+					stream.target,
+					waited.Milliseconds(),
+					stream.queuedDataFrames.Load(),
+				)
+			}
+		}
+		stream.queuedDataFrames.Add(1)
+		job.queuedCounter = &stream.queuedDataFrames
+		job.streamID = stream.id
+		if accountBytes > 0 {
+			job.accountBytes = accountBytes
+			job.sentCounter = &stream.sentBytes
+			job.statsClient = s.clientIP
+			job.statsTarget = stream.target
+		}
+	}
+
+	s.mu.Lock()
 	if s.closed {
+		s.mu.Unlock()
+		if job.queuedCounter != nil {
+			job.queuedCounter.Add(-1)
+		}
 		return io.ErrClosedPipe
 	}
+	ch := s.dataCh
+	if !isData {
+		ch = s.ctrlCh
+	}
+	depth := len(s.ctrlCh) + len(s.dataCh)
+	s.mu.Unlock()
+	relayStatistics.observeMuxWriteQueueDepth(depth)
+
+	waitStart := time.Now()
+	sent := false
+	func() {
+		defer func() {
+			if recover() != nil {
+				sent = false
+			}
+		}()
+		if isData && stream != nil {
+			select {
+			case ch <- job:
+				sent = true
+			case <-stream.done:
+				sent = false
+			}
+		} else {
+			select {
+			case ch <- job:
+				sent = true
+			case <-time.After(muxUpstreamWriteTimeout):
+				sent = false
+			}
+		}
+	}()
+	enqueueWait := time.Since(waitStart)
+	relayStatistics.incMuxWriteWait(enqueueWait)
+	if isData && stream != nil {
+		stream.lastDataChWaitMs = enqueueWait.Milliseconds()
+		if enqueueWait >= muxSlowDataChEnqueueLog {
+			log.Printf(
+				"mux dataCh enqueue wait stream=%d client=%s target=%s wait_ms=%d data_q=%d ctrl_q=%d queued_data=%d",
+				stream.id,
+				s.clientIP,
+				stream.target,
+				enqueueWait.Milliseconds(),
+				len(s.dataCh),
+				len(s.ctrlCh),
+				stream.queuedDataFrames.Load(),
+			)
+		}
+	}
+	if !sent {
+		if job.queuedCounter != nil {
+			job.queuedCounter.Add(-1)
+		}
+		return io.ErrClosedPipe
+	}
+	if !wait {
+		return nil
+	}
+	err := <-job.done
+	return err
+}
+
+func (s *muxSession) waitQueuedDataDrain(stream *muxStream) {
+	if stream == nil {
+		return
+	}
+	deadline := time.Now().Add(muxWSWriteTimeout)
+	for stream.queuedDataFrames.Load() > 0 {
+		if time.Now().After(deadline) {
+			return
+		}
+		s.mu.Lock()
+		closed := s.closed
+		s.mu.Unlock()
+		if closed {
+			return
+		}
+		time.Sleep(muxFairnessPollInterval)
+	}
+}
+
+func (s *muxSession) writeCtrlClose(streamID uint32, payload []byte) error {
+	frame := encodeMuxFrame(muxTypeClose, streamID, payload)
+	return s.enqueueWrite(websocket.BinaryMessage, frame, true, nil, false, 0)
+}
+
+func (s *muxSession) writeFrame(frameType byte, streamID uint32, payload []byte) error {
+	if frameType == muxTypeClose {
+		s.mu.Lock()
+		stream := s.streams[streamID]
+		s.mu.Unlock()
+		s.waitQueuedDataDrain(stream)
+		return s.writeCtrlClose(streamID, payload)
+	}
 	frame := encodeMuxFrame(frameType, streamID, payload)
-	return s.conn.WriteMessage(websocket.BinaryMessage, frame)
+	isData := frameType == muxTypeData
+	var stream *muxStream
+	accountBytes := 0
+	if isData {
+		s.mu.Lock()
+		stream = s.streams[streamID]
+		s.mu.Unlock()
+		if stream == nil {
+			return io.ErrClosedPipe
+		}
+		accountBytes = len(payload)
+	}
+	wait := !isData
+	return s.enqueueWrite(
+		websocket.BinaryMessage,
+		frame,
+		wait,
+		stream,
+		isData,
+		accountBytes,
+	)
+}
+
+func (s *muxSession) nextWriteJob() (muxWriteJob, bool) {
+	for {
+		select {
+		case job, ok := <-s.ctrlCh:
+			if ok {
+				return job, true
+			}
+			if s.pendingData != nil {
+				job = *s.pendingData
+				s.pendingData = nil
+				return job, true
+			}
+			job, ok = <-s.dataCh
+			return job, ok
+		default:
+		}
+		if s.pendingData != nil {
+			job := *s.pendingData
+			s.pendingData = nil
+			return job, true
+		}
+		select {
+		case job, ok := <-s.ctrlCh:
+			if ok {
+				return job, true
+			}
+			job, ok = <-s.dataCh
+			return job, ok
+		case job, ok := <-s.dataCh:
+			if !ok {
+				job, ok = <-s.ctrlCh
+				return job, ok
+			}
+			select {
+			case ctrlJob, ctrlOk := <-s.ctrlCh:
+				if ctrlOk {
+					s.pendingData = &job
+					return ctrlJob, true
+				}
+				return job, true
+			default:
+				return job, true
+			}
+		}
+	}
+}
+
+func (s *muxSession) finishWriteJob(job muxWriteJob, err error) {
+	if job.queuedCounter != nil {
+		job.queuedCounter.Add(-1)
+	}
+	if !job.enqueuedAt.IsZero() {
+		inQueue := time.Since(job.enqueuedAt)
+		relayStatistics.incMuxWriteInQueue(inQueue)
+		if job.accountBytes > 0 && inQueue >= muxSlowWriteQueueLog {
+			log.Printf(
+				"mux data write queue slow stream=%d client=%s target=%s queue_ms=%d bytes=%d err=%v",
+				job.streamID,
+				job.statsClient,
+				job.statsTarget,
+				inQueue.Milliseconds(),
+				job.accountBytes,
+				err,
+			)
+		}
+	}
+	if err == nil && job.accountBytes > 0 {
+		if job.sentCounter != nil {
+			job.sentCounter.Add(int64(job.accountBytes))
+		}
+		if job.statsTarget != "" {
+			relayStatistics.addBytesFromUpstream(
+				job.statsClient,
+				job.statsTarget,
+				job.accountBytes,
+			)
+		}
+	}
+	if job.done != nil {
+		job.done <- err
+	}
+}
+
+func (s *muxSession) writeLoop() {
+	for {
+		job, ok := s.nextWriteJob()
+		if !ok {
+			return
+		}
+		s.mu.Lock()
+		closed := s.closed
+		s.mu.Unlock()
+		var err error
+		if closed {
+			err = io.ErrClosedPipe
+		} else {
+			_ = s.conn.SetWriteDeadline(time.Now().Add(muxWSWriteTimeout))
+			writeStarted := time.Now()
+			err = s.conn.WriteMessage(job.messageType, job.data)
+			writeMs := time.Since(writeStarted).Milliseconds()
+			_ = s.conn.SetWriteDeadline(time.Time{})
+			if writeMs >= muxSlowWSWriteLog.Milliseconds() {
+				log.Printf(
+					"mux ws WriteMessage slow stream=%d client=%s bytes=%d write_ms=%d data_q=%d ctrl_q=%d err=%v",
+					job.streamID,
+					s.clientIP,
+					len(job.data),
+					writeMs,
+					len(s.dataCh),
+					len(s.ctrlCh),
+					err,
+				)
+			}
+			if err != nil {
+				s.mu.Lock()
+				s.closed = true
+				s.mu.Unlock()
+				_ = s.conn.Close()
+			}
+		}
+		s.finishWriteJob(job, err)
+		if err != nil {
+			for {
+				dropped, ok := s.nextWriteJob()
+				if !ok {
+					return
+				}
+				s.finishWriteJob(dropped, err)
+			}
+		}
+	}
 }
 
 func (s *muxSession) removeStream(id uint32) {
+	s.finishStream(id, false, nil)
+}
+
+func (s *muxSession) closeAndRemoveStream(id uint32, payload []byte) {
+	s.finishStream(id, true, payload)
+}
+
+func (s *muxSession) finishStream(id uint32, sendClose bool, payload []byte) {
 	s.mu.Lock()
 	stream, ok := s.streams[id]
 	if ok {
@@ -153,22 +522,41 @@ func (s *muxSession) removeStream(id uint32) {
 	}
 	s.mu.Unlock()
 	if !ok {
+		if sendClose {
+			_ = s.writeCtrlClose(id, payload)
+		}
 		return
 	}
 	target := stream.target
+	wasOpening := stream.opening
 	select {
 	case <-stream.done:
 	default:
 		close(stream.done)
 	}
-	_ = stream.tcp.Close()
+	if stream.tcp != nil {
+		_ = stream.tcp.Close()
+	}
+	if wasOpening {
+		if sendClose {
+			_ = s.writeCtrlClose(id, payload)
+		}
+		return
+	}
+	s.waitQueuedDataDrain(stream)
+	if sendClose {
+		_ = s.writeCtrlClose(id, payload)
+	}
 	log.Printf(
-		"mux stream close stream=%d client=%s target=%s sent=%d recv=%d",
+		"mux stream close stream=%d client=%s target=%s egress=%s sent=%d recv=%d last_write_frame_ms=%d toDC_blocks=%d",
 		id,
 		s.clientIP,
 		target,
-		stream.sentBytes,
+		s.egressIP,
+		stream.sentBytes.Load(),
 		stream.recvBytes,
+		stream.lastWriteFrameMs,
+		stream.toDCEnqueueBlockLogs,
 	)
 	relayStatistics.muxStreamClosed(s.clientIP, target)
 }
@@ -187,31 +575,57 @@ func (s *muxSession) closeAll() {
 }
 
 func (s *muxSession) handleOpen(streamID uint32, payload []byte) {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return
-	}
-	if _, exists := s.streams[streamID]; exists {
-		s.mu.Unlock()
-		relayStatistics.incMuxOpenBad()
-		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailBad})
-		return
-	}
-	if len(s.streams) >= s.config.maxStreams {
-		s.mu.Unlock()
-		relayStatistics.incMuxOpenLimit()
-		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailLimit})
-		return
-	}
-	s.mu.Unlock()
-
 	target, err := parseOpenTarget(payload)
 	if err != nil {
 		relayStatistics.incMuxOpenBad()
 		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailBad})
 		return
 	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	if _, exists := s.streams[streamID]; exists {
+		n := len(s.streams)
+		s.mu.Unlock()
+		relayStatistics.incMuxOpenBad()
+		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailBad})
+		log.Printf(
+			"mux open bad duplicate stream=%d client=%s streams=%d",
+			streamID,
+			s.clientIP,
+			n,
+		)
+		return
+	}
+	if len(s.streams) >= s.config.maxStreams {
+		n := len(s.streams)
+		max := s.config.maxStreams
+		s.mu.Unlock()
+		relayStatistics.incMuxOpenLimit()
+		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailLimit})
+		log.Printf(
+			"mux open limit stream=%d client=%s streams=%d max=%d",
+			streamID,
+			s.clientIP,
+			n,
+			max,
+		)
+		return
+	}
+	placeholder := &muxStream{
+		id:     streamID,
+		done:   make(chan struct{}),
+		toDC:   make(chan []byte, muxToDCQueueSize),
+		target: target,
+		opening: true,
+	}
+	placeholder.touchActivity()
+	s.streams[streamID] = placeholder
+	s.mu.Unlock()
+
 	go s.openStreamAsync(streamID, target)
 }
 
@@ -232,46 +646,56 @@ func (s *muxSession) openStreamAsync(streamID uint32, target string) {
 	if err != nil {
 		log.Printf("mux open stream=%d dial %s failed: %v", streamID, target, err)
 		relayStatistics.incMuxOpenFailDial()
+		s.removeStream(streamID)
 		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailDial})
 		return
 	}
-	stream := &muxStream{
-		id:     streamID,
-		tcp:    tcp,
-		done:   make(chan struct{}),
-		target: target,
-	}
-	stream.touchActivity()
+
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		_ = tcp.Close()
+		s.removeStream(streamID)
 		return
 	}
-	if _, exists := s.streams[streamID]; exists {
+	existing, ok := s.streams[streamID]
+	if !ok || !existing.opening {
 		s.mu.Unlock()
 		_ = tcp.Close()
-		relayStatistics.incMuxOpenBad()
-		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailBad})
 		return
 	}
-	if len(s.streams) >= s.config.maxStreams {
-		s.mu.Unlock()
-		_ = tcp.Close()
-		relayStatistics.incMuxOpenLimit()
-		_ = s.writeFrame(muxTypeOpenFail, streamID, []byte{muxOpenFailLimit})
-		return
-	}
-	s.streams[streamID] = stream
+	existing.tcp = tcp
+	existing.opening = false
+	existing.touchActivity()
 	s.mu.Unlock()
 
 	relayStatistics.muxStreamOpened(s.clientIP, target)
-	if err := s.writeFrame(muxTypeOpenOk, streamID, nil); err != nil {
+	payload := make([]byte, 5)
+	binary.BigEndian.PutUint32(payload[0:4], uint32(dialMs))
+	if fromPool {
+		payload[4] = 1
+	}
+	writeStarted := time.Now()
+	err = s.writeFrame(muxTypeOpenOk, streamID, payload)
+	writeMs := time.Since(writeStarted).Milliseconds()
+	if writeMs > 100 || dialMs > 100 {
+		log.Printf(
+			"mux open ok stream=%d client=%s target=%s dial_ms=%d pool=%v write_ms=%d",
+			streamID,
+			s.clientIP,
+			target,
+			dialMs,
+			fromPool,
+			writeMs,
+		)
+	}
+	if err != nil {
 		s.removeStream(streamID)
 		return
 	}
 
-	go s.pumpUpstream(stream)
+	go s.pumpToDC(existing)
+	go s.pumpUpstream(existing)
 }
 
 func (st *muxStream) noteUpstreamReadSuccess(now time.Time, readBytes int) {
@@ -284,9 +708,7 @@ func (st *muxStream) noteUpstreamReadSuccess(now time.Time, readBytes int) {
 }
 
 func (st *muxStream) trackUpstreamReadWait(maxConsecutive int) bool {
-	if maxConsecutive <= 0 {
-		return false
-	} else if st.upstreamBytes < muxUpstreamReadStallMinBytes || st.lastReadAt.IsZero() {
+	if st.upstreamBytes < muxUpstreamReadStallMinBytes || st.lastReadAt.IsZero() {
 		return false
 	}
 	gap := time.Since(st.lastReadAt)
@@ -307,6 +729,9 @@ func (st *muxStream) trackUpstreamReadWait(maxConsecutive int) bool {
 	} else {
 		st.consecutiveReadStalls++
 	}
+	if maxConsecutive <= 0 {
+		return false
+	}
 	return st.consecutiveReadStalls >= maxConsecutive
 }
 
@@ -321,12 +746,73 @@ func (s *muxSession) rotateUpstreamStream(stream *muxStream, reason string) {
 		stream.upstreamBytes,
 	)
 	relayStatistics.incMuxUpstreamReadStallRotate()
-	s.removeStream(stream.id)
-	_ = s.writeFrame(muxTypeClose, stream.id, nil)
+	s.closeAndRemoveStream(stream.id, nil)
+}
+
+func (s *muxSession) pumpToDC(stream *muxStream) {
+	for {
+		select {
+		case <-stream.done:
+			return
+		case payload, ok := <-stream.toDC:
+			if !ok {
+				return
+			}
+			if stream.tcp == nil {
+				continue
+			}
+			stream.touchActivity()
+			qLen := len(stream.toDC)
+			_ = stream.tcp.SetWriteDeadline(time.Now().Add(muxUpstreamWriteTimeout))
+			writeStarted := time.Now()
+			_, err := stream.tcp.Write(payload)
+			writeMs := time.Since(writeStarted).Milliseconds()
+			if writeMs >= muxSlowToDCWriteLog.Milliseconds() || qLen >= muxToDCQueueSize/2 {
+				log.Printf(
+					"mux toDC write stream=%d client=%s target=%s egress=%s bytes=%d write_ms=%d toDC_q=%d err=%v",
+					stream.id,
+					s.clientIP,
+					stream.target,
+					s.egressIP,
+					len(payload),
+					writeMs,
+					qLen,
+					err,
+				)
+			}
+			if err != nil {
+				s.closeAndRemoveStream(stream.id, nil)
+				return
+			}
+			relayStatistics.addBytesToUpstream(s.clientIP, stream.target, len(payload))
+		}
+	}
+}
+
+func (s *muxSession) waitForCtrlDrain(stream *muxStream) error {
+	for len(s.ctrlCh) > 0 {
+		select {
+		case <-stream.done:
+			return io.ErrClosedPipe
+		case <-time.After(muxCtrlDrainPollInterval):
+		}
+		s.mu.Lock()
+		closed := s.closed
+		s.mu.Unlock()
+		if closed {
+			return io.ErrClosedPipe
+		}
+	}
+	return nil
 }
 
 func (s *muxSession) pumpUpstream(stream *muxStream) {
-	buffer := make([]byte, muxMaxDataPayload)
+	chunk := muxPumpReadChunkBytes
+	if s.config.lowLatencyTest {
+		chunk = muxPumpReadChunkLowLatencyBytes
+	}
+	buffer := make([]byte, chunk)
+	plain := s.config.plain
 	maxConsecutive := s.config.maxConsecutiveReadStalls
 	for {
 		select {
@@ -334,38 +820,124 @@ func (s *muxSession) pumpUpstream(stream *muxStream) {
 			return
 		default:
 		}
+		if !plain {
+			if err := s.waitForCtrlDrain(stream); err != nil {
+				return
+			}
+		}
 		if stream.trackUpstreamReadWait(maxConsecutive) {
 			s.rotateUpstreamStream(stream, "consecutive_stalls")
 			return
 		}
 		_ = stream.tcp.SetReadDeadline(time.Now().Add(muxUpstreamReadStallThreshold))
+		readStarted := time.Now()
 		n, err := stream.tcp.Read(buffer)
+		readWaitMs := time.Since(readStarted).Milliseconds()
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				stream.touchActivity()
+				stream.consecutiveReadTimeouts++
+				if stream.consecutiveReadTimeouts == 1 ||
+					stream.consecutiveReadTimeouts%5 == 0 {
+					log.Printf(
+						"mux upstream read timeout stream=%d client=%s target=%s egress=%s timeouts=%d upstream_bytes=%d queued_data=%d toDC_q=%d prev_write_frame_ms=%d data_q=%d",
+						stream.id,
+						s.clientIP,
+						stream.target,
+						s.egressIP,
+						stream.consecutiveReadTimeouts,
+						stream.upstreamBytes,
+						stream.queuedDataFrames.Load(),
+						len(stream.toDC),
+						stream.lastWriteFrameMs,
+						len(s.dataCh),
+					)
+				}
 				continue
 			}
-			s.removeStream(stream.id)
-			_ = s.writeFrame(muxTypeClose, stream.id, nil)
+			s.closeAndRemoveStream(stream.id, nil)
 			return
 		}
 		now := time.Now()
-		stream.noteUpstreamReadSuccess(now, n)
+		timeouts := stream.consecutiveReadTimeouts
+		stream.consecutiveReadTimeouts = 0
+		if !stream.lastUpstreamReadAt.IsZero() &&
+			stream.upstreamGapLogCount < 40 {
+			gap := now.Sub(stream.lastUpstreamReadAt)
+			if gap >= muxUpstreamReadGapLog {
+				cause := "dc_idle"
+				if stream.lastWriteFrameMs >= muxSlowWriteFrameLog.Milliseconds() &&
+					stream.lastWriteFrameMs*2 >= gap.Milliseconds() {
+					cause = "prev_write_frame"
+				} else if timeouts >= 3 {
+					cause = "dc_idle_timeouts"
+				}
+				log.Printf(
+					"mux upstream read gap stream=%d client=%s target=%s egress=%s gap_ms=%d read_wait_ms=%d read=%d upstream_bytes=%d queued_data=%d toDC_q=%d data_q=%d ctrl_q=%d prev_write_frame_ms=%d prev_datach_wait_ms=%d timeouts=%d cause=%s",
+					stream.id,
+					s.clientIP,
+					stream.target,
+					s.egressIP,
+					gap.Milliseconds(),
+					readWaitMs,
+					n,
+					stream.upstreamBytes,
+					stream.queuedDataFrames.Load(),
+					len(stream.toDC),
+					len(s.dataCh),
+					len(s.ctrlCh),
+					stream.lastWriteFrameMs,
+					stream.lastDataChWaitMs,
+					timeouts,
+					cause,
+				)
+				stream.upstreamGapLogCount++
+			}
+		}
+		stream.lastUpstreamReadAt = now
+		if !plain {
+			stream.noteUpstreamReadSuccess(now, n)
+		} else {
+			stream.lastReadAt = now
+			if n >= muxUpstreamReadStallRecoverMinBytes {
+				stream.consecutiveReadStalls = 0
+				stream.readStallLogged = false
+			}
+		}
 		stream.upstreamBytes += int64(n)
-		stream.sentBytes += int64(n)
 		stream.touchActivity()
-		if err := s.writeFrame(muxTypeData, stream.id, buffer[:n]); err != nil {
+		if !plain {
+			if err := s.waitForCtrlDrain(stream); err != nil {
+				return
+			}
+		}
+		writeFrameStarted := time.Now()
+		err = s.writeFrame(muxTypeData, stream.id, buffer[:n])
+		stream.lastWriteFrameMs = time.Since(writeFrameStarted).Milliseconds()
+		if stream.lastWriteFrameMs >= muxSlowWriteFrameLog.Milliseconds() {
+			log.Printf(
+				"mux writeFrame slow stream=%d client=%s target=%s write_frame_ms=%d datach_wait_ms=%d queued_data=%d data_q=%d bytes=%d",
+				stream.id,
+				s.clientIP,
+				stream.target,
+				stream.lastWriteFrameMs,
+				stream.lastDataChWaitMs,
+				stream.queuedDataFrames.Load(),
+				len(s.dataCh),
+				n,
+			)
+		}
+		if err != nil {
 			s.removeStream(stream.id)
 			return
 		}
-		relayStatistics.addBytesFromUpstream(s.clientIP, stream.target, n)
 	}
 }
 
 func (s *muxSession) expireIdleStream(id uint32) {
 	log.Printf("mux stream idle timeout id=%d client=%s", id, s.clientIP)
 	relayStatistics.incMuxStreamIdle()
-	_ = s.writeFrame(muxTypeClose, id, nil)
-	s.removeStream(id)
+	s.closeAndRemoveStream(id, nil)
 }
 
 func (s *muxSession) runIdleSweeper(stop <-chan struct{}) {
@@ -411,10 +983,7 @@ func (s *muxSession) runWSPing(interval time.Duration, stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			s.writeMu.Lock()
-			err := s.conn.WriteMessage(websocket.PingMessage, nil)
-			s.writeMu.Unlock()
-			if err != nil {
+			if err := s.enqueueWrite(websocket.PingMessage, nil, true, nil, false, 0); err != nil {
 				return
 			}
 		}
@@ -436,14 +1005,46 @@ func (s *muxSession) handleData(streamID uint32, payload []byte) {
 		_ = s.writeFrame(muxTypeClose, streamID, []byte{1})
 		return
 	}
+	buf := append([]byte(nil), payload...)
 	stream.recvBytes += int64(len(payload))
 	stream.touchActivity()
-	_ = stream.tcp.SetWriteDeadline(time.Now().Add(muxUpstreamWriteTimeout))
-	if _, err := stream.tcp.Write(payload); err != nil {
-		s.removeStream(streamID)
+	select {
+	case <-stream.done:
 		return
+	case stream.toDC <- buf:
+		return
+	default:
 	}
-	relayStatistics.addBytesToUpstream(s.clientIP, stream.target, len(payload))
+	if stream.toDCEnqueueBlockLogs < 40 {
+		stream.toDCEnqueueBlockLogs++
+		log.Printf(
+			"mux toDC enqueue block stream=%d client=%s target=%s toDC_q=%d/%d bytes=%d",
+			stream.id,
+			s.clientIP,
+			stream.target,
+			len(stream.toDC),
+			cap(stream.toDC),
+			len(payload),
+		)
+	}
+	blockStarted := time.Now()
+	select {
+	case <-stream.done:
+		return
+	case stream.toDC <- buf:
+		waited := time.Since(blockStarted)
+		if waited >= muxSlowToDCEnqueueLog {
+			log.Printf(
+				"mux toDC enqueue wait stream=%d client=%s target=%s wait_ms=%d toDC_q=%d bytes=%d",
+				stream.id,
+				s.clientIP,
+				stream.target,
+				waited.Milliseconds(),
+				len(stream.toDC),
+				len(payload),
+			)
+		}
+	}
 }
 
 func (s *muxSession) handleClose(streamID uint32) {
@@ -471,6 +1072,8 @@ func (s *muxSession) readLoop() {
 		s.closed = true
 		active := len(s.streams)
 		s.mu.Unlock()
+		close(s.ctrlCh)
+		close(s.dataCh)
 		if active > 0 {
 			log.Printf(
 				"mux tunnel ending with %d active streams client=%s",
@@ -490,10 +1093,7 @@ func (s *muxSession) readLoop() {
 		}
 		s.refreshWSReadDeadline()
 		if messageType == websocket.PingMessage {
-			s.writeMu.Lock()
-			err := s.conn.WriteMessage(websocket.PongMessage, data)
-			s.writeMu.Unlock()
-			if err != nil {
+			if err := s.enqueueWrite(websocket.PongMessage, data, true, nil, false, 0); err != nil {
 				return
 			}
 			continue
@@ -568,19 +1168,42 @@ func handleMux(
 		_ = conn.Close()
 		return
 	}
+	writeBuf := 0
+	if !config.plain {
+		writeBuf = muxClientWriteBufferBytes
+		if config.lowLatencyTest {
+			writeBuf = muxClientWriteBufferLowLatencyBytes
+		}
+		if tcp, ok := conn.NetConn().(*net.TCPConn); ok {
+			if err := tcp.SetWriteBuffer(writeBuf); err != nil {
+				log.Printf("mux set write buffer failed client=%s: %v", clientIP, err)
+			}
+			_ = tcp.SetNoDelay(true)
+		}
+	}
 	log.Printf(
-		"mux tunnel from %s client=%s egress=%s auth=%s",
+		"mux tunnel from %s client=%s egress=%s auth=%s write_buf=%d low_latency=%v plain=%v",
 		r.RemoteAddr,
 		clientIP,
 		egressIP,
 		authLabel,
+		writeBuf,
+		config.lowLatencyTest,
+		config.plain,
 	)
+	dataQueue := muxWriteDataQueueSize
+	if config.lowLatencyTest {
+		dataQueue = 2
+	}
 	session := &muxSession{
 		conn:     conn,
 		streams:  make(map[uint32]*muxStream),
+		ctrlCh:   make(chan muxWriteJob, muxWriteCtrlQueueSize),
+		dataCh:   make(chan muxWriteJob, dataQueue),
 		config:   config,
 		clientIP: clientIP,
 		egressIP: egressIP,
 	}
+	go session.writeLoop()
 	session.readLoop()
 }

@@ -146,8 +146,32 @@ void MuxStreamSocket::handleOpenFail() {
 	failOpen();
 }
 
+void MuxStreamSocket::scheduleReadyRead() {
+	if (_readyReadScheduled || _inRead) {
+		return;
+	}
+	_readyReadScheduled = true;
+	const auto streamId = _streamId;
+	InvokeQueued(this, [=] {
+		if (_streamId != streamId || _state != State::Connected) {
+			_readyReadScheduled = false;
+			return;
+		}
+		_readyReadScheduled = false;
+		if (hasBytesAvailable()) {
+			_readyRead.fire({});
+		}
+	});
+}
+
 void MuxStreamSocket::handleData(bytes::vector data) {
 	if (!_streamId || _state != State::Connected || data.empty()) {
+		if (!data.empty()) {
+			DEBUG_LOG(("WSS mux drop data stream=%1 state=%2 size=%3"
+				).arg(_streamId
+				).arg(int(_state)
+				).arg(data.size()));
+		}
 		return;
 	}
 	_lastActivity = crl::now();
@@ -157,22 +181,7 @@ void MuxStreamSocket::handleData(bytes::vector data) {
 	bytes::copy(
 		bytes::make_span(_readBuffer).subspan(offset),
 		data);
-	if (!_inRead) {
-		if (_readyReadScheduled) {
-			return;
-		}
-		_readyReadScheduled = true;
-		const auto streamId = _streamId;
-		InvokeQueued(this, [=] {
-			if (_streamId != streamId || _state != State::Connected) {
-				return;
-			}
-			_readyReadScheduled = false;
-			if (hasBytesAvailable()) {
-				_readyRead.fire({});
-			}
-		});
-	}
+	scheduleReadyRead();
 }
 
 void MuxStreamSocket::handleRemoteClose() {
@@ -271,7 +280,12 @@ bool MuxStreamSocket::hasBytesAvailable() {
 int64 MuxStreamSocket::read(bytes::span buffer) {
 	const auto wasInRead = _inRead;
 	_inRead = true;
-	const auto guard = gsl::finally([&] { _inRead = wasInRead; });
+	const auto guard = gsl::finally([&] {
+		_inRead = wasInRead;
+		if (!_inRead && hasBytesAvailable()) {
+			scheduleReadyRead();
+		}
+	});
 	auto written = int64(0);
 	while (_readOffset < _readBuffer.size() && !buffer.empty()) {
 		const auto available = _readBuffer.size() - _readOffset;
@@ -320,7 +334,7 @@ int32 MuxStreamSocket::debugState() {
 }
 
 QString MuxStreamSocket::debugPostfix() const {
-	return u"_wssmuxstream"_q;
+	return u"_wssmuxstream id=%1 t=%2"_q.arg(_streamId).arg(_tunnelIndex);
 }
 
 } // namespace MTP::details

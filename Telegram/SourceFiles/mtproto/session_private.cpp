@@ -18,6 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_dc_options.h"
 
 #include "mtproto/mtproto_wss_connect_gate.h"
+#include "mtproto/mtproto_wss_plain.h"
 #include "mtproto/facade.h"
 #include "base/random.h"
 #include "base/qthelp_url.h"
@@ -182,6 +183,9 @@ constexpr auto kWssDeferMaxWait = crl::time(15000);
 		not_null<Instance*> instance,
 		ShiftedDcId shiftedDcId,
 		const ProxyData &proxy) {
+	if constexpr (kWssPlainTransfer) {
+		return false;
+	}
 	if (proxy.type != ProxyData::Type::WebSocket) {
 		return false;
 	}
@@ -296,6 +300,9 @@ void SessionPrivate::appendTestConnection(
 	connect(weak, &AbstractConnection::packetReassemblyStall, [=](
 			const QString &stallIp,
 			crl::time duration) {
+		if constexpr (kWssPlainTransfer) {
+			return;
+		}
 		if (_options->proxy.type != ProxyData::Type::WebSocket
 			|| stallIp != endpointIp) {
 			return;
@@ -315,7 +322,7 @@ void SessionPrivate::appendTestConnection(
 			).arg(_wssPickOffset + 1));
 		++_wssPickOffset;
 		InvokeQueued(this, [=] {
-			restart();
+			restart("reassembly_stall_rotate");
 		});
 	});
 
@@ -1100,7 +1107,7 @@ void SessionPrivate::retryByTimer() {
 void SessionPrivate::restartNow() {
 	_retryTimeout = 1;
 	_retryTimer.cancel();
-	restart();
+	restart("restart_now");
 }
 
 void SessionPrivate::connectToServer(bool afterConfig) {
@@ -1291,8 +1298,10 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 	_waitForConnectedTimer.callOnce(_waitForConnected);
 }
 
-void SessionPrivate::restart() {
-	DEBUG_LOG(("MTP Info: restarting Connection"));
+void SessionPrivate::restart(const char *reason) {
+	DEBUG_LOG(("MTP Info: restarting Connection dc=%1 reason=%2"
+		).arg(_shiftedDcId
+		).arg(reason ? reason : "unspecified"));
 
 	_waitForReceivedTimer.cancel();
 	_waitForConnectedTimer.cancel();
@@ -1312,7 +1321,8 @@ void SessionPrivate::restart() {
 }
 
 void SessionPrivate::onSentSome(uint64 size) {
-	const auto muxMedia = _options->proxy.type == ProxyData::Type::WebSocket
+	const auto muxMedia = !kWssPlainTransfer
+		&& (_options->proxy.type == ProxyData::Type::WebSocket)
 		&& (isMediaClusterDcId(_shiftedDcId) || isUploadDcId(_shiftedDcId));
 	auto remain = static_cast<uint64>(_waitForReceived);
 	if (!_oldConnection) {
@@ -1400,7 +1410,9 @@ void SessionPrivate::sendPingForce() {
 void SessionPrivate::waitReceivedFailed() {
 	Expects(_options != nullptr);
 
-	DEBUG_LOG(("MTP Info: bad connection, _waitForReceived: %1ms").arg(_waitForReceived));
+	DEBUG_LOG(("MTP Info: bad connection / receive timeout dc=%1 _waitForReceived=%2ms"
+		).arg(_shiftedDcId
+		).arg(_waitForReceived));
 	if (_waitForReceived < kMaxReceiveTimeout) {
 		_waitForReceived = std::min(
 			_waitForReceived * 2,
@@ -1411,7 +1423,8 @@ void SessionPrivate::waitReceivedFailed() {
 		return;
 	}
 
-	DEBUG_LOG(("MTP Info: immediate restart!"));
+	DEBUG_LOG(("MTP Info: immediate restart after receive timeout dc=%1"
+		).arg(_shiftedDcId));
 	InvokeQueued(this, [=] { connectToServer(); });
 
 	const auto instance = _instance;
@@ -1478,11 +1491,11 @@ void SessionPrivate::handleReceived() {
 		auto ints = intsBuffer.constData();
 		if ((intsCount < kMinimalIntsCount) || (intsCount > kMaxMessageLength / kIntSize)) {
 			LOG(("TCP Error: bad message received, len %1").arg(intsCount * kIntSize));
-			return restart();
+			return restart("bad_message_len");
 		}
 		if (_keyId != *(uint64*)ints) {
 			LOG(("TCP Error: bad auth_key_id %1 instead of %2 received").arg(_keyId).arg(*(uint64*)ints));
-			return restart();
+			return restart("bad_auth_key_id");
 		}
 
 		constexpr auto kMinPaddingSize = 12U;
@@ -1519,7 +1532,7 @@ void SessionPrivate::handleReceived() {
 		constexpr auto kMsgKeyShift = 8U;
 		if (ConstTimeIsDifferent(&msgKey, sha256Buffer.data() + kMsgKeyShift, sizeof(msgKey))) {
 			LOG(("TCP Error: bad SHA256 hash after aesDecrypt in message"));
-			return restart();
+			return restart("bad_msg_key");
 		}
 
 		if ((messageLength > kMaxMessageLength)
@@ -1527,7 +1540,7 @@ void SessionPrivate::handleReceived() {
 			|| (paddingSize < kMinPaddingSize)
 			|| (paddingSize > kMaxPaddingSize)) {
 			LOG(("TCP Error: bad msg_len received %1, data size: %2").arg(messageLength).arg(encryptedBytesCount));
-			return restart();
+			return restart("bad_msg_len");
 		}
 
 		if (Logs::DebugEnabled()) {
@@ -1540,7 +1553,7 @@ void SessionPrivate::handleReceived() {
 
 		if (session != _sessionId) {
 			LOG(("MTP Error: bad server session received"));
-			return restart();
+			return restart("bad_session_id");
 		}
 
 		const auto serverTime = int32(msgId >> 32);
@@ -2699,7 +2712,7 @@ void SessionPrivate::onConnected(
 	if (!connection->isConnected()) {
 		LOG(("Connection Error: not connected in onConnected(), "
 			"state: %1").arg(connection->debugState()));
-		return restart();
+		return restart("connected_but_not");
 	}
 
 	_waitForConnected = kMinConnectedTimeout;
@@ -2737,7 +2750,7 @@ void SessionPrivate::onDisconnected(
 
 	if (_testConnections.empty()) {
 		destroyAllConnections();
-		restart();
+		restart("disconnected");
 	} else {
 		confirmBestConnection();
 	}
@@ -2769,6 +2782,9 @@ void SessionPrivate::confirmBestConnection() {
 }
 
 bool SessionPrivate::shouldRotateWssOnReassemblyStall() const {
+	if constexpr (kWssPlainTransfer) {
+		return false;
+	}
 	if (isDownloadDcId(_shiftedDcId) || isUploadDcId(_shiftedDcId)) {
 		return false;
 	} else if (_options->proxy.type != ProxyData::Type::WebSocket) {
@@ -2817,7 +2833,7 @@ void SessionPrivate::restartWssWithNextEndpoint() {
 	++_wssPickOffset;
 	_wssReassemblyStallMs = 0;
 	_sessionData->queueNeedToResumeAndSend();
-	restart();
+	restart("wss_next_endpoint");
 }
 
 void SessionPrivate::removeTestConnection(
@@ -3073,7 +3089,7 @@ void SessionPrivate::handleError(int errorCode) {
 		restartWssWithNextEndpoint();
 	} else {
 		MTP_LOG(_shiftedDcId, ("Restarting after error in connection, error code: %1...").arg(errorCode));
-		return restart();
+		return restart("connection_error");
 	}
 }
 
@@ -3089,7 +3105,7 @@ void SessionPrivate::destroyTemporaryKey() {
 		_sessionData->destroyTemporaryKey(_encryptionKey->keyId());
 	}
 	applyAuthKey(nullptr);
-	restart();
+	restart("temp_key_destroyed");
 }
 
 bool SessionPrivate::sendSecureRequest(

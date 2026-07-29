@@ -26,6 +26,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "storage/storage_account.h"
 #include "apiwrap.h"
+#include "mtproto/mtproto_wss_plain.h"
 
 namespace Storage {
 namespace {
@@ -473,6 +474,9 @@ void Uploader::stopSessions() {
 }
 
 bool Uploader::useWssMux() const {
+	if constexpr (MTP::kWssPlainTransfer) {
+		return false;
+	}
 	const auto &proxy = Core::App().settings().proxy();
 	return proxy.isEnabled()
 		&& proxy.selected().type == MTP::ProxyData::Type::WebSocket;
@@ -1047,7 +1051,19 @@ void Uploader::partLoaded(const MTPBool &result, mtpRequestId requestId) {
 		}
 		if (slow) {
 			if (_useWssMux) {
-				DEBUG_LOG(("Uploader: Slow request, clear fast records."));
+				const auto elapsed = (now - _latestDcIndexRemoved);
+				const auto remove = (elapsed >= kWaitForNormalizeTimeout);
+				const auto last = int(_sentPerDcIndex.size()) - 1;
+				if (remove
+					&& _sentPerDcIndex.size() > 1
+					&& request.dcIndex == last) {
+					DEBUG_LOG(("Uploader: Slow mux request, removing dc index %1."
+						).arg(request.dcIndex));
+					removeDcIndex(request.dcIndex);
+					_latestDcIndexRemoved = now;
+				} else {
+					DEBUG_LOG(("Uploader: Slow request, clear fast records."));
+				}
 			} else {
 				const auto elapsed = (now - _latestDcIndexRemoved);
 				const auto remove = (elapsed >= kWaitForNormalizeTimeout);
@@ -1116,9 +1132,13 @@ void Uploader::partLoaded(const MTPBool &result, mtpRequestId requestId) {
 }
 
 void Uploader::removeDcIndex() {
-	Expects(_sentPerDcIndex.size() > 1);
+	removeDcIndex(int(_sentPerDcIndex.size()) - 1);
+}
 
-	const auto dcIndex = int(_sentPerDcIndex.size()) - 1;
+void Uploader::removeDcIndex(int dcIndex) {
+	Expects(_sentPerDcIndex.size() > 1);
+	Expects(dcIndex >= 0 && dcIndex < int(_sentPerDcIndex.size()));
+	Expects(dcIndex == int(_sentPerDcIndex.size()) - 1);
 	for (auto i = begin(_requests); i != end(_requests);) {
 		if (i->second.dcIndex == dcIndex) {
 			const auto bytes = int(i->second.bytes.size());
@@ -1130,7 +1150,7 @@ void Uploader::removeDcIndex() {
 			++i;
 		}
 	}
-	Assert(_sentPerDcIndex.back() == 0);
+	Assert(_sentPerDcIndex[dcIndex] == 0);
 	_sentPerDcIndex.pop_back();
 	if (int(_sessionTracks.size()) > dcIndex) {
 		_sessionTracks.pop_back();

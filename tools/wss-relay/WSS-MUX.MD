@@ -18,7 +18,7 @@
 
 ### Решение
 
-WSS-MUX держит **пул постоянных WSS-туннелей** (фиксировано 9, `kDefaultTunnelCount`) к прокси. Внутри каждого туннеля мультиплексируются **виртуальные TCP-streams** к Telegram DC. MTProto layer видит обычный сокет; MUX прозрачен.
+WSS-MUX держит **пул постоянных WSS-туннелей** (фиксировано 3: `t0` main + 2 download, `kFixedTunnelCount`) к прокси. Внутри каждого туннеля мультиплексируются **виртуальные TCP-streams** к Telegram DC. MTProto layer видит обычный сокет; MUX прозрачен. Управление Open/Close и data path разделены логически (см. [ADR-001](ADR-001-mux-control-data-plane.md)); elastic scale отключён.
 
 ### Стек
 
@@ -236,18 +236,17 @@ Hub работает на выделенном `QThread` (`hubThread`). Callback
 
 | Константа | Значение | Назначение |
 |-----------|----------|------------|
-| `kDefaultTunnelCount` | 9 | число туннелей (фиксировано, не настраивается в UI) |
-| `kStreamsPerTunnelHigh` | 16 | порог streams на туннель для affinity-балансировки |
-| `kDownloadTunnelSlots` | 8 | первые 8 туннелей для main traffic |
-| `kReconnectDelay` | 2s | reconnect tunnel |
+| `kFixedTunnelCount` | 3 | число туннелей (t0 main + 2 download; elastic off) |
+| `kStreamsPerTunnelCap` | 16 | лимит streams на туннель при pick |
+| `kReconnectDelay` | 2s | reconnect download tunnel |
 | `kOpenRetryDelay` | 250ms | retry pending opens |
 | `kIpUpdateDebounce` | 3s | debounce DNS update |
-| `kDeferResolveFallback` | 10s | старт без multi-IP resolve |
+| `kTunnelStartFallback` | 15s | старт без multi-IP resolve |
 | `kTunnelStreamFailGrace` | 2s | grace перед `failStreamsOnTunnel` при кратковременном disconnect |
 
-**Main traffic** (`tunnelAffinity < 0`): `pickTunnel()` → `pickAnyConnectedTunnelIndex()`: least-loaded среди первых `min(tunnelCount, 8)` туннелей; туннели с download-streams исключаются из main pick.
+**Main traffic** (`tunnelAffinity < 0`): только `t0` (`pickMainTunnelIndex`).
 
-**Download/upload traffic** (`tunnelAffinity >= 0`): привязка к `affinity % tunnelCount`; если целевой tunnel down — fallback на любой connected tunnel (`pickAnyConnectedTunnelIndex`).
+**Download/upload traffic** (`tunnelAffinity >= 0`): affinity hint среди download tunnels + least-loaded fallback; cap `kStreamsPerTunnelCap`.
 
 Формула affinity для download/upload DC ([`session_private.cpp`](../../Telegram/SourceFiles/mtproto/session_private.cpp)):
 
@@ -270,7 +269,7 @@ index = (GetDcIdShift(shiftedDcId) - base) + BareDcId(shiftedDcId) * kMaxMediaDc
 
 ### 4.5 Connect gate
 
-`WssConnectGate`: лимит одновременных WSS handshakes = `clamp(tunnelCount, 1, 9)`. `tryAcquire` / `release` в `WebSocketSocket::connectMuxTunnel`. Сбрасывается в `StopTunnels()`.
+`WssConnectGate`: лимит одновременных WSS handshakes = `kFixedTunnelCount` (3). `tryAcquire` / `release` в `WebSocketSocket::connectMuxTunnel`. Сбрасывается в `StopTunnels()`.
 
 ### 4.5.1 Reassembly stall rotation (main session)
 
@@ -316,7 +315,7 @@ tg://wss?server=HOST&port=443&token=TOKEN
 | `token` | `password` | Bearer token |
 | `path` | — | всегда `/ws/mux` (принудительно) |
 
-`wssMuxTunnels` принудительно = 9 при чтении/парсинге ([`core_settings_proxy.cpp`](../../Telegram/SourceFiles/core/core_settings_proxy.cpp), [`connection_box.cpp`](../../Telegram/SourceFiles/boxes/connection_box.cpp)); параметр `tunnels` в ссылке и поле ввода в UI больше не используются (число туннелей фиксировано).
+`wssMuxTunnels` принудительно = 3 при чтении/парсинге ([`core_settings_proxy.cpp`](../../Telegram/SourceFiles/core/core_settings_proxy.cpp), [`connection_box.cpp`](../../Telegram/SourceFiles/boxes/connection_box.cpp)); параметр `tunnels` в ссылке и поле ввода в UI больше не используются (число туннелей фиксировано).
 
 `sniHost` — поле `ProxyData`, default = `host`; в `tg://wss` и UI не задаётся, только сериализация.
 
@@ -539,10 +538,11 @@ python3 analyze_dc_pcap.py capture.pcap
 | `eb20e1786d` | Upload: IPv4 endpoint pick, upload tunnel affinity, relaxed `canAddDcIndex`, warm-up fixes (ранее `8ab581b6c1`, ветка переписана) |
 | `160e042fc1` | `-max-streams` → 64; Prometheus `/stats/metrics`, `/stats/restart`, DC labels, dial latency avg/p95; deploy-скрипты (`deploy.*`, `remote-build.sh`) |
 | `b755e1b2b8` | Download queue: медиа с более низким приоритетом занимает свободное место в приоритетной очереди |
-| *(uncommitted)* | Число туннелей фиксировано на 9 (`kDefaultTunnelCount`, UI-поле и параметр `tunnels` убраны); `kStreamsPerTunnelHigh` 8→16; `Configure(proxy)` без `tunnelCount` |
+| *(uncommitted)* | ADR-001 Phase 1: `kFixedTunnelCount=3`, elastic off, `sendBoundData`; `wssMuxTunnels` → 3 |
 
 ---
 
 ## См. также
 
 - [README.md](README.md) — деплой, флаги relay, ссылка `tg://wss`, мониторинг
+- [ADR-001-mux-control-data-plane.md](ADR-001-mux-control-data-plane.md) — разделение control/data plane (Proposed)

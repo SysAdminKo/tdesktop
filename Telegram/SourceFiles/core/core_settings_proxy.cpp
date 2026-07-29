@@ -66,7 +66,7 @@ namespace {
 		if (!stream.atEnd()) {
 			stream >> proxy.wssMuxTunnels;
 		}
-		proxy.wssMuxTunnels = 9;
+		proxy.wssMuxTunnels = 6;
 		proxy.path = u"/ws/mux"_q;
 		proxy.user = QString();
 	}

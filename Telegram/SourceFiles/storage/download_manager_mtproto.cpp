@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_auth_key.h"
 #include "mtproto/mtproto_response.h"
 #include "mtproto/mtproto_wss_mux_hub.h"
+#include "mtproto/mtproto_wss_plain.h"
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "main/main_session.h"
@@ -33,6 +34,7 @@ constexpr auto kRetryAddSessionSuccesses = 3;
 constexpr auto kMaxTrackedSuccesses = kRetryAddSessionSuccesses
 	* kMaxTrackedSessionRemoves;
 constexpr auto kRemoveSessionAfterTimeouts = 4;
+constexpr auto kRemoveSessionAfterTimeoutsMux = 2;
 constexpr auto kResetDownloadPrioritiesTimeout = crl::time(200);
 constexpr auto kBadRequestDurationThreshold = 8 * crl::time(1000);
 constexpr auto kWssBadRequestDurationThreshold = 45 * crl::time(1000);
@@ -42,6 +44,8 @@ constexpr auto kWssWarmUpMinReadySessions = 1;
 constexpr auto kWssWarmUpSettleDelay = crl::time(150);
 constexpr auto kWssSlowDownloadLogThreshold = 2 * crl::time(1000);
 constexpr auto kWssStallDownloadLogThreshold = 10 * crl::time(1000);
+constexpr auto kWssDownloadStallPenaltyThreshold = 2;
+constexpr auto kWssDownloadStallWindow = 60 * crl::time(1000);
 
 [[nodiscard]] int sessionMaxWaitedAmount(
 		bool wssMux,
@@ -172,9 +176,7 @@ DownloadManagerMtproto::DownloadManagerMtproto(not_null<ApiWrap*> api)
 		const auto index = MTP::GetDcIdShift(shiftedDcId)
 			- MTP::kBaseDownloadDcShift;
 		downloadSessionReset(dcId, index);
-		sessionTimedOut(
-			dcId,
-			MTP::GetDcIdShift(shiftedDcId));
+		sessionTimedOut(dcId, index);
 	}, _lifetime);
 	instance.downloadSessionStateChanges(
 	) | rpl::on_next([=](const std::pair<MTP::ShiftedDcId, int32> &change) {
@@ -198,10 +200,21 @@ DownloadManagerMtproto::~DownloadManagerMtproto() {
 	killSessions();
 }
 
-bool DownloadManagerMtproto::useWssMux() const {
+bool DownloadManagerMtproto::wssMuxProxyActive() const {
 	const auto &proxy = Core::App().settings().proxy();
 	return proxy.isEnabled()
 		&& proxy.selected().type == MTP::ProxyData::Type::WebSocket;
+}
+
+bool DownloadManagerMtproto::useWssMux() const {
+	if constexpr (MTP::kWssPlainTransfer) {
+		return false;
+	}
+	return wssMuxProxyActive();
+}
+
+bool DownloadManagerMtproto::muxAwareDownloadControl() const {
+	return wssMuxProxyActive();
 }
 
 crl::time DownloadManagerMtproto::killSessionTimeout() const {
@@ -480,7 +493,7 @@ bool DownloadManagerMtproto::trySendNextPart(MTP::DcId dcId, Queue &queue) {
 	}
 	auto &balanceData = _balanceData[dcId];
 	const auto &sessions = balanceData.sessions;
-	const auto wssMux = useWssMux();
+	const auto wssMux = muxAwareDownloadControl();
 	const auto bestIndex = [&] {
 		const auto proj = [&](int index) {
 			const auto &data = sessions[index];
@@ -642,6 +655,8 @@ void DownloadManagerMtproto::downloadSessionReset(
 	auto &session = dc.sessions[index];
 	session.coldStartAt = 0;
 	session.connectAt = 0;
+	session.stallSignals = 0;
+	session.lastStallAt = 0;
 	session.warm = false;
 	warmSessionDisconnected(dcId, index);
 }
@@ -663,6 +678,12 @@ void DownloadManagerMtproto::requestSucceeded(
 		|| (amountAtRequestStart > data.maxWaitedAmount);
 	const auto parts = amountAtRequestStart / kDownloadPartSize;
 	const auto duration = (crl::now() - timeAtRequestStart);
+	const auto queueWait = (queuedAt && timeAtRequestStart > queuedAt)
+		? (timeAtRequestStart - queuedAt)
+		: crl::time(0);
+	const auto netMs = (duration > queueWait)
+		? (duration - queueWait)
+		: duration;
 	if (!data.warm && data.coldStartAt) {
 		const auto now = crl::now();
 		const auto total = now - data.coldStartAt;
@@ -685,15 +706,12 @@ void DownloadManagerMtproto::requestSucceeded(
 		).arg(duration
 		).arg(parts
 		).arg(overloaded ? " (overloaded)" : ""));
-	if (useWssMux() && duration >= kWssSlowDownloadLogThreshold) {
+	if (wssMuxProxyActive() && duration >= kWssSlowDownloadLogThreshold) {
 		const auto loads = MTP::WssMuxHub::Instance().TunnelStreamCounts();
 		const auto shiftedDcId = MTP::downloadDcId(dcId, index);
 		const auto line = (duration >= kWssStallDownloadLogThreshold)
-			? QStringLiteral("Download stall (%1,%2) shiftedDc=%3 duration=%4 parts=%5 requested=%6 max=%7 dc_total=%8 tunnel_loads=[%9] queue_wait=%10 recv_ms=%11")
-			: QStringLiteral("Download slow (%1,%2) shiftedDc=%3 duration=%4 parts=%5 requested=%6 max=%7 dc_total=%8 tunnel_loads=[%9] queue_wait=%10 recv_ms=%11");
-		const auto queueWait = (queuedAt && timeAtRequestStart > queuedAt)
-			? (timeAtRequestStart - queuedAt)
-			: crl::time(0);
+			? u"Download stall (%1,%2) shiftedDc=%3 duration=%4 parts=%5 requested=%6 max=%7 dc_total=%8 tunnel_loads=[%9] queue_wait=%10 net_ms=%11 plain=%12"_q
+			: u"Download slow (%1,%2) shiftedDc=%3 duration=%4 parts=%5 requested=%6 max=%7 dc_total=%8 tunnel_loads=[%9] queue_wait=%10 net_ms=%11 plain=%12"_q;
 		DEBUG_LOG((line
 			).arg(dcId
 			).arg(index
@@ -705,27 +723,45 @@ void DownloadManagerMtproto::requestSucceeded(
 			).arg(dc.totalRequested
 			).arg(tunnelLoadsString(loads)
 			).arg(queueWait
-			).arg(duration));
+			).arg(netMs
+			).arg(MTP::kWssPlainTransfer ? 1 : 0));
 	}
-	if (overloaded) {
-		return;
-	}
-
-	if (duration >= badRequestDurationThreshold(useWssMux())) {
-		if (useWssMux() && dc.totalRequested > 0) {
-			return;
+	if (muxAwareDownloadControl()) {
+		const auto stall = (duration >= kWssStallDownloadLogThreshold)
+			&& (netMs >= (duration * 3) / 4)
+			&& (queueWait <= duration / 4);
+		if (stall) {
+			if (noteDownloadStall(data)
+				&& dc.sessions.size() > kStartSessionsCount) {
+				DEBUG_LOG(("Download (%1,%2) repeated mux stall, signaling time out."
+					).arg(dcId
+					).arg(index));
+				crl::on_main(this, [=] {
+					sessionTimedOut(dcId, index);
+				});
+				return;
+			}
+		} else if (duration < kWssSlowDownloadLogThreshold) {
+			data.stallSignals = 0;
+			data.lastStallAt = 0;
 		}
+	}
+	if (duration >= badRequestDurationThreshold(muxAwareDownloadControl())) {
 		DEBUG_LOG(("Duration too large, signaling time out."));
 		crl::on_main(this, [=] {
 			sessionTimedOut(dcId, index);
 		});
 		return;
 	}
-	const auto maxWaitedCap = useWssMux()
+	if (overloaded) {
+		return;
+	}
+	const auto maxWaitedCap = muxAwareDownloadControl()
 		? kWssMaxWaitedAmount
 		: kMaxWaitedInSession;
 	if (amountAtRequestStart == data.maxWaitedAmount
-		&& data.maxWaitedAmount < maxWaitedCap) {
+		&& data.maxWaitedAmount < maxWaitedCap
+		&& data.stallSignals == 0) {
 		data.maxWaitedAmount = std::min(
 			data.maxWaitedAmount + kDownloadPartSize,
 			maxWaitedCap);
@@ -747,8 +783,11 @@ void DownloadManagerMtproto::requestSucceeded(
 	}
 	if (dc.timeouts > 0) {
 		--dc.timeouts;
-		return;
-	} else if (dc.sessions.size() == kMaxSessionsCount) {
+		if (!muxAwareDownloadControl()) {
+			return;
+		}
+	}
+	if (dc.sessions.size() == kMaxSessionsCount) {
 		return;
 	}
 	const auto now = crl::now();
@@ -778,6 +817,19 @@ int DownloadManagerMtproto::chooseSessionIndex(MTP::DcId dcId) const {
 	return (j - begin(sessions));
 }
 
+bool DownloadManagerMtproto::noteDownloadStall(DcSessionBalanceData &data) {
+	const auto now = crl::now();
+	if (!data.lastStallAt
+		|| (now - data.lastStallAt) > kWssDownloadStallWindow) {
+		data.stallSignals = 0;
+	}
+	data.lastStallAt = now;
+	data.stallSignals = std::min(
+		data.stallSignals + 1,
+		kWssDownloadStallPenaltyThreshold);
+	return data.stallSignals >= kWssDownloadStallPenaltyThreshold;
+}
+
 void DownloadManagerMtproto::sessionTimedOut(MTP::DcId dcId, int index) {
 	const auto i = _balanceData.find(dcId);
 	if (i == end(_balanceData)) {
@@ -790,9 +842,20 @@ void DownloadManagerMtproto::sessionTimedOut(MTP::DcId dcId, int index) {
 	DEBUG_LOG(("Download (%1,%2) session timed-out.").arg(dcId).arg(index));
 	for (auto &session : dc.sessions) {
 		session.successes = 0;
+		session.stallSignals = 0;
+		session.lastStallAt = 0;
 	}
-	if (dc.sessions.size() == kStartSessionsCount
-		|| ++dc.timeouts < kRemoveSessionAfterTimeouts) {
+	const auto removeAfter = muxAwareDownloadControl()
+		? kRemoveSessionAfterTimeoutsMux
+		: kRemoveSessionAfterTimeouts;
+	++dc.timeouts;
+	if (dc.sessions.size() <= kStartSessionsCount) {
+		if (dc.timeouts > removeAfter) {
+			dc.timeouts = removeAfter;
+		}
+		return;
+	}
+	if (dc.timeouts < removeAfter) {
 		return;
 	}
 	dc.timeouts = 0;

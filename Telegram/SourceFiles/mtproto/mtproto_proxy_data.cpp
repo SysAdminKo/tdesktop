@@ -10,6 +10,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/qthelp_url.h"
 #include "base/qt/qt_string_view.h"
 
+#include <algorithm>
+#include <map>
+#include <mutex>
+
 namespace MTP {
 namespace {
 
@@ -157,7 +161,7 @@ ProxyData::Status ProxyData::status() const {
 	} else if (type == Type::WebSocket) {
 		if (path != u"/ws/mux"_q) {
 			return Status::Invalid;
-		} else if (wssMuxTunnels < 1 || wssMuxTunnels > 9) {
+		} else if (wssMuxTunnels < 1 || wssMuxTunnels > 6) {
 			return Status::Invalid;
 		}
 	}
@@ -237,6 +241,18 @@ ProxyData ToDirectIpProxy(const ProxyData &proxy, int ipIndex) {
 	}
 	result.host = proxy.resolvedIPs[ipIndex];
 	return result;
+}
+
+void RotateResolvedIps(const QString &host, std::vector<QString> &ips) {
+	const auto count = int(ips.size());
+	if (count <= 1) {
+		return;
+	}
+	static auto mutex = std::mutex();
+	static auto next = std::map<QString, int>();
+	const auto locker = std::lock_guard(mutex);
+	const auto shift = next[host]++ % count;
+	std::rotate(begin(ips), begin(ips) + shift, end(ips));
 }
 
 QNetworkProxy ToNetworkProxy(const ProxyData &proxy) {

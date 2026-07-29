@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/binary"
+	"io"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -90,8 +92,23 @@ func TestTrackUpstreamReadWait(t *testing.T) {
 	if stream.trackUpstreamReadWait(0) {
 		t.Fatal("expected rotate disabled with max=0")
 	}
-	if stream.consecutiveReadStalls != 0 {
+	if stream.consecutiveReadStalls != 1 || !stream.readStallLogged {
+		t.Fatalf("expected stall telemetry with max=0: consecutive=%d logged=%v",
+			stream.consecutiveReadStalls, stream.readStallLogged)
+	}
+	stream.lastReadAt = time.Now().Add(-4 * time.Second)
+	if stream.trackUpstreamReadWait(0) {
+		t.Fatal("expected rotate still disabled with max=0")
+	}
+	if stream.consecutiveReadStalls != 2 {
 		t.Fatalf("unexpected consecutive with max=0: %d", stream.consecutiveReadStalls)
+	}
+
+	stream = &muxStream{
+		id:            7,
+		target:        "149.154.167.41:443",
+		upstreamBytes: muxUpstreamReadStallMinBytes,
+		lastReadAt:    time.Now().Add(-4 * time.Second),
 	}
 	for i := 1; i < 4; i++ {
 		if stream.trackUpstreamReadWait(4) {
@@ -100,6 +117,7 @@ func TestTrackUpstreamReadWait(t *testing.T) {
 		if stream.consecutiveReadStalls != i {
 			t.Fatalf("unexpected consecutive at stall %d: got %d", i, stream.consecutiveReadStalls)
 		}
+		stream.lastReadAt = time.Now().Add(-4 * time.Second)
 	}
 	if !stream.trackUpstreamReadWait(4) {
 		t.Fatal("expected rotate after 4 consecutive stalls")
@@ -137,5 +155,97 @@ func TestTrickleReadDoesNotResetStallCounter(t *testing.T) {
 	stream.lastReadAt = time.Now().Add(-4 * time.Second)
 	if !stream.trackUpstreamReadWait(4) {
 		t.Fatal("expected rotate at consecutive=4")
+	}
+}
+
+func TestNextWriteJobPrefersControl(t *testing.T) {
+	session := &muxSession{
+		ctrlCh: make(chan muxWriteJob, 4),
+		dataCh: make(chan muxWriteJob, 4),
+	}
+	session.dataCh <- muxWriteJob{messageType: 1}
+	session.dataCh <- muxWriteJob{messageType: 2}
+	session.ctrlCh <- muxWriteJob{messageType: 99}
+	job, ok := session.nextWriteJob()
+	if !ok || job.messageType != 99 {
+		t.Fatalf("expected control first, got ok=%v type=%d", ok, job.messageType)
+	}
+	job, ok = session.nextWriteJob()
+	if !ok || job.messageType != 1 {
+		t.Fatalf("expected data next, got ok=%v type=%d", ok, job.messageType)
+	}
+	job, ok = session.nextWriteJob()
+	if !ok || job.messageType != 2 {
+		t.Fatalf("expected remaining data, got ok=%v type=%d", ok, job.messageType)
+	}
+}
+
+func TestNextWriteJobControlOverPendingData(t *testing.T) {
+	session := &muxSession{
+		ctrlCh: make(chan muxWriteJob, 4),
+		dataCh: make(chan muxWriteJob, 4),
+	}
+	session.dataCh <- muxWriteJob{messageType: 1}
+	job, ok := session.nextWriteJob()
+	if !ok || job.messageType != 1 {
+		t.Fatalf("expected data when no ctrl, got ok=%v type=%d", ok, job.messageType)
+	}
+	session.dataCh <- muxWriteJob{messageType: 2}
+	session.ctrlCh <- muxWriteJob{messageType: 99}
+	job, ok = session.nextWriteJob()
+	if !ok || job.messageType != 99 {
+		t.Fatalf("expected ctrl over data, got ok=%v type=%d", ok, job.messageType)
+	}
+	job, ok = session.nextWriteJob()
+	if !ok || job.messageType != 2 {
+		t.Fatalf("expected deferred data, got ok=%v type=%d", ok, job.messageType)
+	}
+}
+
+func TestFinishWriteJobAccountsSentOnlyOnSuccess(t *testing.T) {
+	stream := &muxStream{}
+	var queued atomic.Int32
+	queued.Store(1)
+	job := muxWriteJob{
+		accountBytes:  209,
+		sentCounter:   &stream.sentBytes,
+		queuedCounter: &queued,
+	}
+	session := &muxSession{}
+	session.finishWriteJob(job, io.ErrClosedPipe)
+	if stream.sentBytes.Load() != 0 {
+		t.Fatalf("sentBytes on failed write: %d", stream.sentBytes.Load())
+	}
+	if queued.Load() != 0 {
+		t.Fatalf("queued counter not decremented: %d", queued.Load())
+	}
+
+	queued.Store(1)
+	job = muxWriteJob{
+		accountBytes:  209,
+		sentCounter:   &stream.sentBytes,
+		queuedCounter: &queued,
+	}
+	session.finishWriteJob(job, nil)
+	if stream.sentBytes.Load() != 209 {
+		t.Fatalf("sentBytes after success: %d", stream.sentBytes.Load())
+	}
+}
+
+func TestWaitQueuedDataDrain(t *testing.T) {
+	session := &muxSession{}
+	stream := &muxStream{}
+	stream.queuedDataFrames.Store(2)
+	done := make(chan struct{})
+	go func() {
+		session.waitQueuedDataDrain(stream)
+		close(done)
+	}()
+	time.Sleep(15 * time.Millisecond)
+	stream.queuedDataFrames.Store(0)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("drain did not finish after queued cleared")
 	}
 }

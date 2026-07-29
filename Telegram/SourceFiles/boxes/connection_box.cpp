@@ -67,7 +67,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace {
 
 constexpr auto kSaveSettingsDelayedTimeout = crl::time(1000);
-constexpr auto kWssMuxTunnels = 9;
+constexpr auto kWssMuxTunnels = 6;
 
 using ProxyData = MTP::ProxyData;
 

@@ -94,7 +94,7 @@ private:
 	void connectToServer(bool afterConfig = false);
 	void connectingTimedOut();
 	void doDisconnect();
-	void restart();
+	void restart(const char *reason = nullptr);
 	void requestCDNConfig();
 	void handleError(int errorCode);
 	void onError(

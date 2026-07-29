@@ -81,18 +81,6 @@ void ClearIpQuarantine(const QString &host, const QString &ip) {
 	return true;
 }
 
-void RotateResolvedIps(const QString &host, std::vector<QString> &ips) {
-	const auto count = int(ips.size());
-	if (count <= 1) {
-		return;
-	}
-	static auto mutex = std::mutex();
-	static auto next = std::map<QString, int>();
-	const auto locker = std::lock_guard(mutex);
-	const auto shift = next[host]++ % count;
-	std::rotate(begin(ips), begin(ips) + shift, end(ips));
-}
-
 [[nodiscard]] int FindNextResolvedIpIndex(
 		const QString &host,
 		const std::vector<QString> &ips,

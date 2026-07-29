@@ -56,6 +56,12 @@ type relayStats struct {
 	muxWriteWaitUsTotal      atomic.Int64
 	muxWriteWaitCount        atomic.Int64
 	maxMuxWriteWaitUs        atomic.Int64
+	muxWriteInQueueUsTotal   atomic.Int64
+	muxWriteInQueueCount     atomic.Int64
+	maxMuxWriteInQueueUs     atomic.Int64
+	muxWriteQueueDepthTotal  atomic.Int64
+	muxWriteQueueDepthCount  atomic.Int64
+	maxMuxWriteQueueDepth    atomic.Int64
 	authFailures             atomic.Int64
 	wsUpgradeFailures        atomic.Int64
 	wsBadSubprotocol           atomic.Int64
@@ -65,8 +71,9 @@ type relayStats struct {
 	peakMuxTunnels           atomic.Int64
 	peakMuxStreams           atomic.Int64
 
-	dialMsSamples    latencySamples
-	writeWaitSamples latencySamples
+	dialMsSamples       latencySamples
+	writeWaitSamples    latencySamples
+	writeInQueueSamples latencySamples
 }
 
 type clientStats struct {
@@ -219,6 +226,11 @@ type statsSnapshot struct {
 	MuxWriteWaitUsAvg        int64                 `json:"mux_write_wait_us_avg"`
 	MuxWriteWaitUsP95        int64                 `json:"mux_write_wait_us_p95"`
 	MuxWriteWaitUsMax        int64                 `json:"mux_write_wait_us_max"`
+	MuxWriteInQueueUsAvg     int64                 `json:"mux_write_in_queue_us_avg"`
+	MuxWriteInQueueUsP95     int64                 `json:"mux_write_in_queue_us_p95"`
+	MuxWriteInQueueUsMax     int64                 `json:"mux_write_in_queue_us_max"`
+	MuxWriteQueueDepthAvg    int64                 `json:"mux_write_queue_depth_avg"`
+	MuxWriteQueueDepthMax    int64                 `json:"mux_write_queue_depth_max"`
 	Clients                  []clientSnapshot      `json:"clients"`
 	Upstreams                []upstreamSnapshot    `json:"upstreams"`
 	Abuse                    []abuseSnapshot       `json:"abuse_by_ip"`
@@ -566,6 +578,37 @@ func (s *relayStats) incMuxWriteWait(dur time.Duration) {
 	}
 }
 
+func (s *relayStats) incMuxWriteInQueue(dur time.Duration) {
+	us := dur.Microseconds()
+	s.muxWriteInQueueUsTotal.Add(us)
+	s.muxWriteInQueueCount.Add(1)
+	s.writeInQueueSamples.add(us)
+	for {
+		current := s.maxMuxWriteInQueueUs.Load()
+		if us <= current {
+			break
+		}
+		if s.maxMuxWriteInQueueUs.CompareAndSwap(current, us) {
+			break
+		}
+	}
+}
+
+func (s *relayStats) observeMuxWriteQueueDepth(depth int) {
+	s.muxWriteQueueDepthTotal.Add(int64(depth))
+	s.muxWriteQueueDepthCount.Add(1)
+	d := int64(depth)
+	for {
+		current := s.maxMuxWriteQueueDepth.Load()
+		if d <= current {
+			break
+		}
+		if s.maxMuxWriteQueueDepth.CompareAndSwap(current, d) {
+			break
+		}
+	}
+}
+
 func (s *relayStats) recordMuxOpenDial(target string, dialMs int64) {
 	s.muxOpenCount.Add(1)
 	s.muxOpenDialMsTotal.Add(dialMs)
@@ -657,6 +700,17 @@ func (s *relayStats) snapshot() statsSnapshot {
 		result.MuxWriteWaitUsAvg = s.muxWriteWaitUsTotal.Load() / waitCount
 		result.MuxWriteWaitUsMax = s.maxMuxWriteWaitUs.Load()
 		result.MuxWriteWaitUsP95 = s.writeWaitSamples.percentile(0.95)
+	}
+	inQueueCount := s.muxWriteInQueueCount.Load()
+	if inQueueCount > 0 {
+		result.MuxWriteInQueueUsAvg = s.muxWriteInQueueUsTotal.Load() / inQueueCount
+		result.MuxWriteInQueueUsMax = s.maxMuxWriteInQueueUs.Load()
+		result.MuxWriteInQueueUsP95 = s.writeInQueueSamples.percentile(0.95)
+	}
+	depthCount := s.muxWriteQueueDepthCount.Load()
+	if depthCount > 0 {
+		result.MuxWriteQueueDepthAvg = s.muxWriteQueueDepthTotal.Load() / depthCount
+		result.MuxWriteQueueDepthMax = s.maxMuxWriteQueueDepth.Load()
 	}
 	if openCount > 0 {
 		result.MuxOpenDialMsAvg = s.muxOpenDialMsTotal.Load() / openCount

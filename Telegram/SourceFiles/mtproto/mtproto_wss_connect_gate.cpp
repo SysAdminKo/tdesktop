@@ -1,5 +1,7 @@
 #include "mtproto/mtproto_wss_connect_gate.h"
 
+#include "mtproto/mtproto_wss_plain.h"
+
 #include <deque>
 
 #include <QtCore/QMutex>
@@ -23,6 +25,9 @@ void WssConnectGate::SetLimit(int limit) {
 }
 
 bool WssConnectGate::tryAcquire(Fn<void()> &&whenAvailable) {
+	if constexpr (kWssPlainTransfer) {
+		return true;
+	}
 	QMutexLocker lock(&Mutex);
 	if (Active < MaxConcurrent) {
 		++Active;
@@ -33,6 +38,9 @@ bool WssConnectGate::tryAcquire(Fn<void()> &&whenAvailable) {
 }
 
 void WssConnectGate::release() {
+	if constexpr (kWssPlainTransfer) {
+		return;
+	}
 	Fn<void()> next;
 	{
 		QMutexLocker lock(&Mutex);

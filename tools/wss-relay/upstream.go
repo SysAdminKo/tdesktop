@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"time"
 )
 
 var telegramAllowlist *telegramUpstreamAllowlist
@@ -23,7 +24,9 @@ func dialUpstream(addr, clientIP, egressIP string) (net.Conn, error) {
 			return nil, fmt.Errorf("upstream not allowed: %s", host)
 		}
 	}
-	dialer := net.Dialer{}
+	dialer := net.Dialer{
+		Timeout: 5 * time.Second,
+	}
 	if egressIP = resolveEgressIP(egressIP); egressIP != "" {
 		dialer.LocalAddr = &net.TCPAddr{
 			IP:   net.ParseIP(egressIP),

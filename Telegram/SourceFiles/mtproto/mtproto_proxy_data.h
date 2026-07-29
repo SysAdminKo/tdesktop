@@ -37,7 +37,7 @@ struct ProxyData {
 	QString user, password;
 	QString path;
 	QString sniHost;
-	int wssMuxTunnels = 9;
+	int wssMuxTunnels = 6;
 
 	[[nodiscard]] bool wssMuxEnabled() const {
 		return type == Type::WebSocket;
@@ -63,6 +63,7 @@ struct ProxyData {
 [[nodiscard]] ProxyData ToDirectIpProxy(
 	const ProxyData &proxy,
 	int ipIndex = 0);
+void RotateResolvedIps(const QString &host, std::vector<QString> &ips);
 [[nodiscard]] QNetworkProxy ToNetworkProxy(const ProxyData &proxy);
 
 } // namespace MTP

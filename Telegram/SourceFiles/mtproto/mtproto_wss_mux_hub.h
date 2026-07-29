@@ -63,8 +63,9 @@ public:
 		uint32 streamId,
 		const QString &host,
 		int port);
-	void SendData(uint32 streamId, bytes::const_span data);
 	void RequestClose(uint32 streamId);
+
+	void SendData(uint32 streamId, bytes::const_span data);
 
 	void CancelCheckStreamSetup(uint64 setupId);
 

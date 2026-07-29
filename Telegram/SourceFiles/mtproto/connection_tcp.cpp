@@ -356,14 +356,16 @@ void TcpConnection::socketRead() {
 			const auto read = free.subspan(0, readCount);
 			aesCtrEncrypt(read, _receiveKey, &_receiveState);
 
-			if (_lastReadAt && _readGapCount < 20) {
+			if (_lastReadAt && _readGapCount < 40) {
 				const auto gap = crl::now() - _lastReadAt;
 				if (gap >= crl::time(500)) {
 					CONNECTION_LOG_INFO(
-						u"WSS read gap=%1ms ip=%2 read=%3"_q
+						u"WSS read gap=%1ms ip=%2 read=%3 left=%4 buf=%5"_q
 						.arg(gap)
 						.arg(_address)
-						.arg(readCount));
+						.arg(readCount)
+						.arg(_leftBytes)
+						.arg(_readBytes));
 					_readGapCount++;
 				}
 			}

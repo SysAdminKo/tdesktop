@@ -16,13 +16,10 @@ ExecStart=/opt/wss-relay/bin/wss-relay \
 	-stream-idle-timeout 2m \
 	-ws-ping-interval 30s \
 	-ws-read-timeout 90s \
-	-upstream-stall-rotate 4 \
+	-plain \
+	-upstream-stall-rotate 0 \
+	-upstream-pool-min 0 \
 	-telegram-only=true \
-	-upstream-pool-min 2 \
-	-upstream-pool-max 15 \
-	-upstream-pool-idle 60s \
-	-upstream-pool-bucket-retention 10m \
-	-upstream-pool-target-hit 40 \
 	-egress-bind-ips 31.76.21.175,31.76.21.176,31.76.21.177 \
 	-auth-file /opt/wss-relay/config/tokens
 Restart=always

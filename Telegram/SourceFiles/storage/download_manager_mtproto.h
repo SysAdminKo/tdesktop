@@ -94,7 +94,9 @@ private:
 
 		int requested = 0;
 		int successes = 0; // Since last timeout in this dc in any session.
+		int stallSignals = 0;
 		int maxWaitedAmount = 0;
+		crl::time lastStallAt = 0;
 		crl::time coldStartAt = 0;
 		crl::time connectAt = 0;
 		bool warm = false;
@@ -123,8 +125,11 @@ private:
 	void resetGeneration();
 	void sessionTimedOut(MTP::DcId dcId, int index);
 	void removeSession(MTP::DcId dcId);
+	[[nodiscard]] bool noteDownloadStall(DcSessionBalanceData &data);
 
 	[[nodiscard]] bool useWssMux() const;
+	[[nodiscard]] bool wssMuxProxyActive() const;
+	[[nodiscard]] bool muxAwareDownloadControl() const;
 	[[nodiscard]] crl::time killSessionTimeout() const;
 	void maybeWarmUpSessions(MTP::DcId dcId);
 	[[nodiscard]] bool isWarmUpReady(MTP::DcId dcId) const;

@@ -57,6 +57,7 @@ private:
 	void closeServerStream();
 	void closeServerStream(uint32 streamId);
 	void checkIdle();
+	void scheduleReadyRead();
 
 	const not_null<WssMuxHub*> _hub;
 	uint32 _streamId = 0;

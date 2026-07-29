@@ -140,6 +140,7 @@ private:
 		-> SendResult;
 	[[nodiscard]] QByteArray readDocPart(not_null<Entry*> entry);
 	void removeDcIndex();
+	void removeDcIndex(int index);
 
 	[[nodiscard]] bool useWssMux() const;
 	[[nodiscard]] crl::time killSessionTimeout() const;
