@@ -1,6 +1,6 @@
 ---
 name: continue
-description: Continue autonomous Telegram Desktop development from the shared ai-tdesktop repository. Use when the user invokes $continue or /continue, asks Codex to keep working through the AI queue, or wants one command to resume the active task, drain a frozen startup batch, or process the local inbox only when startup has no task work, while including follow-ups discovered from the batch but deferring unrelated tasks added mid-run.
+description: Continue autonomous Telegram Desktop development from the shared ai-tdesktop repository. Use when the user invokes $continue or /continue, asks Codex to keep working through the AI queue, or wants one command to resume the active task at the head of a frozen startup batch, drain matching queued work, or process the local inbox only when startup has no task work, while including follow-ups discovered from the batch but deferring unrelated tasks added mid-run.
 ---
 
 # Continue AI Work
@@ -67,7 +67,8 @@ Treat text after `$continue` or `/continue` as optional natural-language
 guidance for new shared work. Its own wording decides its strength. A
 preference such as "payments tasks first" reorders the shared tasks recorded
 in the startup batch; it does not exclude the others. A restriction such as
-"only the payments tasks" records only matching unclaimed shared tasks.
+"only the payments tasks" or "all tasks except projects X and Y" records only
+matching unclaimed shared tasks.
 Hints never exclude this checkout's active, blocked, or legacy-reserved work.
 A restrictive hint that matches no shared task does not make an existing
 queue look idle or permit inbox processing.
@@ -78,6 +79,10 @@ canonical state, then select another recorded id. Always resume this
 checkout's `in-progress` task and previously blocked work before applying a
 priority hint to new shared work, unless the user expressly asks to stop or
 reassign it.
+
+The presence of active work changes ordering, not batch scope. Unless the user
+expressly asks to run only the current task, freeze the same matching startup
+queue behind the active task that would have been recorded without active work.
 
 ## Freeze the invocation batch
 
@@ -95,13 +100,21 @@ Do not write a batch file, claim the whole batch, or publish reservations.
 Queue refreshes update task state but never add ordinary task ids to the
 frozen batch.
 
-### Mode 1: resume active work
+### Mode 1: resume active work, then drain the selected snapshot
 
 If `own_in_progress` contains this checkout's active task, choose `active`
-mode and record only that task id. Do not add existing blocked, reserved, or
-unclaimed tasks. Finish the active task to an approved, genuinely blocked, or
-global-hard-stop boundary, then continue only with follow-ups discovered from
-its result.
+mode and record that task id first. Then append the same queue tail that Mode 2
+would record from the startup snapshot:
+
+- every own blocked and legacy-reserved task, regardless of the hint;
+- every unclaimed task under no hint or a preference, ordered with preferred
+  matches first;
+- only matching unclaimed tasks under a restrictive hint.
+
+Record dependency-waiting tasks too. Finish the active task to an approved,
+genuinely blocked, or global-hard-stop boundary, then continue through ready
+recorded tasks one at a time. Only an explicit request to run just the active
+task produces a one-item active batch.
 
 ### Mode 2: drain the existing queue snapshot
 
@@ -276,9 +289,10 @@ After it returns, require one of:
 
 An interruption or environment stop never becomes a convenience `Block`.
 After a genuine `Block`, add the task id to `attempted_blocked` and continue
-with independent work. A dirty source checkout, file-lock build failure,
+with independent work. A dirty source checkout, a file-lock build failure that
+remains after `perform-task` exhausts the shared exact-checkout recovery,
 missing test account, unsafe publication conflict, or comparable global safety
-failure stops the loop.
+failure stops the loop. The first lock signature never stops the batch.
 
 The missing `test_TelegramForcePortable` golden account is the only
 portable-folder global stop. All live/real folder combinations must be
@@ -289,9 +303,14 @@ artifact-based assessment.
 
 ## Route discovered follow-ups
 
-After every canonical `Approve` or `Block`, read `work/result.md`. If it says
-`Discovered: present` and lacks `work/discovered-routed.md`, route the complete
-blocks before selecting more shared work.
+After every canonical `Approve` or `Block`, read `work/result.md`. Route before
+selecting more shared work whenever it lacks `work/discovered-routed.md` and
+either says `Discovered: present` or carries a non-`none` `Unverified:` value.
+Both are unfinished work leaving the pipeline; the only difference is that
+`Discovered:` names work nobody has started and `Unverified:` names behavior that
+already shipped without proof. An approved task whose unverified behavior was
+never routed is exactly how coverage debt becomes invisible, so the marker file
+gates both.
 
 Spawn one disposable routing worker with `fork_turns: "none"`. Tell it to read
 the routing, splitting, task-path, artifact, validation, and publication rules
@@ -306,6 +325,81 @@ paths, commits `Route follow-ups from <source-task-id>`, and publishes with the
 workspace helper. Retry ordinary concurrent-master races; preserve a semantic
 conflict or unavailable-remote slot commit and stop.
 
+Project assignment has a strong source-project bias. When the source task has
+a project, assign each discovered implementation or verification task to that
+same project by default, add it to the project index, and name the source task
+in `depends_on` whenever its shipped code or behavior is a prerequisite, even
+when it is already approved. State that code-lineage requirement in the new
+task so it is not attempted on a branch without the project changes.
+
+Detach a discovered task to another project or to `project: null` only when the
+worker proves it remains coherent, implementable, and independently testable
+with the source project's changes absent or reverted. Touching shared code,
+serving another surface, or having a broader title is not proof: projects
+record feature and code lineage, not exclusive file ownership. The discovery
+receipt must record the concrete independence evidence. If the source project
+is archived, restore it before adding the task. When the source task has no
+project, apply the ordinary project-selection rules from `process-inbox`.
+
+First apply the scope filter, before any disposition. A verification exists to
+prove **the source task's own change**, so run the revert test on each entry: if
+reverting that task's diff could not change the outcome, the entry is about
+pre-existing behavior and no verification is created for it. Untested code the
+run passed on the way, a neighbouring feature, a parameter range the acceptance
+never named, a pre-existing bug the performer noticed: record the observation in
+the receipt and stop there. If it deserves work it must earn its own task on its
+own merits, through the ordinary discovered-follow-up planner and with its own
+justification — never as coverage debt attributed to a task that did not create
+it. This filter is what keeps a codebase far larger than the queue from
+generating verification work without end.
+
+Entries that survive the filter get exactly one of two dispositions, and the
+receipt records which and why:
+
+- **Routable** when the existing test account and checkout could close the gap
+  and the run simply did not cover it. Create a `type: verify` task naming the
+  exact behavior to prove; its acceptance is that verification, and it carries
+  no implementation work of its own.
+
+  This disposition should now be rare. `pipeline.md` requires a performer to
+  close any gap its own checkout can measure by adding a test run while it still
+  holds the context, the branch, the overlay and the build, rather than deferring
+  it — so a routable entry means that bar slipped. Route it anyway, because the
+  coverage is genuinely missing and the source run's context is gone, but state
+  plainly in the receipt that the source run could have closed it in context.
+  That sentence is the measurable signal that the pipeline is exporting its own
+  test coverage into the queue; read a run of them as a defect to fix upstream,
+  never as normal throughput.
+- **Infrastructure-limited** when closing it needs something the project does
+  not have — a second account, funded external value, real server-backed cloud
+  state. Record it in the receipt only. Do not create a task that would be
+  unstartable the moment it enters the queue.
+
+Never resolve a surviving entry by deciding the behavior is probably fine. Once
+an entry is in scope, the disposition is about who can verify it and when, never
+about whether it is worth verifying. That rule governs the choice between the two
+dispositions; it does not override the scope filter above, which asks a different
+question — whether this task is the one that owes the measurement at all.
+
+Write `type: verify` into that task's `state.yaml`. It is the only thing that
+selects the verification profile in `perform-task`, so a verification created
+without it silently runs the implementation pipeline against an empty diff.
+Give it one specific measurable claim: a task that would need a source change to
+satisfy its own acceptance is misrouted and belongs in an `implement` task.
+
+Write the source task's diff into it as its scope boundary, naming that task and
+what it changed, and state that the verification proves that change and nothing
+around it. A verification inherits its parent's boundary; it does not get a wider
+one by being about testing. Its acceptance criteria must all pass the revert test
+against the parent's diff, and it may not enumerate a parameter range the parent's
+acceptance never named.
+
+A `verify` task's own follow-ups are always `type: implement`. When a
+verification reports `Finding: deviation`, route the repair as ordinary
+implementation work naming the measured expected and actual values, and cite the
+verification as its evidence. Never route a second verification for a gap the
+first one already measured; the measurement exists, so what is left is the fix.
+
 After validating the discovery receipt, append only the task ids created from
 that result to `discovered_task_ids` and `batch_task_ids`, preserving routing
 order. This is the only way the frozen batch grows. Apply the same rule
@@ -319,7 +413,8 @@ Return one compact summary: invocation mode, initial batch ids, discovered ids
 added to the batch, inbox receipt if processed, tasks approved, exceptionally
 blocked tasks with exact unverified behavior and retry status, recorded tasks
 left queued, unrelated new tasks deferred to the next invocation, routed
-discoveries, archived projects, any discarded interrupted-worker leftovers,
+discoveries, infrastructure-limited coverage gaps recorded but not routed,
+archived projects, any discarded interrupted-worker leftovers,
 elapsed time, and why the loop stopped. Make any global hard stop or unsafe
 state unmistakable. Never include source or AI commit hashes; task ids are the
 only durable locators.

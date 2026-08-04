@@ -251,7 +251,7 @@ enum class RichMessagePosting {
 		not_null<Main::Session*> session) {
 	const auto value = session->appConfig().get<QString>(
 		u"rich_message_posting"_q,
-		u"disabled"_q);
+		u"premium"_q);
 	if (value == u"enabled"_q) {
 		return RichMessagePosting::Enabled;
 	} else if (value == u"premium"_q) {
@@ -4049,7 +4049,7 @@ std::optional<::Data::Draft> ArticleSession::prepareRichDraftForAutosave() const
 		_session,
 		*richMessage,
 		SerializeInputRichMessageMode::Draft);
-	if (serialized.status == SerializeInputRichMessageStatus::Failed) {
+	if (serialized.status != SerializeInputRichMessageStatus::Success) {
 		return std::nullopt;
 	}
 	draft.richMessage = std::move(richMessage);
