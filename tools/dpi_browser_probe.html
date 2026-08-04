@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>DPI TLS pace probe (browser)</title>
+<style>
+  :root { font-family: ui-sans-serif, system-ui, sans-serif; color: #e8e8e8; background: #12141a; }
+  body { max-width: 920px; margin: 24px auto; padding: 0 16px; }
+  h1 { font-size: 1.15rem; font-weight: 600; margin: 0 0 8px; }
+  .note { color: #9aa3b2; font-size: 0.85rem; line-height: 1.45; margin-bottom: 16px; }
+  .note code { color: #c9d1d9; }
+  fieldset { border: 1px solid #2a3140; border-radius: 8px; padding: 12px 14px; margin: 0 0 12px; }
+  legend { padding: 0 6px; color: #8b95a8; font-size: 0.8rem; }
+  label { display: inline-flex; align-items: center; gap: 6px; margin: 4px 12px 4px 0; font-size: 0.9rem; }
+  input[type="text"], input[type="number"], select {
+    background: #1a1f2a; color: #e8e8e8; border: 1px solid #343b4a; border-radius: 6px;
+    padding: 6px 8px; min-width: 4.5rem;
+  }
+  input[type="text"] { min-width: 18rem; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+  button {
+    background: #2d6cdf; color: #fff; border: 0; border-radius: 6px; padding: 8px 14px;
+    cursor: pointer; font-weight: 600;
+  }
+  button.secondary { background: #3a4254; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  #log {
+    background: #0c0e14; border: 1px solid #2a3140; border-radius: 8px;
+    padding: 10px 12px; height: 420px; overflow: auto; font: 12px/1.4 ui-monospace, Consolas, monospace;
+    white-space: pre-wrap;
+  }
+  .ok { color: #3dd68c; }
+  .fail { color: #ff6b6b; }
+  .info { color: #8b95a8; }
+  .sum { color: #ffd166; }
+</style>
+</head>
+<body>
+  <h1>DPI browser probe — paced TLS via WebSocket</h1>
+  <p class="note">
+    JS не шлёт raw ClientHello. Один клик ≈ один <code>WebSocket</code>/<code>fetch</code>, но в Wireshark
+    часто видно <b>2 ClientHello</b> — это норма для Chrome, не баг страницы:
+    <br>1) <b>HRR (PQ/ML-KEM)</b> — оба CH в <i>одном</i> <code>tcp.stream</code>, между ними HelloRetryRequest.
+    Отключить PQ: <code>chrome://flags/#enable-tls13-kyber</code> → Disabled (тогда обычно 1 CH).
+    <br>2) <b>Happy Eyeballs</b> — два <code>tcp.stream</code> (IPv6+IPv4). Отключи IPv6 на адаптере или смотри только A-запись.
+    <br>Если DPI считает каждый CH, браузерный «1 коннект» ≈ 2 кредита бакета. Точные цифры — <code>dpi_hello_burst_emu.ps1</code>.
+  </p>
+
+  <fieldset>
+    <legend>Target</legend>
+    <label>Host <input id="host" type="text" value="google.com"></label>
+    <label>Timeout ms <input id="timeoutMs" type="number" value="3000" min="500" step="100"></label>
+    <label>Method
+      <select id="method">
+        <option value="ws" selected>WebSocket (лучше для нового TLS)</option>
+        <option value="fetch">fetch no-cors</option>
+        <option value="iframe">iframe load</option>
+      </select>
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Modes</legend>
+    <div class="row">
+      <button id="btnBurst" type="button">Burst (N parallel)</button>
+      <label>N <input id="burstN" type="number" value="15" min="1" max="30"></label>
+    </div>
+    <div class="row">
+      <button id="btnPaced" type="button">Paced streak (до drop)</button>
+      <label>pace ms <input id="paceMs" type="number" value="50" min="0" step="10"></label>
+      <label>max <input id="probeMax" type="number" value="20" min="1" max="50"></label>
+    </div>
+    <div class="row">
+      <button id="btnSustain" type="button">Sustain</button>
+      <label>pace ms <input id="sustainPace" type="number" value="900" min="50" step="25"></label>
+      <label>count <input id="sustainCount" type="number" value="20" min="1" max="100"></label>
+    </div>
+    <div class="row">
+      <button id="btnRecover" type="button">Trip + idle recover</button>
+      <label>trip N <input id="tripN" type="number" value="10" min="1" max="30"></label>
+      <label>idle ms <input id="idleMs" type="number" value="4000" min="0" step="500"></label>
+    </div>
+    <div class="row">
+      <button id="btnStop" class="secondary" type="button" disabled>Stop</button>
+      <button id="btnClear" class="secondary" type="button">Clear log</button>
+      <button id="btnCopy" class="secondary" type="button">Copy log</button>
+    </div>
+  </fieldset>
+
+  <div id="log"></div>
+
+<script>
+(() => {
+  const logEl = document.getElementById('log');
+  let abort = false;
+  let runPerf0 = 0;
+  let runEpoch0 = 0;
+  let probeSeq = 0;
+
+  function pad(n, w = 2) {
+    return String(n).padStart(w, '0');
+  }
+
+  /** Local wall clock with ms — match Wireshark "Time of Day". */
+  function fmtWall(d = new Date()) {
+    return (
+      d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+      pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) + '.' +
+      pad(d.getMilliseconds(), 3)
+    );
+  }
+
+  function fmtRel(perfNow = performance.now()) {
+    if (!runPerf0) return 't+?.??s';
+    return 't+' + ((perfNow - runPerf0) / 1000).toFixed(3) + 's';
+  }
+
+  function log(msg, cls = 'info') {
+    const line = document.createElement('div');
+    line.className = cls;
+    line.textContent = msg;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function beginRun(title) {
+    runPerf0 = performance.now();
+    runEpoch0 = Date.now();
+    probeSeq = 0;
+    const wall = fmtWall();
+    log(
+      `=== ${title} === wall=${wall} epoch_ms=${runEpoch0} tz=${-new Date().getTimezoneOffset()}min ` +
+      `ua=${navigator.userAgent.split(' ').slice(-2).join(' ')}`,
+      'sum'
+    );
+    log(
+      `corr: Wireshark → View/Time Display Format → Time of Day; filter SNI or frame.time >= "${wall}"`,
+      'info'
+    );
+  }
+
+  function setBusy(busy) {
+    abort = false;
+    ['btnBurst', 'btnPaced', 'btnSustain', 'btnRecover'].forEach(id => {
+      document.getElementById(id).disabled = busy;
+    });
+    document.getElementById('btnStop').disabled = !busy;
+  }
+
+  function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+  }
+
+  function host() {
+    return document.getElementById('host').value.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  }
+
+  function timeoutMs() {
+    return Math.max(500, +document.getElementById('timeoutMs').value || 3000);
+  }
+
+  function method() {
+    return document.getElementById('method').value;
+  }
+
+  function logProbeResult(meta, r) {
+    const endWall = fmtWall(new Date(r.endEpoch));
+    const startWall = fmtWall(new Date(r.startEpoch));
+    log(
+      `[${meta.tag}] #${meta.seq} ${r.ok ? 'OK' : 'FAIL'} ` +
+      `wall=${startWall}..${endWall} ${fmtRel(r.endPerf)} ` +
+      `dur=${r.ms}ms epoch=${r.startEpoch}-${r.endEpoch} ` +
+      `method=${meta.method} host=${meta.host} id=${meta.bust} ` +
+      `${r.detail}`,
+      r.ok ? 'ok' : 'fail'
+    );
+    log(`  url=${meta.url}`, 'info');
+  }
+
+  /** @returns {Promise<{ok:boolean, ms:number, detail:string, startEpoch:number, endEpoch:number, endPerf:number}>} */
+  function probeOnce(tag) {
+    const m = method();
+    const to = timeoutMs();
+    const h = host();
+    const seq = ++probeSeq;
+    const startEpoch = Date.now();
+    const t0 = performance.now();
+    const bust = `${startEpoch}_${Math.random().toString(36).slice(2, 8)}`;
+    let url;
+    if (m === 'ws') {
+      url = `wss://${h}/dpi-probe?id=${bust}`;
+    } else {
+      url = `https://${h}/?id=${bust}`;
+    }
+    const meta = { tag, seq, method: m, host: h, bust, url };
+
+    log(
+      `[${tag}] #${seq} START wall=${fmtWall(new Date(startEpoch))} ${fmtRel(t0)} ` +
+      `epoch=${startEpoch} method=${m} host=${h} id=${bust}`,
+      'info'
+    );
+
+    const wrap = (ok, detail) => {
+      const endEpoch = Date.now();
+      const endPerf = performance.now();
+      return {
+        ok,
+        ms: Math.round(endPerf - t0),
+        detail,
+        startEpoch,
+        endEpoch,
+        endPerf,
+      };
+    };
+
+    if (m === 'ws') {
+      return new Promise(resolve => {
+        let done = false;
+        let ws;
+        const finish = (ok, detail) => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          try { ws && ws.close(); } catch (_) {}
+          resolve(wrap(ok, detail));
+        };
+        try {
+          ws = new WebSocket(url);
+        } catch (e) {
+          finish(false, String(e.message || e));
+          return;
+        }
+        const timer = setTimeout(() => finish(false, 'timeout'), to);
+        ws.onopen = () => finish(true, 'ws-open');
+        ws.onerror = () => { /* close/timeout */ };
+        ws.onclose = (ev) => {
+          const ms = performance.now() - t0;
+          if (ms < to - 50) {
+            finish(true, `ws-close code=${ev.code} wasClean=${ev.wasClean}`);
+          } else {
+            finish(false, `ws-close-timeout code=${ev.code}`);
+          }
+        };
+      }).then(r => {
+        logProbeResult(meta, r);
+        return r;
+      });
+    }
+
+    if (m === 'fetch') {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), to);
+      return fetch(url, {
+        mode: 'no-cors',
+        cache: 'no-store',
+        signal: ctrl.signal,
+      }).then(() => {
+        clearTimeout(timer);
+        const r = wrap(true, 'fetch-opaque');
+        logProbeResult(meta, r);
+        return r;
+      }).catch(e => {
+        clearTimeout(timer);
+        const r = wrap(false, String(e.name || e));
+        logProbeResult(meta, r);
+        return r;
+      });
+    }
+
+    return new Promise(resolve => {
+      const iframe = document.createElement('iframe');
+      iframe.style.cssText = 'position:absolute;width:0;height:0;border:0;opacity:0';
+      iframe.referrerPolicy = 'no-referrer';
+      let done = false;
+      const finish = (ok, detail) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        iframe.remove();
+        const r = wrap(ok, detail);
+        logProbeResult(meta, r);
+        resolve(r);
+      };
+      const timer = setTimeout(() => finish(false, 'timeout'), to);
+      iframe.onload = () => finish(true, 'iframe-load');
+      iframe.onerror = () => finish(false, 'iframe-error');
+      iframe.src = url;
+      document.body.appendChild(iframe);
+    });
+  }
+
+  async function runBurst() {
+    setBusy(true);
+    const n = Math.max(1, +document.getElementById('burstN').value || 5);
+    beginRun(`BURST parallel n=${n} method=${method()} host=${host()} timeout=${timeoutMs()}ms`);
+    const parts = [];
+    for (let i = 0; i < n; i++) parts.push(probeOnce(`b${i}`));
+    const results = await Promise.all(parts);
+    const ok = results.filter(r => r.ok).length;
+    log(`SUM burst OK=${ok}/${n} wall=${fmtWall()} ${fmtRel()}`, 'sum');
+    setBusy(false);
+  }
+
+  async function runPaced() {
+    setBusy(true);
+    const pace = Math.max(0, +document.getElementById('paceMs').value || 0);
+    const max = Math.max(1, +document.getElementById('probeMax').value || 20);
+    beginRun(`PACED streak pace=${pace}ms max=${max} method=${method()} host=${host()}`);
+    let streak = 0;
+    for (let i = 0; i < max && !abort; i++) {
+      const r = await probeOnce(String(i));
+      if (r.ok) {
+        streak++;
+      } else {
+        log(`DROP after ${streak} OK wall=${fmtWall()} ${fmtRel()}`, 'sum');
+        setBusy(false);
+        return;
+      }
+      if (pace > 0) await sleep(pace);
+    }
+    log(`No drop within max=${max} (streak=${streak}) wall=${fmtWall()}`, 'sum');
+    setBusy(false);
+  }
+
+  async function runSustain() {
+    setBusy(true);
+    const pace = Math.max(0, +document.getElementById('sustainPace').value || 900);
+    const count = Math.max(1, +document.getElementById('sustainCount').value || 20);
+    beginRun(`SUSTAIN pace=${pace}ms count=${count} method=${method()} host=${host()}`);
+    let ok = 0;
+    for (let i = 0; i < count && !abort; i++) {
+      const r = await probeOnce(String(i));
+      if (r.ok) ok++;
+      if (i + 1 < count && pace > 0) await sleep(pace);
+    }
+    const rate = ((ok / count) * 100).toFixed(0);
+    log(`SUM sustain OK=${ok}/${count} (${rate}%) wall=${fmtWall()} ${fmtRel()}`, 'sum');
+    setBusy(false);
+  }
+
+  async function runRecover() {
+    setBusy(true);
+    const trip = Math.max(1, +document.getElementById('tripN').value || 10);
+    const idle = Math.max(0, +document.getElementById('idleMs').value || 4000);
+    beginRun(`TRIP ${trip}@50ms then idle ${idle}ms method=${method()} host=${host()}`);
+    for (let i = 0; i < trip && !abort; i++) {
+      await probeOnce(`t${i}`);
+      await sleep(50);
+    }
+    const idleStart = Date.now();
+    log(`idle ${idle}ms START wall=${fmtWall()} epoch=${idleStart} (no probes)`, 'info');
+    await sleep(idle);
+    log(`idle END wall=${fmtWall()} epoch=${Date.now()}`, 'info');
+    if (abort) { setBusy(false); return; }
+    const r = await probeOnce('recover');
+    log(`Recovery: ${r.ok ? 'PASS' : 'STILL BLOCKED'} wall=${fmtWall()} ${fmtRel()}`, 'sum');
+    setBusy(false);
+  }
+
+  document.getElementById('btnBurst').onclick = () => runBurst().catch(e => { log(String(e), 'fail'); setBusy(false); });
+  document.getElementById('btnPaced').onclick = () => runPaced().catch(e => { log(String(e), 'fail'); setBusy(false); });
+  document.getElementById('btnSustain').onclick = () => runSustain().catch(e => { log(String(e), 'fail'); setBusy(false); });
+  document.getElementById('btnRecover').onclick = () => runRecover().catch(e => { log(String(e), 'fail'); setBusy(false); });
+  document.getElementById('btnStop').onclick = () => { abort = true; log(`stop wall=${fmtWall()} ${fmtRel()}`, 'info'); };
+  document.getElementById('btnClear').onclick = () => { logEl.textContent = ''; };
+  document.getElementById('btnCopy').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(logEl.innerText);
+      log(`log copied wall=${fmtWall()}`, 'info');
+    } catch (e) {
+      log(`copy failed: ${e}`, 'fail');
+    }
+  };
+
+  log(`Ready wall=${fmtWall()} epoch_ms=${Date.now()}. Sync PC clock with Wireshark Time of Day.`, 'info');
+})();
+</script>
+</body>
+</html>

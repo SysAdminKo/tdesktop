@@ -233,3 +233,12 @@ if (MSVC)
 else()
     target_compile_options(lib_fido2 PRIVATE -w)
 endif()
+
+# Avoid LNK2005 with Qt's bundled TinyCBOR (same C symbol cbor_encode_double).
+set(libcbor_qt_compat "${CMAKE_CURRENT_SOURCE_DIR}/cmake/libcbor_qt_compat.h")
+file(TO_CMAKE_PATH "${libcbor_qt_compat}" libcbor_qt_compat)
+if (MSVC)
+    target_compile_options(lib_fido2 PRIVATE "/FI\"${libcbor_qt_compat}\"")
+else()
+    target_compile_options(lib_fido2 PRIVATE -include "${libcbor_qt_compat}")
+endif()
