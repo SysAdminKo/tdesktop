@@ -5,7 +5,7 @@ the official desktop application for the Telegram messaging service.
 For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 '''
-import sys, os, re
+import sys, os, re, subprocess
 
 sys.dont_write_bytecode = True
 scriptPath = os.path.dirname(os.path.realpath(__file__))
@@ -23,6 +23,31 @@ def finish(code):
 def error(message):
     print('[ERROR] ' + message)
     finish(1)
+
+def ensureCmakeWinQt6OpensslTls():
+    if sys.platform != 'win32':
+        return
+    repoRoot = os.path.normpath(os.path.join(scriptPath, '..'))
+    cmakeLists = os.path.join(
+        repoRoot, 'cmake', 'external', 'qt', 'CMakeLists.txt')
+    patchFile = os.path.join(
+        repoRoot, 'patches', 'cmake-qt6-win-openssl-tls.patch')
+    if not os.path.isfile(cmakeLists) or not os.path.isfile(patchFile):
+        return
+    with open(cmakeLists, 'r', encoding='utf-8', errors='replace') as f:
+        text = f.read()
+    if 'qschannelbackend' not in text:
+        return
+    result = subprocess.run(
+        ['git', 'apply', '--directory=cmake', patchFile],
+        cwd=repoRoot,
+        capture_output=True,
+        text=True)
+    if result.returncode != 0:
+        error(
+            'Failed to apply patches/cmake-qt6-win-openssl-tls.patch:\n'
+            + (result.stderr or result.stdout or ''))
+    print('Applied patches/cmake-qt6-win-openssl-tls.patch')
 
 if sys.platform == 'win32' and 'COMSPEC' not in os.environ:
     error('COMSPEC environment variable is not set.')
@@ -66,4 +91,5 @@ if officialTarget != '':
     if arch != '':
         arguments.append(arch)
 
+ensureCmakeWinQt6OpensslTls()
 finish(run_cmake.run(scriptName, arguments))
