@@ -8,7 +8,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "webauthn/cable_scanner.h"
 
 #include "webauthn/cable_core.h"
+#include "base/algorithm.h"
 #include "base/basic_types.h"
+#include "base/platform/win/base_windows_safe_library.h"
 #include "base/platform/win/base_windows_winrt.h"
 
 #include <winrt/Windows.Foundation.Collections.h>
@@ -56,7 +58,33 @@ constexpr auto kFidoCableUuid16 = uint16_t(0xFFF9);
 	return result;
 }
 
+HBLUETOOTH_RADIO_FIND(__stdcall *BluetoothFindFirstRadio)(
+	const BLUETOOTH_FIND_RADIO_PARAMS *pbtfrp,
+	HANDLE *phRadio);
+BOOL(__stdcall *BluetoothFindRadioClose)(HBLUETOOTH_RADIO_FIND hFind);
+
+[[nodiscard]] bool ResolveBluetoothApi() {
+	const auto bthprops = base::Platform::SafeLoadLibrary(L"bthprops.cpl");
+	if (!bthprops) {
+		return false;
+	}
+	auto total = 0, resolved = 0;
+#define LOAD_SYMBOL(name) \
+	++total; \
+	if (base::Platform::LoadMethod(bthprops, #name, name)) ++resolved;
+
+	LOAD_SYMBOL(BluetoothFindFirstRadio);
+	LOAD_SYMBOL(BluetoothFindRadioClose);
+#undef LOAD_SYMBOL
+
+	return (total == resolved);
+}
+
 [[nodiscard]] bool BluetoothRadioPresent() {
+	static const auto Resolved = ResolveBluetoothApi();
+	if (!Resolved) {
+		return false;
+	}
 	auto params = BLUETOOTH_FIND_RADIO_PARAMS();
 	params.dwSize = sizeof(BLUETOOTH_FIND_RADIO_PARAMS);
 	auto radio = HANDLE(nullptr);
@@ -71,6 +99,7 @@ constexpr auto kFidoCableUuid16 = uint16_t(0xFFF9);
 
 struct State {
 	std::function<void(QByteArray)> onAdvert;
+	std::function<void(bool)> onAvailability;
 	std::set<QByteArray> seen;
 	bool stopped = false;
 };
@@ -81,7 +110,7 @@ public:
 
 	bool start(
 		std::function<void(QByteArray)> onAdvert,
-		std::function<void()> onUnavailable) override;
+		std::function<void(bool)> onAvailability) override;
 	void stop() override;
 
 private:
@@ -97,12 +126,13 @@ WinBleScanner::~WinBleScanner() {
 
 bool WinBleScanner::start(
 		std::function<void(QByteArray)> onAdvert,
-		std::function<void()> onUnavailable) {
+		std::function<void(bool)> onAvailability) {
 	if (!BluetoothRadioPresent()) {
 		return false;
 	}
 	_state = std::make_shared<State>();
 	_state->onAdvert = std::move(onAdvert);
+	_state->onAvailability = std::move(onAvailability);
 	const auto weak = std::weak_ptr(_state);
 	const auto started = base::WinRT::Try([&] {
 		_watcher = BluetoothLEAdvertisementWatcher();
@@ -134,7 +164,16 @@ bool WinBleScanner::start(
 		});
 		_watcher.Start();
 	});
-	return started && _watcher;
+	if (!started || !_watcher) {
+		return false;
+	}
+	crl::on_main([weak] {
+		const auto state = weak.lock();
+		if (state && !state->stopped && state->onAvailability) {
+			base::take(state->onAvailability)(true);
+		}
+	});
+	return true;
 }
 
 void WinBleScanner::stop() {

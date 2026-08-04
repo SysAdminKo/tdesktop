@@ -19,6 +19,9 @@ TASK_ID_PATTERN = re.compile(
 	r"[0-9]{4}/[0-9]{2}/[0-9]{2}/[a-z0-9][a-z0-9-]*"
 )
 VALID_STATUSES = {"todo", "in-progress", "approved", "blocked"}
+DEFAULT_TASK_TYPE = "implement"
+VALID_TASK_TYPES = {DEFAULT_TASK_TYPE, "verify"}
+VALID_FINDINGS = {"confirmed", "deviation", "inconclusive"}
 COMMIT_HASH_PATTERN = re.compile(
 	r"(?i)\b(?:commit|revision|sha(?:-1)?)\b[^\r\n]{0,32}(?<!#)\b[0-9a-f]{7,64}\b"
 )
@@ -28,6 +31,7 @@ PROJECT_LINK_PATTERN = re.compile(r"\]\(\.\./\.\./(?!\.\./)")
 ARCHIVED_PROJECT_LINK_PATTERN = re.compile(r"\]\(\.\./\.\./\.\./")
 STATE_FIELD_ORDER = [
 	"status",
+	"type",
 	"created",
 	"project",
 	"depends_on",
@@ -44,8 +48,24 @@ PORTABLE_REAL = "real_TelegramForcePortable"
 PORTABLE_MARKER = "testing"
 OVERLAY_PATHS_FILE = "test-overlay.paths"
 OVERLAY_PATCH_FILE = "test-overlay.patch"
+OVERLAY_SUBMODULES_FILE = "test-overlay-submodules.json"
+OVERLAY_SUBMODULES_DIR = "test-overlay-submodules"
 TEST_LOG_FILE = "test_log.txt"
 TEST_COMPLETE_MARKER = "TEST_COMPLETE"
+STALE_CRASH_DIR = "stale-crash"
+BUILD_LOCK_PROCESS_NAMES = {
+	"cl.exe",
+	"cmake.exe",
+	"cvtres.exe",
+	"link.exe",
+	"moc.exe",
+	"mspdbsrv.exe",
+	"msbuild.exe",
+	"ninja.exe",
+	"rc.exe",
+	"rcc.exe",
+	"uic.exe",
+}
 
 
 class WorkspaceError(RuntimeError):
@@ -346,6 +366,10 @@ def load_state(root, path):
 	status = str(parse_scalar(values["status"]))
 	if status not in VALID_STATUSES:
 		raise WorkspaceError(f"Invalid status {status!r} in {path}")
+	kind = parse_scalar(values.get("type", DEFAULT_TASK_TYPE))
+	kind = DEFAULT_TASK_TYPE if kind is None else str(kind)
+	if kind not in VALID_TASK_TYPES:
+		raise WorkspaceError(f"Invalid task type {kind!r} in {path}")
 	project = parse_scalar(values["project"])
 	if project is not None and not TAG_PATTERN.fullmatch(str(project)):
 		raise WorkspaceError(f"Invalid project slug {project!r} in {path}")
@@ -367,6 +391,7 @@ def load_state(root, path):
 		"id": task_id,
 		"title": title,
 		"status": status,
+		"type": kind,
 		"created": str(parse_scalar(values["created"])),
 		"project": project,
 		"depends_on": parse_dependencies(values["depends_on"]),
@@ -923,7 +948,11 @@ def is_ancestor(source, older, newer="HEAD"):
 	).returncode
 
 
-def validate_source_state(config, task_id, required):
+def task_type(slot, task_id):
+	return load_state(slot, state_path(slot, task_id))["type"]
+
+
+def validate_source_state(config, task_id, required, kind=DEFAULT_TASK_TYPE):
 	source = Path(config["source_root"])
 	base = resolved_ref(source, source_task_ref(task_id, "base"))
 	green = resolved_ref(source, source_task_ref(task_id, "green"))
@@ -933,6 +962,16 @@ def validate_source_state(config, task_id, required):
 		raise WorkspaceError("The local task baseline ref is missing")
 	if run is None or head != run:
 		raise WorkspaceError("Telegram HEAD no longer matches the task run ref")
+	if kind == "verify":
+		if green is not None:
+			raise WorkspaceError(
+				"A verification task must not retain a Telegram implementation commit"
+			)
+		if head != base:
+			raise WorkspaceError(
+				"A verification task must leave Telegram at its local baseline"
+			)
+		return
 	if green is None:
 		if required:
 			raise WorkspaceError("An approved task must retain a Telegram implementation commit")
@@ -1069,6 +1108,61 @@ def portable_root_for(exe, override):
 	return exe.parent
 
 
+def unique_destination(directory, name):
+	candidate = directory / name
+	index = 2
+	while candidate.exists():
+		candidate = directory / (
+			f"{Path(name).stem}-{index:02d}{Path(name).suffix}"
+		)
+		index += 1
+	return candidate
+
+
+def move_stale_leftover(path, target):
+	for attempt in reversed(range(5)):
+		moved = unique_destination(target, path.name)
+		try:
+			shutil.move(path, moved)
+			return moved
+		except OSError:
+			try:
+				moved.unlink(missing_ok=True)
+			except OSError:
+				pass
+			if not attempt:
+				raise
+			time.sleep(0.2)
+
+
+def clear_stale_crash_state(live, destination):
+	report = live / "tdata" / "working"
+	dumps_dir = live / "tdata" / "dumps"
+	leftovers = []
+	if report.is_file() and report.stat().st_size > 0:
+		leftovers.append(("report", report))
+	if dumps_dir.is_dir():
+		leftovers.extend(
+			("dump", path) for path in sorted(dumps_dir.glob("*.dmp"))
+			if path.is_file()
+		)
+	cleared = []
+	for kind, path in leftovers:
+		target = destination / "dumps" if kind == "dump" else destination
+		target.mkdir(parents=True, exist_ok=True)
+		try:
+			moved = move_stale_leftover(path, target)
+		except OSError as error:
+			if kind == "report":
+				raise WorkspaceError(
+					f"Cannot clear the stale crash report {path}: {error}"
+				) from error
+			cleared.append({"from": str(path), "kind": kind, "to": None})
+			continue
+		cleared.append({"from": str(path), "kind": kind, "to": str(moved)})
+	return cleared
+
+
 def setup_test_account(root):
 	golden = root / PORTABLE_GOLDEN
 	live = root / PORTABLE_LIVE
@@ -1163,6 +1257,352 @@ def kill_processes_with_executable(exe):
 	return killed
 
 
+def windows_process_records():
+	if sys.platform != "win32":
+		return []
+	script = (
+		"Get-CimInstance Win32_Process | "
+		"Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | "
+		"ConvertTo-Json -Compress"
+	)
+	result = subprocess.run(
+		["powershell", "-NoProfile", "-Command", script],
+		stdout=subprocess.PIPE,
+		stderr=subprocess.PIPE,
+		text=True,
+	)
+	if result.returncode or not result.stdout.strip():
+		return []
+	try:
+		rows = json.loads(result.stdout)
+	except json.JSONDecodeError:
+		return []
+	if isinstance(rows, dict):
+		rows = [rows]
+	records = []
+	for row in rows:
+		try:
+			pid = int(row["ProcessId"])
+			parent_pid = int(row["ParentProcessId"])
+		except (KeyError, TypeError, ValueError):
+			continue
+		records.append({
+			"pid": pid,
+			"parent_pid": parent_pid,
+			"name": str(row.get("Name") or ""),
+			"executable": str(row.get("ExecutablePath") or ""),
+			"command_line": str(row.get("CommandLine") or ""),
+		})
+	return records
+
+
+def locking_process_ids(paths):
+	if sys.platform != "win32" or not paths:
+		return [], None
+	import ctypes
+	from ctypes import wintypes
+
+	class UniqueProcess(ctypes.Structure):
+		_fields_ = [
+			("process_id", wintypes.DWORD),
+			("process_start_time", wintypes.FILETIME),
+		]
+
+	class ProcessInfo(ctypes.Structure):
+		_fields_ = [
+			("process", UniqueProcess),
+			("app_name", wintypes.WCHAR * 256),
+			("service_name", wintypes.WCHAR * 64),
+			("app_type", wintypes.DWORD),
+			("app_status", wintypes.ULONG),
+			("terminal_session_id", wintypes.DWORD),
+			("restartable", wintypes.BOOL),
+		]
+
+	manager = ctypes.WinDLL("Rstrtmgr")
+	manager.RmStartSession.argtypes = [
+		ctypes.POINTER(wintypes.DWORD),
+		wintypes.DWORD,
+		wintypes.LPWSTR,
+	]
+	manager.RmStartSession.restype = wintypes.DWORD
+	manager.RmRegisterResources.argtypes = [
+		wintypes.DWORD,
+		wintypes.UINT,
+		ctypes.POINTER(wintypes.LPCWSTR),
+		wintypes.UINT,
+		ctypes.c_void_p,
+		wintypes.UINT,
+		ctypes.c_void_p,
+	]
+	manager.RmRegisterResources.restype = wintypes.DWORD
+	manager.RmGetList.argtypes = [
+		wintypes.DWORD,
+		ctypes.POINTER(wintypes.UINT),
+		ctypes.POINTER(wintypes.UINT),
+		ctypes.POINTER(ProcessInfo),
+		ctypes.POINTER(wintypes.DWORD),
+	]
+	manager.RmGetList.restype = wintypes.DWORD
+	manager.RmEndSession.argtypes = [wintypes.DWORD]
+	manager.RmEndSession.restype = wintypes.DWORD
+
+	session = wintypes.DWORD()
+	key = ctypes.create_unicode_buffer(33)
+	started = manager.RmStartSession(ctypes.byref(session), 0, key)
+	if started:
+		return [], f"Restart Manager session failed: {started}"
+	try:
+		resources = (wintypes.LPCWSTR * len(paths))(
+			*(str(path) for path in paths)
+		)
+		registered = manager.RmRegisterResources(
+			session,
+			len(paths),
+			resources,
+			0,
+			None,
+			0,
+			None,
+		)
+		if registered:
+			return [], f"Restart Manager registration failed: {registered}"
+		needed = wintypes.UINT()
+		count = wintypes.UINT()
+		reboot_reasons = wintypes.DWORD()
+		status = manager.RmGetList(
+			session,
+			ctypes.byref(needed),
+			ctypes.byref(count),
+			None,
+			ctypes.byref(reboot_reasons),
+		)
+		if status == 0:
+			return [], None
+		if status != 234:
+			return [], f"Restart Manager query failed: {status}"
+		entries = (ProcessInfo * needed.value)()
+		count.value = needed.value
+		status = manager.RmGetList(
+			session,
+			ctypes.byref(needed),
+			ctypes.byref(count),
+			entries,
+			ctypes.byref(reboot_reasons),
+		)
+		if status:
+			return [], f"Restart Manager detail query failed: {status}"
+		return sorted({
+			entries[index].process.process_id
+			for index in range(count.value)
+		}), None
+	finally:
+		manager.RmEndSession(session)
+
+
+def normalized_path_text(path):
+	return os.path.normcase(str(Path(path).expanduser().resolve())).casefold()
+
+
+def recoverable_build_processes(records, build_root, exe, holder_pids):
+	build_text = normalized_path_text(build_root)
+	build_command_text = build_text.replace("\\", "/")
+	exe_text = normalized_path_text(exe)
+	by_pid = {record["pid"]: record for record in records}
+	reasons = {}
+	for record in records:
+		pid = record["pid"]
+		name = record["name"].casefold()
+		executable = record["executable"]
+		command_line = record["command_line"]
+		if executable and normalized_path_text(executable) == exe_text:
+			reasons[pid] = "exact-checkout-executable"
+		elif name in BUILD_LOCK_PROCESS_NAMES and pid in holder_pids:
+			reasons[pid] = "direct-build-artifact-holder"
+		elif (
+			name in BUILD_LOCK_PROCESS_NAMES
+			and build_command_text
+			in command_line.casefold().replace("\\", "/")
+		):
+			reasons[pid] = "exact-build-tree-command"
+	changed = True
+	while changed:
+		changed = False
+		for record in records:
+			pid = record["pid"]
+			if pid in reasons:
+				continue
+			if (
+				record["name"].casefold() in BUILD_LOCK_PROCESS_NAMES
+				and record["parent_pid"] in reasons
+				and record["parent_pid"] in by_pid
+			):
+				reasons[pid] = "verified-build-process-descendant"
+				changed = True
+	return [
+		{
+			**by_pid[pid],
+			"reason": reason,
+		}
+		for pid, reason in sorted(reasons.items())
+	]
+
+
+def terminate_process_ids(processes):
+	results = []
+	for process in sorted(processes, key=lambda value: value["pid"], reverse=True):
+		pid = process["pid"]
+		try:
+			if sys.platform == "win32":
+				result = subprocess.run(
+					["taskkill", "/PID", str(pid), "/F"],
+					stdout=subprocess.PIPE,
+					stderr=subprocess.PIPE,
+					text=True,
+				)
+				stopped = not result.returncode
+				error = (
+					None
+					if stopped
+					else (result.stderr.strip() or result.stdout.strip())
+				)
+			else:
+				os.kill(pid, signal.SIGKILL)
+				stopped = True
+				error = None
+		except (OSError, subprocess.SubprocessError) as exception:
+			stopped = False
+			error = str(exception)
+		results.append({
+			**process,
+			"stopped": stopped,
+			"error": error,
+		})
+	return results
+
+
+def path_inside(path, root):
+	try:
+		path.relative_to(root)
+		return path != root
+	except ValueError:
+		return False
+
+
+def build_root_matches_source(build, source):
+	cache = build / "CMakeCache.txt"
+	if not cache.is_file():
+		return False
+	prefix = "CMAKE_HOME_DIRECTORY:INTERNAL="
+	for line in cache.read_text(encoding="utf-8", errors="replace").splitlines():
+		if line.startswith(prefix):
+			return (
+				normalized_path_text(line[len(prefix):])
+				== normalized_path_text(source)
+			)
+	return False
+
+
+def command_build_lock_recover(args):
+	source = source_root(args.source_root)
+	build = Path(args.build_root).expanduser().resolve()
+	exe = Path(args.exe).expanduser().resolve()
+	if (
+		not build.is_dir()
+		or not path_inside(build, source)
+		or not build_root_matches_source(build, source)
+	):
+		raise WorkspaceError(
+			"Build root must be a configured CMake tree for this checkout: "
+			f"{build}"
+		)
+	if not path_inside(exe, build):
+		raise WorkspaceError(f"Executable is outside the build root: {exe}")
+	artifacts = []
+	for value in args.artifact:
+		path = Path(value).expanduser().resolve()
+		if not path_inside(path, build):
+			raise WorkspaceError(f"Locked artifact is outside the build root: {path}")
+		if path.is_dir():
+			raise WorkspaceError(f"Locked artifact must be a file: {path}")
+		if path not in artifacts:
+			artifacts.append(path)
+	if not 0 <= args.wait <= 60:
+		raise WorkspaceError("--wait must be between 0 and 60 seconds")
+	if args.wait:
+		time.sleep(args.wait)
+
+	exact_exe_killed = kill_processes_with_executable(exe)
+	existing = [path for path in artifacts if path.exists()]
+	holder_pids, holder_query_error = locking_process_ids(existing)
+	records = windows_process_records()
+	recoverable = recoverable_build_processes(
+		records,
+		build,
+		exe,
+		set(holder_pids),
+	)
+	stopped = terminate_process_ids(recoverable)
+	if stopped:
+		time.sleep(1)
+
+	deleted = []
+	already_absent = []
+	delete_errors = {}
+	for path in artifacts:
+		if not path.exists():
+			already_absent.append(str(path))
+			continue
+		try:
+			path.unlink()
+			deleted.append(str(path))
+		except OSError as exception:
+			delete_errors[str(path)] = str(exception)
+
+	remaining = [path for path in artifacts if path.exists()]
+	remaining_holder_pids, remaining_query_error = locking_process_ids(remaining)
+	records_by_pid = {
+		record["pid"]: record for record in windows_process_records()
+	}
+	remaining_holders = [
+		records_by_pid.get(pid, {
+			"pid": pid,
+			"parent_pid": None,
+			"name": "",
+			"executable": "",
+			"command_line": "",
+		})
+		for pid in remaining_holder_pids
+	]
+	safe_to_retry = (
+		not delete_errors
+		and not remaining
+		and not remaining_holders
+	)
+	safety_basis = (
+		"all-named-artifacts-deleted-or-absent"
+		if safe_to_retry
+		else "named-artifact-or-holder-remains"
+	)
+	print(json.dumps({
+		"already_absent": already_absent,
+		"artifacts": [str(path) for path in artifacts],
+		"build_root": str(build),
+		"delete_errors": delete_errors,
+		"deleted": deleted,
+		"exact_exe_killed": exact_exe_killed,
+		"holder_query_error": holder_query_error,
+		"remaining_holder_query_error": remaining_query_error,
+		"remaining_holders": remaining_holders,
+		"safe_to_retry": safe_to_retry,
+		"safety_basis": safety_basis,
+		"stopped_processes": stopped,
+		"wait_seconds": args.wait,
+	}, indent=2, sort_keys=True))
+	if not safe_to_retry:
+		sys.exit(2)
+
+
 def parse_test_log(text):
 	steps = []
 	passed = []
@@ -1216,14 +1656,23 @@ def command_test_run(args):
 	log_path = run_dir / TEST_LOG_FILE
 	if log_path.exists():
 		log_path.unlink()
-	stdout_path = run_dir / "app_stdout.txt"
-	stderr_path = run_dir / "app_stderr.txt"
-	working = portable / PORTABLE_LIVE / "tdata" / "working"
-	dumps_dir = portable / PORTABLE_LIVE / "tdata" / "dumps"
 
 	environment = os.environ.copy()
 	environment["TDESKTOP_TEST_EVIDENCE_DIR"] = str(run_dir)
 	environment.update(parse_env_values(args.env))
+
+	cleared = (
+		clear_stale_crash_state(
+			portable / PORTABLE_LIVE, run_dir / STALE_CRASH_DIR
+		)
+		if account == "reused-marked-live"
+		else []
+	)
+
+	stdout_path = run_dir / "app_stdout.txt"
+	stderr_path = run_dir / "app_stderr.txt"
+	working = portable / PORTABLE_LIVE / "tdata" / "working"
+	dumps_dir = portable / PORTABLE_LIVE / "tdata" / "dumps"
 
 	launched_at = time.time()
 	with stdout_path.open("wb") as out, stderr_path.open("wb") as err:
@@ -1318,6 +1767,7 @@ def command_test_run(args):
 		"outcome": outcome,
 		"portable_root": str(portable),
 		"run_dir": str(run_dir),
+		"stale_crash_cleared": cleared,
 		"stderr_tail": tail_of_file(stderr_path),
 		"stragglers_killed": stragglers,
 		"test_complete": test_complete,
@@ -1371,65 +1821,250 @@ def read_overlay_paths(work):
 	return paths
 
 
+def initialized_submodule_paths(source):
+	lines = run_git(
+		source, "submodule", "status", "--recursive"
+	).stdout.splitlines()
+	result = []
+	for line in lines:
+		if not line or line[0] == "-":
+			continue
+		parts = line[1:].split()
+		if len(parts) >= 2:
+			result.append(parts[1])
+	return sorted(result, key=lambda path: (-path.count("/"), path))
+
+
+def overlay_inventory_groups(source, inventory):
+	submodules = initialized_submodule_paths(source)
+	groups = {"": []}
+	for value in inventory:
+		path = PurePosixPath(value)
+		if path.is_absolute() or not path.parts or ".." in path.parts:
+			raise WorkspaceError(f"Invalid overlay inventory path: {value!r}")
+		value = path.as_posix()
+		if value in submodules:
+			raise WorkspaceError(
+				"Overlay inventory must name a tracked file inside the "
+				"submodule, not its gitlink: " + value
+			)
+		owner = next(
+			(
+				submodule for submodule in submodules
+				if value.startswith(submodule + "/")
+			),
+			"",
+		)
+		local = value[len(owner) + 1:] if owner else value
+		repository = source / owner if owner else source
+		tracked = run_git(
+			repository,
+			"ls-files",
+			"--error-unmatch",
+			"--",
+			local,
+			check=False,
+		)
+		if tracked.returncode:
+			raise WorkspaceError(
+				"Overlay inventory paths must be tracked files: " + value
+			)
+		groups.setdefault(owner, []).append(local)
+	return groups, submodules
+
+
+def overlay_coverage(inventory, repository_path):
+	if not repository_path:
+		return inventory
+	prefix = repository_path + "/"
+	return [
+		path[len(prefix):]
+		for path in inventory
+		if path.startswith(prefix)
+	]
+
+
+def overlay_outside_inventory(source, inventory, submodules):
+	outside = []
+	for repository_path in [""] + submodules:
+		repository = source / repository_path if repository_path else source
+		coverage = overlay_coverage(inventory, repository_path)
+		dirty = changed_paths(repository)
+		gitlinks = set(gitlink_paths(repository, dirty))
+		for path in dirty:
+			covered = path_is_covered(path, coverage)
+			covered_gitlink = (
+				path in gitlinks
+				and any(value.startswith(path + "/") for value in coverage)
+			)
+			if covered or covered_gitlink:
+				continue
+			outside.append(
+				f"{repository_path}/{path}" if repository_path else path
+			)
+	return outside
+
+
+def clear_overlay_submodule_bundle(work):
+	manifest = work / OVERLAY_SUBMODULES_FILE
+	patches = work / OVERLAY_SUBMODULES_DIR
+	if manifest.is_file():
+		manifest.unlink()
+	if patches.is_dir():
+		shutil.rmtree(patches)
+
+
+def read_overlay_submodule_bundle(work):
+	manifest = work / OVERLAY_SUBMODULES_FILE
+	if not manifest.is_file():
+		return []
+	data = json.loads(manifest.read_text(encoding="utf-8"))
+	if data.get("version") != 1 or not isinstance(data.get("submodules"), list):
+		raise WorkspaceError(f"Invalid overlay submodule manifest: {manifest}")
+	result = []
+	seen = set()
+	for entry in data["submodules"]:
+		if not isinstance(entry, dict):
+			raise WorkspaceError(f"Invalid overlay submodule entry: {entry!r}")
+		repository = PurePosixPath(str(entry.get("path", "")))
+		patch = PurePosixPath(str(entry.get("patch", "")))
+		if (
+			repository.is_absolute()
+			or not repository.parts
+			or ".." in repository.parts
+			or patch.is_absolute()
+			or not patch.parts
+			or ".." in patch.parts
+			or patch.parts[0] != OVERLAY_SUBMODULES_DIR
+		):
+			raise WorkspaceError(f"Invalid overlay submodule entry: {entry!r}")
+		repository_value = repository.as_posix()
+		if repository_value in seen:
+			raise WorkspaceError(
+				"Duplicate overlay submodule entry: " + repository_value
+			)
+		seen.add(repository_value)
+		result.append({
+			"patch": patch.as_posix(),
+			"path": repository_value,
+		})
+	return result
+
+
 def command_overlay_save(args):
 	config, slot = task_action_config(args)
 	source = Path(config["source_root"])
 	work = overlay_work_dir(config, slot, args.task)
 	inventory = read_overlay_paths(work)
-	untracked = run_git(
-		source, "ls-files", "--others", "--exclude-standard"
-	).stdout.splitlines()
-	if untracked:
-		raise WorkspaceError(
-			"The overlay may not use untracked source files: "
-			+ ", ".join(untracked)
-		)
-	dirty = changed_paths(source)
-	outside = [
-		path for path in dirty
-		if not path_is_covered(path, inventory)
-	]
+	groups, submodules = overlay_inventory_groups(source, inventory)
+	outside = overlay_outside_inventory(source, inventory, submodules)
 	if outside:
 		raise WorkspaceError(
 			"Dirty source paths are outside the overlay inventory: "
 			+ ", ".join(outside)
 		)
-	patch = run_git_binary(source, "diff", "--binary", "HEAD")
-	if not patch.strip():
-		raise WorkspaceError("The overlay diff is empty; nothing to save")
-	patch_path = work / OVERLAY_PATCH_FILE
-	patch_path.write_bytes(patch)
-	check = subprocess.run(
-		["git", "-C", str(source), "apply", "--check", "--reverse", str(patch_path)],
-		stdout=subprocess.PIPE,
-		stderr=subprocess.PIPE,
-		text=True,
+	clear_overlay_submodule_bundle(work)
+	root_paths = groups.get("", [])
+	patch = (
+		run_git_binary(source, "diff", "--binary", "HEAD", "--", *root_paths)
+		if root_paths
+		else b""
 	)
-	if check.returncode:
-		raise WorkspaceError(
-			"The saved overlay patch does not verify: "
-			+ check.stderr.strip()
+	patch_path = work / OVERLAY_PATCH_FILE
+	if patch.strip():
+		patch_path.write_bytes(patch)
+	else:
+		patch_path.unlink(missing_ok=True)
+	submodule_entries = []
+	patches_dir = work / OVERLAY_SUBMODULES_DIR
+	for repository_path, paths in groups.items():
+		if not repository_path:
+			continue
+		repository = source / repository_path
+		repository_patch = run_git_binary(
+			repository, "diff", "--binary", "HEAD", "--", *paths
 		)
+		if not repository_patch.strip():
+			continue
+		patches_dir.mkdir(parents=True, exist_ok=True)
+		name = hashlib.sha256(repository_path.encode("utf-8")).hexdigest()[:16]
+		relative_patch = f"{OVERLAY_SUBMODULES_DIR}/{name}.patch"
+		submodule_patch_path = work / relative_patch
+		submodule_patch_path.write_bytes(repository_patch)
+		submodule_entries.append({
+			"patch": relative_patch,
+			"path": repository_path,
+		})
+	if submodule_entries:
+		(work / OVERLAY_SUBMODULES_FILE).write_text(
+			json.dumps({
+				"submodules": submodule_entries,
+				"version": 1,
+			}, indent=2, sort_keys=True) + "\n",
+			encoding="utf-8",
+		)
+	if not patch.strip() and not submodule_entries:
+		raise WorkspaceError("The overlay diff is empty; nothing to save")
+	checks = []
+	if patch.strip():
+		checks.append((source, patch_path))
+	checks.extend(
+		(source / entry["path"], work / entry["patch"])
+		for entry in submodule_entries
+	)
+	for repository, saved_patch in checks:
+		check = subprocess.run(
+			[
+				"git", "-C", str(repository), "apply", "--check",
+				"--reverse", str(saved_patch),
+			],
+			stdout=subprocess.PIPE,
+			stderr=subprocess.PIPE,
+			text=True,
+		)
+		if check.returncode:
+			raise WorkspaceError(
+				"The saved overlay patch does not verify: "
+				+ check.stderr.strip()
+			)
 	restored = []
 	if args.restore != "none":
 		ref = source_task_ref(args.task, args.restore)
 		if resolved_ref(source, ref) is None:
 			raise WorkspaceError(f"Missing task ref for restore: {ref}")
-		run_git(source, "checkout", ref, "--", *inventory)
+		for repository_path, paths in sorted(
+			groups.items(), key=lambda item: -item[0].count("/")
+		):
+			if not repository_path:
+				continue
+			run_git(source / repository_path, "checkout", "HEAD", "--", *paths)
+		if root_paths:
+			run_git(source, "checkout", ref, "--", *root_paths)
 		restored = inventory
-		remaining = [
-			path for path in changed_paths(source)
-			if path_is_covered(path, inventory)
-		]
+		remaining = []
+		for repository_path, paths in groups.items():
+			repository = source / repository_path if repository_path else source
+			remaining.extend(
+				(
+					f"{repository_path}/{path}"
+					if repository_path else path
+				)
+				for path in changed_paths(repository)
+				if path_is_covered(path, paths)
+			)
 		if remaining:
 			raise WorkspaceError(
 				"Overlay paths remain dirty after restore: "
 				+ ", ".join(remaining)
 			)
 	print(json.dumps({
-		"patch": str(patch_path),
-		"patch_bytes": len(patch),
+		"patch": str(patch_path) if patch.strip() else None,
+		"patch_bytes": len(patch) + sum(
+			(work / entry["patch"]).stat().st_size
+			for entry in submodule_entries
+		),
 		"restored": restored,
+		"submodules": [entry["path"] for entry in submodule_entries],
 		"task": args.task,
 	}, indent=2, sort_keys=True))
 
@@ -1439,28 +2074,59 @@ def command_overlay_apply(args):
 	source = Path(config["source_root"])
 	work = overlay_work_dir(config, slot, args.task)
 	patch_path = work / OVERLAY_PATCH_FILE
-	if not patch_path.is_file() or not patch_path.stat().st_size:
+	submodule_entries = read_overlay_submodule_bundle(work)
+	root_patch = patch_path.is_file() and patch_path.stat().st_size
+	if not root_patch and not submodule_entries:
 		raise WorkspaceError(f"Missing overlay patch: {patch_path}")
 	inventory = read_overlay_paths(work)
-	result = subprocess.run(
-		["git", "-C", str(source), "apply", "--3way", str(patch_path)],
-		stdout=subprocess.PIPE,
-		stderr=subprocess.PIPE,
-		text=True,
+	groups, submodules = overlay_inventory_groups(source, inventory)
+	for entry in submodule_entries:
+		if entry["path"] not in groups or entry["path"] not in submodules:
+			raise WorkspaceError(
+				"Overlay submodule manifest is outside the inventory: "
+				+ entry["path"]
+			)
+		if not (work / entry["patch"]).is_file():
+			raise WorkspaceError(
+				"Missing overlay submodule patch: " + entry["patch"]
+			)
+	applications = []
+	if root_patch:
+		applications.append(("", source, patch_path))
+	applications.extend(
+		(entry["path"], source / entry["path"], work / entry["patch"])
+		for entry in submodule_entries
 	)
-	conflicts = run_git(
-		source, "diff", "--name-only", "--diff-filter=U"
-	).stdout.splitlines()
-	applied = not result.returncode and not conflicts
-	outside = [
-		path for path in changed_paths(source)
-		if not path_is_covered(path, inventory)
-	]
+	conflicts = []
+	errors = []
+	for repository_path, repository, saved_patch in applications:
+		result = subprocess.run(
+			[
+				"git", "-C", str(repository), "apply", "--3way",
+				str(saved_patch),
+			],
+			stdout=subprocess.PIPE,
+			stderr=subprocess.PIPE,
+			text=True,
+		)
+		if result.returncode:
+			errors.append(
+				f"{repository_path or '.'}: {result.stderr.strip()}"
+			)
+		for path in run_git(
+			repository, "diff", "--name-only", "--diff-filter=U"
+		).stdout.splitlines():
+			conflicts.append(
+				f"{repository_path}/{path}" if repository_path else path
+			)
+	outside = overlay_outside_inventory(source, inventory, submodules)
+	applied = not errors and not conflicts and not outside
 	print(json.dumps({
 		"applied": applied,
 		"conflicts": conflicts,
-		"error": result.stderr.strip() if result.returncode else None,
+		"error": "\n".join(errors) if errors else None,
 		"outside_inventory": outside,
+		"submodules": [entry["path"] for entry in submodule_entries],
 		"task": args.task,
 	}, indent=2, sort_keys=True))
 
@@ -1476,6 +2142,11 @@ def gitlink_paths(source, paths):
 
 def command_source_commit(args):
 	config, slot = task_action_config(args)
+	if task_type(slot, args.task) == "verify":
+		raise WorkspaceError(
+			"A verification task carries no implementation and cannot commit "
+			"Telegram source; report the deviation as a follow-up task instead"
+		)
 	source = Path(config["source_root"])
 	subject = args.subject.strip()
 	if not subject or "\n" in subject:
@@ -1656,28 +2327,67 @@ def command_source_preflight(args):
 	print(json.dumps(result, indent=2, sort_keys=True))
 
 
+def validate_verify_result(lines, result_path, approved):
+	if "Touched: none" not in lines:
+		raise WorkspaceError(
+			f"A verification task must report Touched: none: {result_path}"
+		)
+	findings = [
+		line.split(":", 1)[1].strip() for line in lines
+		if line.startswith("Finding:")
+	]
+	if len(findings) != 1 or findings[0] not in VALID_FINDINGS:
+		raise WorkspaceError(
+			"A verification task must record exactly one Finding: "
+			+ " | ".join(sorted(VALID_FINDINGS))
+			+ f": {result_path}"
+		)
+	finding = findings[0]
+	if approved:
+		if finding == "inconclusive":
+			raise WorkspaceError(
+				"An inconclusive verification is blocked, never approved: "
+				f"{result_path}"
+			)
+		if finding == "deviation" and "Discovered: present" not in lines:
+			raise WorkspaceError(
+				"A verification that found a deviation must route it as a "
+				f"discovered follow-up task: {result_path}"
+			)
+	elif finding != "inconclusive":
+		raise WorkspaceError(
+			"A verification blocks only when it could not measure, so a blocked "
+			f"result must record Finding: inconclusive: {result_path}"
+		)
+
+
 def command_finish(args):
 	config, slot = task_action_config(args, allow_project=True)
 	ensure_clean(Path(config["source_root"]), "Telegram source checkout")
+	kind = task_type(slot, args.task)
+	approved = args.status == "approved"
 	result_path = slot / task_relative_dir(args.task) / "work" / "result.md"
 	if not result_path.is_file():
 		raise WorkspaceError(f"Task result is missing: {result_path}")
 	result = result_path.read_text(encoding="utf-8-sig")
-	expected = "STATUS: DONE" if args.status == "approved" else "STATUS: BLOCKED"
-	if expected not in result.splitlines():
+	lines = result.splitlines()
+	expected = "STATUS: DONE" if approved else "STATUS: BLOCKED"
+	if expected not in lines:
 		raise WorkspaceError(f"Task result does not contain {expected}: {result_path}")
-	if args.status == "approved" and not any(
+	if approved and not any(
 		line in ("Verdict: APPROVED", "Verdict: NOT_APPLICABLE")
-		for line in result.splitlines()
+		for line in lines
 	):
 		raise WorkspaceError(f"Task result does not contain an approved verdict: {result_path}")
-	if "Checkout: clean-buildable" not in result.splitlines():
+	if "Checkout: clean-buildable" not in lines:
 		raise WorkspaceError(f"Task result does not confirm a clean checkout: {result_path}")
+	if kind == "verify":
+		validate_verify_result(lines, result_path, approved)
 	ensure_no_persisted_commit_hashes(result_path.parents[1])
 	source_note = Path(config["source_root"]) / "tasks" / f"{args.task}.md"
 	if source_note.is_file():
 		ensure_no_persisted_commit_hashes(source_note)
-	validate_source_state(config, args.task, args.status == "approved")
+	validate_source_state(config, args.task, approved, kind)
 	path = state_path(slot, args.task)
 	update_state(path, {
 		"status": args.status,
@@ -2243,6 +2953,14 @@ def parse_args():
 	source_preflight.add_argument("--task", required=True)
 	source_preflight.add_argument("--exe")
 	source_preflight.set_defaults(handler=command_source_preflight)
+
+	build_lock_recover = subparsers.add_parser("build-lock-recover")
+	build_lock_recover.add_argument("--source-root", required=True)
+	build_lock_recover.add_argument("--build-root", required=True)
+	build_lock_recover.add_argument("--exe", required=True)
+	build_lock_recover.add_argument("--artifact", action="append", required=True)
+	build_lock_recover.add_argument("--wait", type=float, default=10.0)
+	build_lock_recover.set_defaults(handler=command_build_lock_recover)
 
 	overlay_save = subparsers.add_parser("overlay-save")
 	add_common_arguments(overlay_save)

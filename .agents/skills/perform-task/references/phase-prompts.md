@@ -5,9 +5,12 @@
 - [Orchestration rules](#orchestration-rules)
 - [Completion checks](#artifact-based-completion-checks)
 - [Context and plan](#phase-1-context-and-plan)
+- [Verification: measurement plan](#phase-1v-context-and-measurement-plan)
+- [Verification: falsifiability assessment](#phase-3v-falsifiability-assessment)
 - [Assessment](#phase-3-plan-assessment)
 - [Implementation and build](#phase-4-implementation)
 - [Review](#phase-6-code-review-loop)
+- [Test-flaw recovery](#test-flaw-recovery-and-directness)
 - [Windows normalization](#phase-7-native-windows-text-normalization)
 - [Prompt delivery](#prompt-delivery-and-logs)
 
@@ -103,7 +106,7 @@ Do not restate the full context, plan, diff, or long reasoning in the chat reply
   were made. For a project task, `project.proposed.md` must also exist and be
   non-empty. For a `Visual: layout` task, `visual.md` must also satisfy the
   visual design completion check below.
-- Phase 3 is complete only when `plan.md` contains both `Phases:` in the Status section and `Assessed: yes`.
+- Phase 3 is complete only when `plan.md` contains both `Phases:` in the Status section and `Assessed: yes`, or records a rejection outcome (`Fast-Path: rejected` or `Approach: rejected`) that sends the performer back to a fresh Phase 1 leaf.
 - Phase 4 is complete only when the target phase checkbox changed to checked and the touched-file list matches the owned write set, or the blocker explains any mismatch.
 - Phase 5 is complete only when the build outcome is known and the build checkbox is updated on success.
 - Phase 6a is complete only when every lens scheduled for iteration `R` wrote `review<R>-<lens>.md` with a `## Verdict:` line and a non-empty `## Checked` section. A lens report that records no checked surfaces is incomplete work: rerun that lens rather than accepting it.
@@ -194,7 +197,14 @@ The plan.md should contain:
 <one-line summary>
 
 ## Approach
-<high-level description of the implementation approach>
+<high-level description of the implementation approach. Name the closest
+existing analogue in this repository for this kind of change and how the plan
+follows its shape. One line per new file, class, switch, or abstraction the
+plan introduces: the role boundary or constraint that requires it — and for a
+new entry point, switch, or hook, which existing ones were checked and why
+none fits. State where the change is contained: the fewest insertion points
+into existing shared modules, with platform-specific work behind the
+`Platform::` seam rather than inline conditional blocks.>
 
 ## Files to Modify
 <list of files that will be created or modified>
@@ -294,7 +304,128 @@ than about eight steps, Build Verification, and the Status checkbox section.
 Do not implement code in this phase.
 ```
 
+## Phase 1V: Context and Measurement Plan
+
+For a `type: verify` task only. It replaces Phase 1, and Phase 3V replaces
+Phase 3. Phases 4, 5, 6, and 7 do not run at all — there is no product diff to
+implement, build, review, or normalize — so this plan and its assessment are the
+entire front half of the run, and the test loop follows directly.
+
+The small-task fast path never applies. A verification's difficulty is in its
+oracle, not its size, and the one-check tasks are exactly the ones where a
+plausible-looking oracle passes without touching the behavior.
+
+```text
+You are a measurement-planning agent for a large C++ codebase (Telegram Desktop).
+
+TASK: <TASK>
+
+This task VERIFIES behavior that already shipped. It has NO implementation of its own. You are not planning a change; you are planning a measurement that could come out either way.
+
+YOUR JOB: Read AGENTS.md, find the shipped code under test, write self-contained context, and then write a measurement plan.
+
+Steps:
+1. Read AGENTS.md for project conventions and build instructions.
+2. Read the task spec completely. It normally names the approved task that left this gap, quotes the shipped hunk, and says what was and was not observed. Treat those quotes as claims to re-derive, not as facts: open the cited files and confirm the code still reads that way on this branch.
+3. Find every surface the claim touches: the function under test, its callers, the widget or API that exposes it, and the state that persists the result.
+4. Establish where the truth lives. If the claim is about what the server stores, local editor or model state is not evidence. If it is about what a later session sees, in-process state right after the action is not evidence. Say explicitly, for each check, which side of that line it reads.
+5. Find the fixture: the account, chat, message, document, or widget the measurement needs. Say whether it already exists (quote its identifiers from the task spec or the prior run's log) or must be created, and how you will tell.
+6. Find a control — something that must come out DIFFERENT in the same run if the setup is sound. A sibling widget declared without the property under test, a context in which the behavior must not fire, a pre-change render recovered from git history, a negative case. A run with no control cannot distinguish "the behavior is correct" from "my probe never ran".
+
+Always write `<WORK_DIR>/context.md`, self-contained, so an agent with no prior context can author the overlay from it plus the referenced sources. Include:
+- Claim Under Test: the shipped behavior restated as one falsifiable proposition
+- Relevant Files: every path with line ranges and what it does
+- Where The Truth Lives: for each check, the surface that decides it and why local state does not
+- Fixture: what the measurement needs and how it is obtained
+- Reachability: how the surface is driven in a test process, with the entry point
+- Prior Art: overlays, probes, and controls from related tasks that can be reused, with their tracked paths
+
+Then write `<WORK_DIR>/plan.md`:
+
+## Claim
+<the single proposition under test, stated so that it can be false>
+
+## Oracle
+<what decides it, in literal terms: the values read, where they are read from, and the exact comparison>
+
+## Checks
+<numbered. For each: what is driven, what is read, the expected literal value, and THE FALSIFIER — the concrete observation that would make this check fail. A check whose falsifier you cannot name is not a check.>
+
+## Controls
+<what must come out different in the same run, and its expected value. State the failure reading: "if the control and the subject agree, the run has not reproduced the condition and is a test flaw, never a pass.">
+
+## Fixture
+<how it is obtained, and how the run proves it got the right one>
+
+## Runs
+<the fewest processes that can carry every check, and what forces a split — a fresh start to re-read persisted state, a different launch flag, a scale that must be set before the style pipeline runs>
+
+## Scope Boundary
+<the parent task and what its diff changed. Then, for each check above, one line: what reverting that diff would do to this check's outcome. A check nothing in the diff can affect does not belong in this plan.>
+
+## Out Of Scope
+<the neighbouring claims this task does not measure, named>
+
+## Status
+Phases: 1
+
+Rules:
+- Plan NO change to Telegram/SourceFiles or Telegram/Resources. The only code this task writes is the disposable test overlay. If satisfying the acceptance criteria seems to require a source change, stop and say so in the plan: the task is misrouted.
+- You are measuring ONE change — the parent task's diff. Apply the revert test to every check you consider: if reverting that diff could not change the check's outcome, it is measuring pre-existing behavior and does not belong in this plan, however tempting it looks. A context that cannot reach the changed lines, a neighbouring feature the diff never touches, a pre-existing bug you spot while reading: name it under Out Of Scope and leave it. This codebase is far larger than the queue, and a verification that follows attention rather than the diff never finishes.
+- Do not enumerate a parameter range the acceptance criteria did not name. Iterate fully over a range they DO name — every value of that enum, both halves of that branch — but do not add the other themes, the other wallpapers, the other scales or the sibling sections on your own initiative.
+- Plan no repair. If you already suspect the behavior is wrong, plan the measurement that proves it, and say what you suspect under Out Of Scope. Fixing it is a separate task.
+- Prefer reading a value over rendering a picture where both are available, and quote literal values rather than describing them. Where the acceptance asks for a visual judgement, plan the capture AND the numbers, because the judgement must be made against both.
+```
+
+## Phase 3V: Falsifiability Assessment
+
+For a `type: verify` task only. It replaces Phase 3, and it also absorbs Step 6d:
+the review loop does not run, so this is where the test-check design is written
+and the only place the plan is independently checked.
+
+```text
+You are a measurement assessment agent. Review a verification plan before it is executed.
+
+Read these files:
+- <WORK_DIR>/context.md
+- <WORK_DIR>/plan.md
+- The task spec
+- Then read the actual source files referenced, to verify the plan against the code rather than against its own prose.
+
+This plan measures shipped behavior and carries no implementation. Assess it on one question above all others: WOULD THIS RUN HAVE DETECTED THE NEGATIVE? A verification that passes whether or not the behavior exists is worse than no verification, because it converts an open gap into a false record of coverage.
+
+Assess:
+
+1. Reachability: are the paths, functions, and entry points real on this branch? Does the plan's driving sequence actually reach the code under test, or does it reach a lookalike?
+2. Oracle strength: for each check, would it still pass if the behavior under test were removed? Reject any check that would. Name the specific way each check can fail.
+3. Truth surface: does each check read the surface that actually decides the claim? Reject reading local model or editor state where the claim is about persisted or server state, and reject reading in-process state where the claim is about what a later session sees.
+4. Controls: is there something in the same run that must come out different? Verify the control's expected value independently from the plan's arithmetic. A plan whose control is derived from the same computation as the subject is not a control.
+5. Fixture integrity: does the run prove it measured the intended subject, quoting its identifiers, rather than assuming it?
+6. Coverage: does every acceptance criterion in the task spec map to a numbered check? List any that do not.
+7. Scope: does the plan change any byte under Telegram/SourceFiles or Telegram/Resources outside the overlay, or repair anything? Both are rejections.
+8. Scope boundary — the revert test. For every check, could reverting the parent task's diff change its outcome? Cut every check where the answer is no; it measures pre-existing behavior that this task does not own. Cut any parameter range the acceptance criteria never named, while keeping ranges they did name iterated in full. Report what you cut and why, so the boundary is on the record rather than silently redrawn. A plan that has grown past its parent's diff is the failure mode this check exists to catch.
+9. Run count: can the checks share fewer processes than planned, and is each split justified by something that genuinely cannot share a process lifetime? Settle coverage first and pack second — never drop an in-scope check to save a run, and never defer one to a follow-up task that this checkout could take now.
+
+Update plan.md with your refinements, keeping its structure. Strengthen weak oracles rather than deleting them. Where you reject a check, say what it would have missed.
+
+Then write `<WORK_DIR>/test-design.md`: the checks as the test author will implement them, in run order, each with its markers, the literal expected values, and its falsifier. This replaces the Step 6d draft, which does not run for this task type.
+
+Add to the Status section of plan.md:
+- `Phases: 1`
+- `Falsifier: named` only when every check has one
+- `Assessed: yes` at the bottom, only when both hold
+
+Do not author overlay code and do not implement anything in this phase.
+```
+
 ## Phase 3: Plan Assessment
+
+Assessment has two rejection outcomes besides refinement, and both withhold
+`Assessed: yes` and send the performer back to a fresh Phase 1 leaf:
+`Fast-Path: rejected` when the performer's same-session Phase 1 undersized the
+task, and `Approach: rejected` when the plan is over-engineered or over-coupled
+beyond step-level repair. On an approach rejection the performer appends the
+assessor's named simpler direction to the Phase 1 rerun prompt.
 
 ```text
 You are a plan assessment agent. Review and refine an implementation plan.
@@ -310,7 +441,32 @@ Assess the plan:
 1. Correctness: Are the file paths and line references accurate? Does the plan reference real functions and types?
 2. Completeness: Are there missing steps? Edge cases not handled?
 3. Code quality: Will the plan minimize code duplication? Does it follow existing codebase patterns from AGENTS.md?
-4. Design: Could the approach be improved? Are there better patterns already used in the codebase?
+4. Approach fit — judge this adversarially, as the reviewer who must later
+   defend the diff. Anchor on precedent: find the closest existing feature of
+   the same kind in this repository and compare shapes; when the plan's
+   Approach names no analogue, find one yourself and record it. A plan several
+   times the size or spread of its precedent carries the burden of proof.
+   - Existing mechanism first: before the plan adds a new entry point, switch,
+     flag, hook, or IPC path, search for an existing one whose semantics
+     already fit. Riding an existing mechanism is the strongest simplification
+     this assessment can produce, and it can carry benefits a new surface
+     cannot — code already shipped may already invoke it.
+   - Containment: count the plan's insertion points into existing shared
+     modules. A feature woven through many functions of a global module —
+     platform-specific `#ifdef` blocks or feature-mode conditionals scattered
+     inline through cross-platform code — is the disaster shape even when
+     every hunk is small. Platform work belongs behind the `Platform::` seam;
+     a mode belongs in one contained flow, not in special cases threaded
+     through everything the module already did.
+   - Structure must be load-bearing: for each new file, class, abstraction, or
+     indirection, the plan must name what it enables — a second caller, a
+     second platform, a real layering constraint. A seam with one
+     implementation and no second user, a state machine over a linear flow, a
+     wrapper around a single call, and scaffolding for a testing style this
+     repository does not practice serve no purpose and come out of the plan.
+   - New files are not the problem: a focused file bounding a coherent role
+     beats both growing a mega-module and scattering through one; judge
+     whether the boundary does work, not whether it is new.
 5. Phase sizing: Each phase should be implementable by a single agent in one session. If a phase has more than about 8-10 substantive code changes, split it further.
 6. Visual contract (layout tasks): when visual.md exists, verify its anchors
    are real (the cited style tokens, fonts, and reference widgets exist),
@@ -323,10 +479,20 @@ Assess the plan:
    `Fast-Path: rejected` to the Status section, do NOT add `Assessed: yes`,
    and state what was underestimated; the performer must rerun Phase 1 as a
    fresh leaf.
+8. Approach rejection: when item 4 fails structurally — the approach is
+   several times larger, more scattered, or more coupled than the task
+   warrants and trimming individual steps would not fix it — do not refine
+   the plan. Add `Approach: rejected` to the Status section, do NOT add
+   `Assessed: yes`, and state in 2-3 lines the simpler direction: the
+   precedent or existing mechanism to ride on, which existing files absorb
+   the change, and where it stays contained. The performer reruns Phase 1 as
+   a fresh leaf with those lines as input.
 
 Update plan.md with your refinements. Keep the same structure but:
 - fix any inaccuracies
 - add missing steps
+- remove files, abstractions, and steps the task does not need — deletion is
+  as much a refinement as addition
 - improve the approach if you found better patterns
 - ensure phases are properly sized for single-agent execution
 - add a line at the top of the Status section: `Phases: <N>`
@@ -388,14 +554,16 @@ You are a build verification agent.
 Read these files:
 - <WORK_DIR>/context.md
 - <WORK_DIR>/plan.md
+- .agents/shared/build-lock-recovery.md
 
 The implementation is complete. Your job is to build the project and fix any build errors that block the planned work.
 
 Steps:
-1. Run the resolved Debug build command from context.md (`<BUILD>`) at the repository root. On WSL
+1. On native Windows, run the recovery contract's exact-path proactive cleanup.
+2. Run the resolved Debug build command from context.md (`<BUILD>`) at the repository root. On WSL
    this is the repository Docker entry point; do not run native Windows CMake against that tree.
-2. If the build succeeds, update plan.md: change `- [ ] Build verification` to `- [x] Build verification`
-3. If the build fails:
+3. If the build succeeds, update plan.md: change `- [ ] Build verification` to `- [x] Build verification`
+4. If the build fails:
    a. Read the error messages carefully
    b. Read the relevant source files
    c. Fix the errors in accordance with the plan and AGENTS.md conventions
@@ -405,7 +573,9 @@ Steps:
 Rules:
 - Only fix build errors. Do not refactor or improve code beyond what is needed for a passing build.
 - Follow AGENTS.md conventions.
-- If build fails with file-locked errors (C1041, LNK1104, "cannot open output file", or similar access-denied lock issues), stop and report the lock. Do not retry.
+- If the build fails with C1041, LNK1104, "cannot open output file", or a similar
+  access-denied lock, follow the shared bounded recovery contract. Do not edit
+  source to work around an environment lock.
 - You are not alone in the codebase. Respect existing changes and do not revert unrelated work.
 
 When finished, report the build result and which files, if any, you changed.
@@ -421,6 +591,23 @@ lenses never read each other's reports: independence is what makes their agreeme
 evidence rather than an echo. Their write sets are disjoint (one report file each),
 so they may run in parallel; when delegation is unavailable, run them as sequential
 checklists in the current session and keep the same four reports.
+
+**Check the diff before spawning anything.** If `git status --porcelain` over
+`Telegram/SourceFiles` and `Telegram/Resources` is empty, skip Phase 6 entirely:
+record in progress that there was no product diff to review, run no lens, no
+synthesis and no fix pass, and continue to the next phase. Four lenses over nothing
+cost real time and produce no evidence, and a lens that goes looking for substitute
+material reviews the plan and the fix pass then rewrites it, so the loop reviews its
+own output and cannot converge. This applies to any task that reaches Phase 6 with
+no product change — a `type: verify` task, or an ordinary task whose request turned
+out to be already satisfied by shipped code. On iteration 1, still run the Phase 6d
+test-design leaf: it reads the spec and plan, takes no part in the review verdict,
+and is useful whether or not a diff exists.
+
+Likewise, never schedule iteration `R+1` off a fix pass that touched no product
+source. A fix that changed nothing under `Telegram/SourceFiles` or
+`Telegram/Resources` leaves the reviewed surface identical, so another round can only
+re-read the same code or drift onto AI artifacts. Close the loop and continue.
 
 The lenses are:
 
@@ -488,10 +675,22 @@ and most real defects are visible only in that context.
 Review only what this task changed. A pre-existing problem outside this task's diff
 is not a finding, however tempting.
 
-Default to NOT CLEAN. A clean verdict is a positive claim that you looked at each
-surface and found nothing — not the absence of an objection. You must report what
-you checked, and a report whose Checked section does not account for the diff is
-incomplete work, not a fast approval.
+STOP FIRST if the product diff is empty. Your review material is the product diff
+and nothing else. If `git diff` and `git status --porcelain` over
+`Telegram/SourceFiles` and `Telegram/Resources` show no change, write a report whose
+Checked section states exactly that, give the verdict CLEAN, and stop. Do not
+substitute other material: the plan, the context, the task text, the test design,
+the source-history note, the test overlay, and already-shipped code are NOT your
+review surface, and reviewing them is a defect in the review, not thoroughness. An
+empty diff is a complete answer — it means this task changed no product code, which
+is normal for a verification task and for a request that turned out to be already
+satisfied. It is never a reason to go looking for something to review.
+
+Default to NOT CLEAN whenever there IS a diff. A clean verdict is then a positive
+claim that you looked at each surface and found nothing — not the absence of an
+objection. You must report what you checked, and a report whose Checked section does
+not account for the diff is incomplete work, not a fast approval. This default does
+not apply to the empty-diff case above; there, CLEAN is the correct and only answer.
 
 A finding is admissible only if you can state the concrete failure it produces: the
 specific input, state, or call sequence that yields a crash, a wrong result, or a
@@ -549,9 +748,10 @@ This lens is not satisfied by reading the diff. Reuse lives OUTSIDE the diff, wh
 is exactly why a single generalist reviewer misses it. Search the repository before
 you judge anything.
 
-- For each helper, widget, algorithm, constant, string, or style value the change
-  introduces: search for an existing equivalent, then either use it or state in your
-  report why the existing one does not fit. Report the search you ran.
+- For each helper, widget, algorithm, constant, string, style value, entry
+  point, or command-line switch the change introduces: search for an existing
+  equivalent, then either use it or state in your report why the existing one
+  does not fit. Report the search you ran.
 - Logic repeated within the change itself that should be shared.
 - A reimplementation of an established repository pattern instead of following it —
   the strongest finding this lens produces, and the one that compounds worst if it
@@ -573,6 +773,18 @@ codebase, and is it no bigger than it needs to be?
 - Minimality: diff hunks with no functional effect; changes broader than the task
   requires; abstraction, indirection, validation, or error handling for cases that
   cannot happen; a compatibility shim or flag where the code can simply change.
+- Scatter: task or platform logic threaded through many existing functions of a
+  shared module. Platform-specific `#ifdef` blocks inline in cross-platform code
+  where a `Platform::` seam exists, or a mode's special cases woven through a
+  module's existing flow instead of one contained hook, are findings even when
+  each hunk is small.
+- Load-bearing structure: every new file, class, or seam needs a nameable
+  enabling purpose — a second user, a second platform, a real layering
+  constraint. An interface with one implementation, a state machine over a
+  linear flow, a wrapper around a single call, or scaffolding for a testing
+  style this repository does not practice is structure without purpose. A
+  focused new file bounding a coherent role is not a finding — that beats
+  growing a mega-module.
 - Dead code: anything added or left behind that nothing reaches.
 - Conventions: REVIEW.md mechanical rules and AGENTS.md coding conventions.
 - Local idiom: comment density, naming, and construction match the surrounding code.
@@ -647,11 +859,69 @@ Write <WORK_DIR>/test-design.md:
   observed
 - a run plan compressed to the fewest possible runs — normally exactly one —
   splitting only for checks that cannot share one process lifetime
+- a fixture fallback plan naming at least two progressively more direct ways
+  to reach the changed production seam if the preferred fixture does not
+  materialize; do not make unrelated UI setup a single point of failure
 - a `## Reconcile` line reminding the test author to re-verify every check
   against the final retained diff after the review loop
 
 Every check needs an oracle that can come out FAIL. "The screen opened" is
 not a check. Do not reuse a generic navigate-and-screenshot scenario.
+```
+
+## Test-Flaw Recovery And Directness
+
+Use this prompt for every `TEST_FLAW` recovery. On a repeated signature, use a
+fresh leaf and include every prior recovery plan. Do not ask it to "try again"
+or merely repair the same fixture.
+
+```text
+You are a test-recovery agent for one Telegram Desktop task. The product
+implementation is retained; repair only the disposable test overlay and its
+test report. You are a leaf and must not delegate.
+
+Read:
+- the task spec and final retained task diff
+- <WORK_DIR>/test-design.md
+- <WORK_DIR>/test.md, including every prior Run and Recovery plan
+- <WORK_DIR>/test-overlay.paths and the current saved overlay
+- .agents/shared/test-loop.md, especially the repeated-failure directness ladder
+
+The latest failure signature is:
+<FAILURE_SIGNATURE>
+
+The previous fixture/recovery techniques are forbidden:
+<FORBIDDEN_TECHNIQUES>
+
+Before editing, append a Recovery plan to the pending Run in test.md:
+- Prior proof: the positive facts already established by earlier runs
+- Failed assumption: the exact setup predicate or fixture behavior that failed
+- Forbidden technique: the approach you will not repeat
+- New directness strategy: the next unused ladder strategy
+- Reachability: why this strategy reaches the task's changed production code
+  even if the failed setup never succeeds
+
+Then implement the recovery. Prefer fewer assumptions and more manual control:
+- insert the production object by hand through an established data API;
+- add a narrow inventoried _DEBUG seam and call the real changed
+  collector/handler directly when unrelated UI setup is flaky;
+- place that seam in any relevant tracked production file or initialized
+  submodule when centralizing it in test_scenario.cpp adds indirection;
+- inject the exact server response/error at the callback or transport seam for
+  retry behavior;
+- use a real disposable account fixture or exact Qt input only when those are
+  part of the behavior under test.
+
+Keep an independent falsifiable oracle. A direct seam may bypass setup outside
+the task diff, but it must not reimplement or bypass the changed code itself.
+Fix every test flaw visible in the latest run together, build Debug, and return
+the compact phase block.
+
+If no unused strategy can safely reach the changed code, do not cite the
+repeated signature as the reason. Add `## Recovery exhaustion` to test.md with
+one row per ladder strategy: attempted evidence, or the concrete reason it is
+unsafe, unavailable, or would bypass the task diff. Return `BLOCKED` for the
+performer to confirm independently.
 ```
 
 ### Step 6s: Review synthesis
@@ -719,6 +989,7 @@ Read these files:
 - <WORK_DIR>/context.md
 - <WORK_DIR>/plan.md
 - <WORK_DIR>/review<R>.md
+- .agents/shared/build-lock-recovery.md
 
 Then read the source files mentioned in the review.
 
@@ -728,12 +999,22 @@ Rules:
 - Implement exactly the review changes, nothing more.
 - Follow AGENTS.md coding conventions.
 - You are not alone in the codebase. Respect existing changes and do not revert unrelated work.
-- Do not modify AI task files except where the review process explicitly requires it.
+- Your write set is product source under `Telegram/SourceFiles` and `Telegram/Resources`, and
+  nothing else. Never edit `plan.md`, `context.md`, `test-design.md`, the task text, or any other
+  AI artifact. Those are inputs you read, never outputs you write. Editing them makes the next
+  review iteration read a document this loop just rewrote, which cannot converge.
+- If a finding cannot be addressed by changing product source — because it is about the plan, the
+  test design, the task's scope, or code this task did not touch — do not act on it. Report it
+  back as out of scope, naming the finding and why, and let the performer decide.
+- If review<R>.md contains no finding you can act on under those rules, change nothing, say so,
+  and report. An empty fix is a valid and complete outcome.
 
 After all changes are made:
-1. Run the resolved Debug build command from context.md (`<BUILD>`) at the repository root.
-2. If the build fails, fix build errors and rebuild until it passes.
-3. If build fails with file-locked errors (C1041, LNK1104, "cannot open output file", or similar access-denied lock issues), stop and report the lock. Do not retry.
+1. On native Windows, run the recovery contract's exact-path proactive cleanup.
+2. Run the resolved Debug build command from context.md (`<BUILD>`) at the repository root.
+3. If the build fails, fix build errors and rebuild until it passes.
+4. If the build fails with C1041, LNK1104, "cannot open output file", or a
+   similar access-denied lock, follow the shared bounded recovery contract.
 
 When finished, report what changes were made and which files you touched.
 ```
