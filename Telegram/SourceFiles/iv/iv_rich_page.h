@@ -274,6 +274,10 @@ enum class RichParseMode : uchar {
 inline constexpr auto kTextDiffInsertedColorIndex = 10;
 inline constexpr auto kTextDiffDeletedColorIndex = 11;
 
+[[nodiscard]] inline QString RichExportGeneratorMarker() {
+	return u"Telegram Desktop rich message export"_q;
+}
+
 [[nodiscard]] RichMessageLimits ResolveRichMessageLimits(
 	not_null<Main::Session*> session);
 [[nodiscard]] std::vector<RichPage::Block> SplitGroupedMediaBlock(
@@ -284,6 +288,7 @@ inline constexpr auto kTextDiffDeletedColorIndex = 11;
 [[nodiscard]] std::optional<RichMessageLimitError> ValidateRichMessage(
 	const RichPage &page,
 	const RichMessageLimits &limits);
+[[nodiscard]] int CountRichPageBlocks(const RichPage &page);
 [[nodiscard]] QString EncodeRichPageLinkUrl(
 	const QString &url,
 	uint64 webpageId);
