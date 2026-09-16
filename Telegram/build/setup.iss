@@ -1,9 +1,9 @@
-#define MyAppShortName "Telegram"
-#define MyAppName "Telegram Desktop"
-#define MyAppPublisher "Telegram FZ-LLC"
-#define MyAppURL "https://desktop.telegram.org"
-#define MyAppExeName "Telegram.exe"
-#define MyAppId "53F49750-6209-4FBF-9CA8-7A333C87D1ED"
+#define MyAppShortName "TelegramWSS"
+#define MyAppName "TelegramWSS"
+#define MyAppPublisher "Honeydrinksomewine"
+#define MyAppURL "https://cdn.honeydrinksomewine.com"
+#define MyAppExeName "TelegramWSS.exe"
+#define MyAppId "AB4D24D2-FB9D-41F5-963B-1E9E858E9DE9"
 #define CurrentYear GetDateTimeString('yyyy','','')
 
 [Setup]
