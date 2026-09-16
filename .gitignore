@@ -74,3 +74,9 @@ settings.local.json
 
 # Generated changelog page (built by CI, deployed to GitHub Pages)
 /docs/changelog/
+
+# Custom update server keys (secret)
+tools/Packer/keys/
+tools/Packer/Release/
+tools/Packer/__pycache__/
+tools/__pycache__/

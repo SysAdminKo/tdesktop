@@ -2,10 +2,8 @@ name: MacOS.
 
 on:
   push:
-    # Pushes to the canary branches run only canary.yml, see there.
-    branches-ignore:
-      - public-canary
-      - private-canary
+    branches:
+      - stable
     paths-ignore:
       - 'docs/**'
       - '**.md'
@@ -23,6 +21,8 @@ on:
       - 'Telegram/SourceFiles/platform/linux/**'
       - 'Telegram/configure.bat'
   pull_request:
+    branches:
+      - stable
     paths-ignore:
       - 'docs/**'
       - '**.md'
