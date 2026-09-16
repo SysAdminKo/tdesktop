@@ -31,33 +31,37 @@ constexpr auto kEarlyDisconnectQuarantine = 30 * crl::time(1000);
 	return map;
 }
 
-void QuarantineIp(
+[[nodiscard]] bool QuarantineIp(
 		const QString &host,
 		const QString &ip,
 		crl::time duration) {
 	if (host.isEmpty() || ip.isEmpty()) {
-		return;
+		return false;
 	}
 	const auto until = crl::now() + duration;
 	const auto locker = std::lock_guard(IpQuarantineMutex());
 	auto &slot = IpQuarantineMap()[host][ip];
 	if (slot > until) {
-		return;
+		return false;
 	}
 	slot = until;
+	return true;
 }
 
-void ClearIpQuarantine(const QString &host, const QString &ip) {
+[[nodiscard]] bool ClearIpQuarantine(const QString &host, const QString &ip) {
 	const auto locker = std::lock_guard(IpQuarantineMutex());
 	auto &byHost = IpQuarantineMap();
 	const auto i = byHost.find(host);
 	if (i == end(byHost)) {
-		return;
+		return false;
 	}
-	i->second.erase(ip);
+	if (!i->second.erase(ip)) {
+		return false;
+	}
 	if (i->second.empty()) {
 		byHost.erase(i);
 	}
+	return true;
 }
 
 [[nodiscard]] bool IsIpQuarantined(const QString &host, const QString &ip) {
@@ -239,10 +243,14 @@ void ResolvingConnection::quarantineCurrentIp() {
 	if (_ipIndex < 0 || _ipIndex >= int(_proxy.resolvedIPs.size())) {
 		return;
 	}
-	QuarantineIp(
-		_proxy.host,
-		_proxy.resolvedIPs[_ipIndex],
-		kIpQuarantineDuration);
+	const auto &ip = _proxy.resolvedIPs[_ipIndex];
+	if (!QuarantineIp(_proxy.host, ip, kIpQuarantineDuration)) {
+		return;
+	}
+	CONNECTION_LOG_INFO(u"IP quarantine set: %1 (host %2, %3ms)"_q
+		.arg(ip)
+		.arg(_proxy.host)
+		.arg(kIpQuarantineDuration));
 }
 
 bool ResolvingConnection::refreshChild() {
@@ -324,7 +332,10 @@ void ResolvingConnection::handleConnected() {
 	if (_ipIndex >= 0) {
 		const auto host = _proxy.host;
 		const auto good = _proxy.resolvedIPs[_ipIndex];
-		ClearIpQuarantine(host, good);
+		if (ClearIpQuarantine(host, good)) {
+			CONNECTION_LOG_INFO(u"IP quarantine cleared: %1 (host %2)"_q
+				.arg(good, host));
+		}
 		const auto instance = _instance;
 		InvokeQueued(_instance, [=] {
 			instance->setGoodProxyDomain(host, good);

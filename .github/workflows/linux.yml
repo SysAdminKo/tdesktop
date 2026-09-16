@@ -189,7 +189,7 @@ jobs:
       - name: Check.
         if: env.ONLY_CACHE == 'false'
         run: |
-          filePath="out/Debug/Telegram"
+          filePath="out/Debug/TelegramWSS"
           if test -f "$filePath"; then
             echo "Build successfully done! :)"
 
