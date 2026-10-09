@@ -544,7 +544,7 @@ QString autoupdatePrefixFile() {
 const QString &readAutoupdatePrefixRaw() {
 	Expects(!Core::UpdaterDisabled());
 
-	return AutoupdatePrefix("https://cdn.honeydrinksomewine.com");
+	return AutoupdatePrefix("https://cdn.honeydrinksomewine.com/v2");
 }
 
 void writeAutoupdatePrefix(const QString &prefix) {

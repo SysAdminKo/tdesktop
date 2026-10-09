@@ -90,7 +90,7 @@ def collect_build_files(build_dir_abs, tmp_dir, platform):
     return tmp_dir
 
 
-def pack_update(tmp_dir, version, platform, private_key, alpha):
+def pack_update(tmp_dir, version, platform, private_key, alpha, fmt):
     print("=== Packing update ===")
     cmd = [
         sys.executable, PACKER_SCRIPT,
@@ -98,20 +98,20 @@ def pack_update(tmp_dir, version, platform, private_key, alpha):
         '--version', str(version),
         '--platform', platform,
         '--private-key', private_key,
+        '--format', fmt,
     ]
     if alpha:
         cmd += ['--alpha', str(alpha)]
     output = run(cmd, cwd=BASE_DIR)
     print(output)
 
-    for line in output.split('\n'):
-        if 'written successfully' in line:
-            fname = line.split("'")[1]
-            return fname
-
-    print("ERROR: could not determine output filename from packer",
-          file=sys.stderr)
-    sys.exit(1)
+    fnames = [line.split("'")[1] for line in output.split('\n')
+              if 'written successfully' in line]
+    if not fnames:
+        print("ERROR: could not determine output filename from packer",
+              file=sys.stderr)
+        sys.exit(1)
+    return fnames
 
 
 def generate_current4(version, platform, base_url, filename):
@@ -127,10 +127,26 @@ def generate_current4(version, platform, base_url, filename):
     return json.dumps(doc, indent=2) + '\n'
 
 
-def upload(host, remote_path, local_file, current4_content, ssh_key):
+def is_v2_file(filename):
+    return os.path.basename(filename).startswith('td-update-')
+
+
+def ensure_remote_dir(sftp, path):
+    try:
+        sftp.stat(path)
+    except FileNotFoundError:
+        sftp.mkdir(path)
+
+
+def upload(host, remote_root, packages, ssh_key):
+    """packages: list of (remote_dir, local_file, current4_content).
+
+    v1 packages go to the web root (clients up to 7.2.x read /current4),
+    v2 packages go to /v2 (clients 7.3+ use the .../v2 update prefix).
+    """
     import paramiko
 
-    print(f"=== Uploading to {host}:{remote_path} ===")
+    print(f"=== Uploading to {host}:{remote_root} ===")
 
     user_host = host.split('@')
     username = user_host[0] if len(user_host) == 2 else None
@@ -160,31 +176,30 @@ def upload(host, remote_path, local_file, current4_content, ssh_key):
 
     sftp = client.open_sftp()
 
-    remote_files_dir = f"{remote_path}/files"
-    try:
-        sftp.stat(remote_files_dir)
-    except FileNotFoundError:
-        sftp.mkdir(remote_files_dir)
+    for remote_path, local_file, current4_content in packages:
+        ensure_remote_dir(sftp, remote_path)
+        remote_files_dir = f"{remote_path}/files"
+        ensure_remote_dir(sftp, remote_files_dir)
 
-    remote_file = f"{remote_files_dir}/{os.path.basename(local_file)}"
-    sftp.put(local_file, remote_file)
-    print(f"  {os.path.basename(local_file)} -> {remote_file}")
+        remote_file = f"{remote_files_dir}/{os.path.basename(local_file)}"
+        sftp.put(local_file, remote_file)
+        print(f"  {os.path.basename(local_file)} -> {remote_file}")
 
-    existing = {}
-    try:
-        with sftp.open(f"{remote_path}/current4", 'r') as f:
-            existing = json.loads(f.read().decode('utf-8'))
-        print("  Merging with existing current4...")
-    except (FileNotFoundError, json.JSONDecodeError):
-        print("  Creating new current4...")
+        existing = {}
+        try:
+            with sftp.open(f"{remote_path}/current4", 'r') as f:
+                existing = json.loads(f.read().decode('utf-8'))
+            print("  Merging with existing current4...")
+        except (FileNotFoundError, json.JSONDecodeError):
+            print("  Creating new current4...")
 
-    new_doc = json.loads(current4_content)
-    existing.update(new_doc)
-    merged = json.dumps(existing, indent=2) + '\n'
+        new_doc = json.loads(current4_content)
+        existing.update(new_doc)
+        merged = json.dumps(existing, indent=2) + '\n'
 
-    with sftp.open(f"{remote_path}/current4", 'w') as f:
-        f.write(merged)
-    print(f"  current4 -> {remote_path}/current4 ({len(merged)} bytes)")
+        with sftp.open(f"{remote_path}/current4", 'w') as f:
+            f.write(merged)
+        print(f"  current4 -> {remote_path}/current4 ({len(merged)} bytes)")
 
     sftp.close()
     client.close()
@@ -212,6 +227,9 @@ def main():
     parser.add_argument('--pack-dir',
                         help='Use existing directory with files (skip build+collect)')
     parser.add_argument('--alpha', type=int, default=0)
+    parser.add_argument('--format', default='both', choices=['v1', 'v2', 'both'],
+                        help='v1 feed (/current4) for clients up to 7.2.x, '
+                             'v2 feed (/v2/current4) for 7.3+ (default: both)')
     args = parser.parse_args()
 
     if args.set_version:
@@ -251,28 +269,36 @@ def main():
         collect_build_files(build_dir, tmp_dir, args.platform)
 
     try:
-        filename = pack_update(
+        filenames = pack_update(
             tmp_dir, args.version, args.platform,
-            args.private_key, args.alpha)
+            args.private_key, args.alpha, args.format)
 
-        local_file = filename if os.path.isabs(filename) \
-            else os.path.join(BASE_DIR, filename)
-        if not os.path.isfile(local_file):
-            print(f"ERROR: packed file not found: {local_file}", file=sys.stderr)
-            sys.exit(1)
+        packages = []
+        for filename in filenames:
+            local_file = filename if os.path.isabs(filename) \
+                else os.path.join(BASE_DIR, filename)
+            if not os.path.isfile(local_file):
+                print(f"ERROR: packed file not found: {local_file}",
+                      file=sys.stderr)
+                sys.exit(1)
+            remote_path = args.remote_path.rstrip('/')
+            if is_v2_file(local_file):
+                remote_path += '/v2'
+            current4_content = generate_current4(
+                args.version, args.platform, args.base_url,
+                os.path.basename(local_file))
+            packages.append((remote_path, local_file, current4_content))
 
-        current4_content = generate_current4(
-            args.version, args.platform, args.base_url,
-            os.path.basename(local_file))
-
-        upload(args.host, args.remote_path, local_file,
-               current4_content, args.ssh_key)
+        upload(args.host, args.remote_path, packages, args.ssh_key)
 
         print(f"\n=== Deploy complete ===")
         print(f"  Version: {args.version}")
         print(f"  Platform: {args.platform}")
-        print(f"  URL: {args.base_url}/files/{filename}")
-        print(f"  Check: curl {args.base_url}/current4")
+        for remote_path, local_file, _ in packages:
+            prefix = args.base_url.rstrip('/') + remote_path[
+                len(args.remote_path.rstrip('/')):]
+            print(f"  URL: {prefix}/files/{os.path.basename(local_file)}")
+            print(f"  Check: curl {prefix}/current4")
     finally:
         if cleanup_tmp:
             try:

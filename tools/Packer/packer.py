@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 """
 Packer for Telegram Desktop update files.
-Reproduces the binary format of QDataStream Qt 5.1 + LZMA + RSA-SHA1 signature.
+Reproduces the binary format of QDataStream Qt 5.1 + LZMA, signed as
+v1 (RSA-SHA1, clients up to 7.2.x) and/or v2 (Ed25519 TDUP envelope,
+clients 7.3+, see update_v2.py). One compression feeds both formats.
 
 Usage:
     python3 packer.py --path <build_dir> \
         --platform <win64|win|winarm|mac|armac|linux> \
-        --private-key <key.pem> [--version <version>] [--current4]
+        [--format v1|v2|both] [--private-key <rsa.pem>] \
+        [--version <version>] [--current4]
 
-Minimal example (version from core/version.h, output in Release/):
+Minimal example (version from core/version.h, output in Release/ for v1
+and Release/v2/ for v2):
 
     cd tools/Packer
     python packer.py --path ..\\..\\out\\Release --platform win64 ^
         --private-key keys\\stable_private.pem --current4
 
-Binary structure of the output file:
+Binary structure of the v1 output file:
 
     Windows:
         [128b RSA-1024 signature]
@@ -39,12 +43,15 @@ Inner QDataStream format (before compression) — Qt 5.1, big-endian:
         bool     executable    (non-Windows only, 1 byte)
 """
 import argparse
+import json
 import lzma
 import os
 import struct
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 
+import update_v2 as v2
 from bump_version import parse_version_input, read_current_version
 
 
@@ -54,8 +61,6 @@ OUTPUT_DIR = os.path.join(BASE_DIR, 'Release')
 H_SIG_LEN = 128
 H_SHA_LEN = 20
 H_PROPS_LEN_WIN = 5    # LZMA_PROPS_SIZE
-H_PROPS_LEN_OTHER = 0
-H_ORIG_SIZE_LEN = 4
 
 ALPHA_VERSION_MARKER = 0x7FFFFFFF
 
@@ -158,22 +163,15 @@ def compress_xz(uncompressed, threads):
         )
 
 
-def compress_and_sign(uncompressed, private_key_pem, is_windows, threads=0):
-    try:
-        from Crypto.PublicKey import RSA
-        from Crypto.Signature import pkcs1_15
-        from Crypto.Hash import SHA1
-    except ImportError:
-        print("ERROR: pycryptodome is required. Install with: pip install pycryptodome",
-              file=sys.stderr)
-        sys.exit(1)
+def compress_payload(uncompressed, is_windows, threads=0):
+    """[lzma props on Windows,] int32 original size, compressed bytes.
 
+    This is the v1 file without RSA signature and SHA-1 and, verbatim,
+    the v2 envelope payload.
+    """
     if is_windows:
         if threads > 1:
             print("Note: win64 LZMA1 compression is single-threaded (format limit)")
-        h_props_len = H_PROPS_LEN_WIN
-        h_size = H_SIG_LEN + H_SHA_LEN + h_props_len + H_ORIG_SIZE_LEN
-
         filters = [{
             'id': lzma.FILTER_LZMA1,
             'preset': 9,
@@ -187,27 +185,33 @@ def compress_and_sign(uncompressed, private_key_pem, is_windows, threads=0):
             format=lzma.FORMAT_ALONE,
             filters=filters,
         )
-        lzma_props = compressed_with_header[:5]
+        lzma_props = compressed_with_header[:H_PROPS_LEN_WIN]
         compressed_data = compressed_with_header[13:]
     else:
-        h_props_len = H_PROPS_LEN_OTHER
-        h_size = H_SIG_LEN + H_SHA_LEN + h_props_len + H_ORIG_SIZE_LEN
         lzma_props = b''
         compressed_data = compress_xz(uncompressed, threads)
 
-    uncompressed_size = struct.pack('<i', len(uncompressed))
-    compressed_len = len(compressed_data)
-
     print(f"Original: {len(uncompressed)} bytes")
-    print(f"Compressed: {compressed_len} bytes")
+    print(f"Compressed: {len(compressed_data)} bytes")
 
-    result = bytearray(h_size + compressed_len)
-    result[H_SIG_LEN + H_SHA_LEN:H_SIG_LEN + H_SHA_LEN + h_props_len] = lzma_props
-    result[H_SIG_LEN + H_SHA_LEN + h_props_len:
-           H_SIG_LEN + H_SHA_LEN + h_props_len + H_ORIG_SIZE_LEN] = uncompressed_size
-    result[h_size:] = compressed_data
+    return (lzma_props
+            + struct.pack('<i', len(uncompressed))
+            + compressed_data)
 
-    data_for_hash = bytes(result[H_SIG_LEN + H_SHA_LEN:])
+
+def sign_v1(payload, private_key_pem):
+    try:
+        from Crypto.PublicKey import RSA
+        from Crypto.Signature import pkcs1_15
+        from Crypto.Hash import SHA1
+    except ImportError:
+        print("ERROR: pycryptodome is required. Install with: pip install pycryptodome",
+              file=sys.stderr)
+        sys.exit(1)
+
+    result = bytearray(H_SIG_LEN + H_SHA_LEN) + payload
+
+    data_for_hash = bytes(payload)
     h = SHA1.new(data_for_hash)
     sha1_digest = h.digest()
     result[H_SIG_LEN:H_SIG_LEN + H_SHA_LEN] = sha1_digest
@@ -253,6 +257,67 @@ def output_name(version, platform, alpha_version):
     return name
 
 
+def write_current4(out_dir, platform, channel, version, out_base):
+    doc = {
+        platform: {
+            channel: {
+                "released": version,
+                "link": f"/files/{out_base}",
+            }
+        }
+    }
+    current4_path = os.path.join(out_dir, 'current4')
+    with open(current4_path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(json.dumps(doc, indent=2) + '\n')
+    print(f"current4 -> '{current4_path}'")
+
+
+def write_v1(args, payload):
+    with open(args.private_key, 'rb') as f:
+        private_key_pem = f.read()
+    result = sign_v1(payload, private_key_pem)
+
+    out_name = args.output or output_name(args.version, args.platform, args.alpha)
+    out_dir = os.path.dirname(out_name) or OUTPUT_DIR
+    out_base = os.path.basename(out_name)
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, out_base)
+    with open(out_path, 'wb') as f:
+        f.write(result)
+
+    print(f"Update file '{out_path}' written successfully ({len(result)} bytes)")
+
+    if args.current4:
+        write_current4(out_dir, args.platform, 'stable', args.version, out_base)
+
+
+def write_v2(args, payload, trust, key, key_id):
+    print(f"Signing v2 with '{key_id}'...")
+    result = v2.build_envelope(
+        trust,
+        key,
+        key_id,
+        args.channel,
+        args.platform,
+        v2.make_version(args.version),
+        int(time.time()),
+        payload)
+    v2.verify_package(result, trust, args.channel, args.platform)
+    print("v2 package verified OK")
+
+    out_dir = os.path.join(OUTPUT_DIR, 'v2')
+    out_base = v2.file_name(args.platform, args.channel, args.version)
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, out_base)
+    with open(out_path, 'wb') as f:
+        f.write(result)
+
+    print(f"Update file '{out_path}' written successfully ({len(result)} bytes)")
+
+    if args.current4:
+        write_current4(out_dir, args.platform, args.channel, args.version, out_base)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Pack Telegram Desktop update files')
@@ -262,21 +327,27 @@ def main():
                         help='Version 6009301 or 6.9.301 '
                              '(default: read from core/version.h)')
     parser.add_argument('--platform', default='win64',
-                        choices=['win', 'win64', 'winarm', 'mac', 'armac', 'linux'],
+                        choices=list(v2.PLATFORM_TARGETS),
                         help='Target platform')
-    parser.add_argument('--private-key', required=True,
-                        help='Path to RSA private key PEM file')
+    parser.add_argument('--format', default='both', choices=['v1', 'v2', 'both'],
+                        help='v1: RSA for clients up to 7.2.x, '
+                             'v2: Ed25519 envelope for 7.3+ (default: both)')
+    parser.add_argument('--private-key',
+                        help='Path to RSA private key PEM file (v1)')
+    parser.add_argument('--channel', default='stable', choices=['stable', 'beta'],
+                        help='v2 channel (default: stable)')
     parser.add_argument('--output',
-                        help='Output filename (auto-generated if not specified)')
+                        help='v1 output filename (auto-generated if not specified)')
     parser.add_argument('--alpha', type=int, default=0,
-                        help='Alpha version number (0 = not alpha)')
+                        help='Alpha version number (0 = not alpha, v1 only)')
     parser.add_argument('--current4', action='store_true',
                         help='Generate current4 JSON alongside the update file')
-    parser.add_argument('--base-url', default='https://cdn.honeydrinksomewine.com',
-                        help='Base URL for download link in current4')
     parser.add_argument('--threads', type=int, default=0,
                         help='Worker threads for file I/O and XZ compression (0 = auto)')
     args = parser.parse_args()
+
+    make_v1 = args.format in ('v1', 'both')
+    make_v2 = args.format in ('v2', 'both')
 
     if args.version is None:
         args.version, ver_str = read_current_version()
@@ -290,12 +361,21 @@ def main():
         print(f"ERROR: path does not exist: {args.path}", file=sys.stderr)
         sys.exit(1)
 
-    if not os.path.isfile(args.private_key):
-        print(f"ERROR: private key not found: {args.private_key}", file=sys.stderr)
+    if make_v1 and (not args.private_key or not os.path.isfile(args.private_key)):
+        print(f"ERROR: RSA private key not found: {args.private_key}", file=sys.stderr)
         sys.exit(1)
 
-    with open(args.private_key, 'rb') as f:
-        private_key_pem = f.read()
+    if make_v2:
+        if args.alpha:
+            print("ERROR: --alpha is supported by v1 only", file=sys.stderr)
+            sys.exit(1)
+        try:
+            trust = v2.load_trust()
+            key_id = v2.channel_key_id(trust.parsed, args.channel)
+            key = v2.load_private_key(v2.release_key_file(key_id))
+        except v2.UpdateV2Error as e:
+            print(f"ERROR: {e} (see update_keys.py)", file=sys.stderr)
+            sys.exit(1)
 
     is_windows = args.platform.startswith('win')
 
@@ -315,38 +395,22 @@ def main():
 
     inner = build_datastream(version_field, files, workers=workers)
 
-    result = compress_and_sign(
+    payload = compress_payload(
         bytes(inner),
-        private_key_pem,
         is_windows=is_windows,
         threads=args.threads,
     )
 
-    out_name = args.output or output_name(args.version, args.platform, args.alpha)
-    out_dir = os.path.dirname(out_name) or OUTPUT_DIR
-    out_base = os.path.basename(out_name)
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, out_base)
-    with open(out_path, 'wb') as f:
-        f.write(result)
-
-    print(f"Update file '{out_path}' written successfully ({len(result)} bytes)")
-
-    if args.current4:
-        import json
-        doc = {
-            args.platform: {
-                "stable": {
-                    "released": args.version,
-                    "link": f"/files/{out_base}",
-                }
-            }
-        }
-        current4_path = os.path.join(out_dir, 'current4')
-        with open(current4_path, 'w', encoding='utf-8') as f:
-            f.write(json.dumps(doc, indent=2) + '\n')
-        print(f"current4 -> '{current4_path}'")
+    if make_v1:
+        write_v1(args, payload)
+    if make_v2:
+        try:
+            write_v2(args, payload, trust, key, key_id)
+        except v2.UpdateV2Error as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == '__main__':
     main()
+

@@ -8,14 +8,18 @@
 ```
 tools/Packer/
 ├── bump_version.py     # Bump/set версии во всех исходниках
-├── packer.py           # Упаковщик: QDataStream Qt5.1 + LZMA + RSA-подпись
+├── packer.py           # Упаковщик: QDataStream Qt5.1 + LZMA, подпись v1 и/или v2
+├── update_v2.py        # Формат v2 (TDUP + Ed25519), повторяет core/update_verify.cpp
+├── update_keys.py      # Ключи v2: init / rotate / show
 ├── deploy.py           # Пайплайн: сборка -> упаковка -> JSON -> SFTP-загрузка
 ├── requirements.txt    # Python-зависимости
-├── keys/               # RSA-ключи (.gitignored)
-│   ├── stable_private.pem
+├── keys/               # Приватные ключи (.gitignored), бэкап обязателен
+│   ├── stable_private.pem      # RSA v1
 │   ├── stable_public.pem
 │   ├── beta_private.pem
-│   └── beta_public.pem
+│   ├── beta_public.pem
+│   ├── v2_root_private.pem     # Ed25519 root: подписывает только манифест
+│   └── v2_release_<id>.pem     # Ed25519 release: подписывает пакеты
 └── site/
     ├── nginx.conf
     └── www/
@@ -43,6 +47,35 @@ flowchart LR
     exe -->|4. Launch| updater
     updater -->|5. Copy + relaunch| exe
 ```
+
+## Два формата обновлений
+
+С 7.3 апстрим принимает только пакеты v2: конверт `TDUP`, подпись Ed25519
+ключом из манифеста, манифест подписан корневым ключом, вшитым при сборке из
+`Telegram/Resources/update/`. Клиенты 7.2.x принимают только наш v1 (RSA).
+Поэтому фиды разведены:
+
+| Клиенты | Префикс обновлений | Фид | Формат |
+|---|---|---|---|
+| до 7.2.80x | `https://cdn.honeydrinksomewine.com` | `/current4`, `/files/tx64upd{N}` | v1 |
+| 7.3.1+ | `https://cdn.honeydrinksomewine.com/v2` | `/v2/current4`, `/v2/files/td-update-win-x64-{N}` | v2 |
+
+`packer.py` и `deploy.py` по умолчанию (`--format both`) делают оба пакета из
+одного сжатия и выкладывают каждый в свой фид, так что старые клиенты могут
+обновиться сразу на любую новую версию.
+
+### Ключи v2
+
+Созданы командой `python update_keys.py init`: приватные в `keys/`, публичные
+trust-файлы в `Telegram/Resources/update/` (коммитятся и вшиваются в клиент).
+
+- **Корневой ключ не терять и не пересоздавать** (`init --force`): клиенты с
+  другим корнем больше не примут ни одного обновления.
+- `python update_keys.py rotate` — новый release-ключ, старый отзывается,
+  `manifest_version` +1. Новый манифест едет внутри пакетов, клиенты его
+  принимают автоматически; пересборка нужна только для новых установок.
+- `python update_keys.py show` — проверить и показать манифест.
+- При мерже апстрима файлы `Telegram/Resources/update/*` всегда оставлять наши.
 
 ## Предварительные требования
 
@@ -197,7 +230,8 @@ python bump_version.py --set 6009301
 | `--host` | да | — | `user@cdn.honeydrinksomewine.com` |
 | `--remote-path` | нет | `/home/update/www` | Путь к webroot на сервере |
 | `--base-url` | нет | `https://cdn.honeydrinksomewine.com` | Базовый URL для ссылок в JSON |
-| `--private-key` | нет | `keys/stable_private.pem` | Приватный ключ для подписи |
+| `--private-key` | нет | `keys/stable_private.pem` | RSA-ключ для v1 |
+| `--format` | нет | `both` | `v1` -> `/current4`, `v2` -> `/v2/current4`, `both` |
 | `--ssh-key` | нет | `~/.ssh/id_rsa` | SSH-ключ для подключения |
 | `--no-build` | нет | — | Пропустить cmake-сборку |
 | `--pack-dir` | нет | — | Использовать готовую директорию с файлами |
@@ -210,9 +244,11 @@ python bump_version.py --set 6009301
 | `--path` | да | Директория с файлами для упаковки |
 | `--version` | да | Числовая версия |
 | `--platform` | да | `win64`, `win`, `winarm`, `mac`, `armac`, `linux` |
-| `--private-key` | да | Файл приватного RSA-ключа |
-| `--output` | нет | Имя выходного файла |
-| `--alpha` | нет | Alpha-версия (0 = не alpha) |
+| `--private-key` | для v1 | Файл приватного RSA-ключа (v2-ключ берётся из `keys/` по манифесту) |
+| `--output` | нет | Имя выходного файла v1 (v2 пишется в `Release/v2/`) |
+| `--alpha` | нет | Alpha-версия (0 = не alpha), только v1 |
+| `--format` | нет | `v1`, `v2`, `both` (по умолчанию) |
+| `--channel` | нет | Канал v2: `stable` (по умолчанию) или `beta` |
 
 ## Проверка
 
@@ -222,15 +258,18 @@ curl https://cdn.honeydrinksomewine.com/current4
 
 # Убедиться, что файл доступен
 curl -I https://cdn.honeydrinksomewine.com/files/tx64upd6009301
+
+# v2-фид (клиенты 7.3+)
+curl https://cdn.honeydrinksomewine.com/v2/current4
 ```
 
 ## Изменённые файлы клиента
 
 | Файл | Изменение |
 |---|---|
-| `Telegram/SourceFiles/config.h` | Заменены `UpdatesPublicKey`, `UpdatesPublicBetaKey` |
-| `Telegram/SourceFiles/core/version.h` | `AppVersion=6009300`, `AppName=TelegramWSS Desktop` и др. |
-| `Telegram/SourceFiles/storage/localstorage.cpp` | URL по умолчанию -> `cdn.honeydrinksomewine.com` |
+| `Telegram/Resources/update/*` | Наш корневой ключ и манифест v2 (`update_keys.py`) |
+| `Telegram/SourceFiles/core/version.h` | `AppVersion`, `AppName=TelegramWSS Desktop` и др. |
+| `Telegram/SourceFiles/storage/localstorage.cpp` | URL по умолчанию -> `cdn.honeydrinksomewine.com/v2` |
 | `Telegram/build/version` | Синхронизирован с version.h |
 | `Telegram/Resources/winrc/Telegram.rc` | FILEVERSION для свойств exe |
 | `Telegram/Resources/winrc/Updater.rc` | FILEVERSION для Updater.exe |
