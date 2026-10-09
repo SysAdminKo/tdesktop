@@ -351,7 +351,8 @@ crl::time ResolvingConnection::pingTime() const {
 }
 
 crl::time ResolvingConnection::fullConnectTimeout() const {
-	return kOneConnectionTimeout * qMax(int(_proxy.resolvedIPs.size()), 1);
+	return kOneConnectionTimeout
+		* std::max(int(_proxy.resolvedIPs.size()), 1);
 }
 
 void ResolvingConnection::sendData(mtpBuffer &&buffer) {
